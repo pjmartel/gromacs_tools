@@ -32,6 +32,84 @@ python gromacs_prepare.py [options]
 
 For detailed options and configuration, see the script's help documentation.
 
+### plot_xvg.py
+
+A command-line tool for plotting GROMACS XVG files with Matplotlib. Supports single or multiple XVG files, moving averages, multiple plot styles, and time-ordered scatter plots similar to PCA visualizations.
+
+#### Features
+
+- Plot single or multiple XVG files on the same axes
+- Multiple plot styles: dots (default), lines, or lines+dots
+- Scatter mode with time/frame-ordered color gradient (ideal for PCA projections)
+- Apply moving average smoothing to time series data
+- Custom legends, titles, and axis labels
+- Save plots to various formats (PNG, PDF, SVG, etc.)
+- Automatically parses XVG metadata (titles, labels, legends)
+
+#### Requirements
+
+- Python 3.x with `numpy` and `matplotlib`
+
+#### Usage
+
+```bash
+# Plot a single XVG file (default: dots)
+python plot_xvg.py energy.xvg
+
+# Plot with line style
+python plot_xvg.py energy.xvg --style lines
+
+# Plot with moving average smoothing
+python plot_xvg.py energy.xvg --moving-avg --window 50 --style lines
+
+# Scatter plot colored by frame/time order (like PCA plots)
+python plot_xvg.py pc_projection.xvg --scatter --colormap viridis
+
+# Plot multiple XVG files on the same axes
+python plot_xvg.py file1.xvg file2.xvg file3.xvg --multi
+
+# Plot with custom legends and style
+python plot_xvg.py rmsd1.xvg rmsd2.xvg --multi --legends "System A" "System B" --style lines+dots
+
+# Save plot to file
+python plot_xvg.py energy.xvg --output energy_plot.png --dpi 300
+
+# Combine options: scatter plot with custom labels saved to PDF
+python plot_xvg.py pc1_vs_pc2.xvg --scatter --colormap plasma \\
+  --title "PC1 vs PC2" --xlabel "PC1" --ylabel "PC2" --output pca.pdf
+```
+
+Key options:
+
+- `files`: One or more XVG files to plot (positional argument)
+- `--style, -s`: Plot style - `dots` (default), `lines`, or `lines+dots`
+- `--scatter`: Enable scatter mode with color gradient by frame/time order
+- `--colormap, --cmap`: Colormap for scatter mode (default: `viridis`). Options: `viridis`, `plasma`, `inferno`, `magma`, `coolwarm`, `rainbow`
+- `--moving-avg, --ma`: Apply moving average filter (only works with single dataset)
+- `--window, -w`: Window size for moving average (default: 10)
+- `--multi, -m`: Plot multiple XVG files on the same axes
+- `--legends, -l`: Custom legend labels for multiple files
+- `--output, -o`: Save plot to file instead of displaying interactively
+- `--title, -t`: Custom plot title (overrides XVG title)
+- `--xlabel`: Custom x-axis label (overrides XVG label)
+- `--ylabel`: Custom y-axis label (overrides XVG label)
+- `--figsize`: Figure size in inches (default: 10 6)
+- `--dpi`: Resolution for saved figures (default: 300)
+
+Outputs:
+
+- Interactive plot window (if `--output` not specified)
+- Saved plot file in specified format (PNG, PDF, SVG, etc.)
+
+Notes:
+
+- **Default style is `dots`** which is better for most GROMACS data (PCA, scatter plots, etc.)
+- **Scatter mode** (`--scatter`) is ideal for PCA projection plots where you want to see temporal evolution via color gradient
+- The script automatically parses XVG metadata including titles, axis labels, and data legends
+- Moving average is only applied when plotting a single dataset (not multiple columns or files)
+- When using `--multi` with `--legends`, the number of legends must match the number of files
+- Scatter mode adds a colorbar showing frame/time progression for single dataset plots
+
 ### gromacs_pca.py
 
 Automates Principal Component Analysis (PCA) on GROMACS trajectories and produces common plots (scree, cumulative variance, PC1–PC2 scatter, PC1 timeseries).
