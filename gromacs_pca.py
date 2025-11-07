@@ -165,14 +165,35 @@ def plot_cumulative_variance(eigvals: np.ndarray, out: Path) -> None:
 def plot_pc_scatter(proj: np.ndarray, out: Path, color_by_time: bool = True) -> None:
     if plt is None:
         raise RuntimeError("Matplotlib not available to create plots.")
-    # Expect columns: time, PC1, PC2 when -first 1 -last 2 used
-    if proj.shape[1] < 3:
-        raise ValueError("Projection file must have at least 3 columns: time, PC1, PC2")
-    t = proj[:, 0]
-    pc1 = proj[:, 1]
-    pc2 = proj[:, 2]
+    # Expect columns: time, PC1, PC2, ... (or possibly just PC1, PC2 without time)
+    # Handle various cases
+    if proj.shape[1] < 2:
+        raise ValueError(f"Projection file must have at least 2 columns for scatter plot, got {proj.shape[1]}")
+    
+    if proj.shape[1] == 2:
+        # Only 2 columns: could be (time, PC1) or (PC1, PC2)
+        # Check if first column looks like time (monotonically increasing, reasonable range)
+        col0_increasing = np.all(np.diff(proj[:, 0]) >= 0)
+        col0_range = proj[-1, 0] - proj[0, 0]
+        
+        if col0_increasing and col0_range > 10:
+            # Likely (time, PC1) - cannot make PC1 vs PC2 scatter
+            raise ValueError("Projection file has only time and PC1. Need both PC1 and PC2 for scatter plot.")
+        else:
+            # Treat as (PC1, PC2)
+            pc1 = proj[:, 0]
+            pc2 = proj[:, 1]
+            t = np.arange(len(pc1))
+    elif proj.shape[1] >= 3:
+        # Has time column and at least PC1, PC2
+        t = proj[:, 0]
+        pc1 = proj[:, 1]
+        pc2 = proj[:, 2]
+    else:
+        raise ValueError(f"Cannot create scatter plot from {proj.shape[1]} columns")
+    
     plt.figure(figsize=(5, 5))
-    if color_by_time:
+    if color_by_time and proj.shape[1] >= 3:
         sc = plt.scatter(pc1, pc2, c=t, cmap='viridis', s=10, linewidths=0, alpha=0.8)
         cbar = plt.colorbar(sc)
         cbar.set_label('Time (ps)')
@@ -187,16 +208,34 @@ def plot_pc_scatter(proj: np.ndarray, out: Path, color_by_time: bool = True) -> 
     plt.close()
 
 
-def plot_pc_timeseries(proj: np.ndarray, out: Path) -> None:
+def plot_pc_timeseries(proj: np.ndarray, out: Path, pc_label: str = "PC1") -> None:
     if plt is None:
         raise RuntimeError("Matplotlib not available to create plots.")
-    t = proj[:, 0]
-    pc1 = proj[:, 1]
+    
+    if proj.shape[1] < 1:
+        raise ValueError(f"Projection file must have at least 1 column, got {proj.shape[1]}")
+    
+    # Projection file from gmx anaeig -proj typically has format:
+    # Column 0: time (ps)
+    # Column 1: PC projection value
+    
+    # So: time is X-axis, PC value is Y-axis
+    if proj.shape[1] == 1:
+        # Only one column - treat as PC values, use frame index as time
+        t = np.arange(len(proj))
+        pc_val = proj[:, 0]
+        xlabel = 'Frame'
+    else:
+        # Multiple columns: column 0 is time, column 1 is PC value
+        t = proj[:, 0]
+        pc_val = proj[:, 1]
+        xlabel = 'Time (ps)'
+    
     plt.figure(figsize=(6, 3.5))
-    plt.plot(t, pc1, lw=1)
-    plt.xlabel('Time (ps)')
-    plt.ylabel('PC1')
-    plt.title('PC1 over time')
+    plt.plot(t, pc_val, lw=1)
+    plt.xlabel(xlabel)
+    plt.ylabel(f'{pc_label} projection')
+    plt.title(f'{pc_label} projection over time')
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(out.with_suffix('.png'), dpi=200)
@@ -210,23 +249,54 @@ def build_index_with_select(gmx: str, s: Path, selection: str, out_ndx: Path, lo
     (log_dir / "select.log").write_bytes(proc.stdout)
 
 
-def trj_fit_center(gmx: str, s: Path, f: Path, ndx: Path, out_xtc: Path, pbc: str, center: bool, fit: str, log_dir: Path) -> None:
-    cmd = [gmx, "trjconv", "-s", str(s), "-f", str(f), "-o", str(out_xtc), "-n", str(ndx), "-pbc", pbc, "-ur", "compact"]
+def trj_fit_center(gmx: str, s: Path, f: Path, ndx: Path, out_xtc: Path, pbc: str, center: bool, fit: str, log_dir: Path) -> Path:
+    """Run trjconv in multiple steps to handle PBC and fitting separately.
+    
+    Step 0: Create a structure file with selected atoms only (from original TPR + original traj)
+    Step 1: PBC treatment + centering, output only selected atoms
+    Step 2: Fitting using the structure that matches the filtered trajectory
+    
+    Returns the filtered structure (GRO) that matches the output trajectory atoms.
+    """
+    temp_xtc = out_xtc.parent / "temp_pbc.xtc"
+    out_gro = out_xtc.parent / "fit.gro"
+    
+    # Step 0: Create matching structure file FIRST (from original traj with original TPR)
+    # This extracts first frame with selected atoms only
+    cmd_gro = [gmx, "trjconv", "-s", str(s), "-f", str(f), "-o", str(out_gro), "-n", str(ndx), "-dump", "0"]
+    proc_gro = run_cmd(cmd_gro, stdin="0\n")
+    (log_dir / "trjconv_gro.log").write_bytes(proc_gro.stdout)
+    
+    # Step 1: PBC treatment, centering, output selected atoms only
+    cmd1 = [gmx, "trjconv", "-s", str(s), "-f", str(f), "-o", str(temp_xtc), "-n", str(ndx), "-pbc", pbc, "-ur", "compact"]
     if center:
-        cmd.append("-center")
+        cmd1.append("-center")
+    
+    answers1 = ["0"]
+    if center:
+        answers1 = ["0", "0"]
+    stdin1 = "\n".join(answers1) + "\n"
+    proc1 = run_cmd(cmd1, stdin=stdin1)
+    (log_dir / "trjconv_pbc.log").write_bytes(proc1.stdout)
+    
+    # Step 2: Rotational fit using the matching structure
     if fit:
-        cmd.extend(["-fit", fit])
-    # For trjconv, we need to answer: group for centering (if -center) and output group.
-    # Our ndx has exactly one selection (index 0), so answer "0" twice if centering, else once.
-    answers = ["0"]
-    if center:
-        answers = ["0", "0"]
-    stdin = "\n".join(answers) + "\n"
-    proc = run_cmd(cmd, stdin=stdin)
-    (log_dir / "trjconv.log").write_bytes(proc.stdout)
+        cmd2 = [gmx, "trjconv", "-s", str(out_gro), "-f", str(temp_xtc), "-o", str(out_xtc), "-fit", fit]
+        # No index needed here since out_gro already has only selected atoms
+        # Just need to specify fit group (all atoms = 0 = System) and output group (0)
+        stdin2 = "0\n0\n"
+        proc2 = run_cmd(cmd2, stdin=stdin2)
+        (log_dir / "trjconv_fit.log").write_bytes(proc2.stdout)
+        temp_xtc.unlink()
+    else:
+        # No fitting, just rename temp to final
+        temp_xtc.rename(out_xtc)
+        (log_dir / "trjconv_fit.log").write_text("Skipped (no fitting requested)\n")
+    
+    return out_gro
 
 
-def run_covar(gmx: str, s: Path, f: Path, ndx: Path, out_dir: Path, log_dir: Path) -> Tuple[Path, Path, Path]:
+def run_covar(gmx: str, s: Path, f: Path, out_dir: Path, log_dir: Path) -> Tuple[Path, Path, Path]:
     ev_xvg = out_dir / "eigenvalues.xvg"
     ev_trr = out_dir / "eigenvectors.trr"
     avg_pdb = out_dir / "average.pdb"
@@ -237,8 +307,6 @@ def run_covar(gmx: str, s: Path, f: Path, ndx: Path, out_dir: Path, log_dir: Pat
         str(s),
         "-f",
         str(f),
-        "-n",
-        str(ndx),
         "-o",
         str(ev_xvg),
         "-v",
@@ -246,45 +314,83 @@ def run_covar(gmx: str, s: Path, f: Path, ndx: Path, out_dir: Path, log_dir: Pat
         "-av",
         str(avg_pdb),
     ]
-    # covar asks for analysis and fitting groups; answer 0 twice
+    # covar asks for analysis and fitting groups; since we already filtered,
+    # we use group 0 (System, which is all atoms in the filtered structure)
     proc = run_cmd(cmd, stdin="0\n0\n")
     (log_dir / "covar.log").write_bytes(proc.stdout)
     return ev_xvg, ev_trr, avg_pdb
 
 
-def run_anaeig(gmx: str, s: Path, f: Path, ndx: Path, eig_trr: Path, out_dir: Path, first: int, last: int, log_dir: Path) -> Tuple[Path, Path, Path, Path]:
+def run_anaeig(gmx: str, s: Path, f: Path, eig_trr: Path, out_dir: Path, first: int, last: int, log_dir: Path) -> Tuple[Path, Path, Path, Path]:
     proj_xvg = out_dir / "projection.xvg"
+    proj_pc1_xvg = out_dir / "projection_pc1.xvg"
+    proj_pc2_xvg = out_dir / "projection_pc2.xvg"
     eig_xvg = out_dir / "eig.xvg"
     rmsf_xvg = out_dir / "rmsf.xvg"
     comp_xvg = out_dir / "comp.xvg"
-    cmd = [
+    
+    # Run anaeig for PC1 separately
+    cmd_pc1 = [
         gmx,
         "anaeig",
         "-s",
         str(s),
         "-f",
         str(f),
-        "-n",
-        str(ndx),
+        "-v",
+        str(eig_trr),
+        "-first",
+        "1",
+        "-last",
+        "1",
+        "-proj",
+        str(proj_pc1_xvg),
+    ]
+    proc1 = run_cmd(cmd_pc1, stdin="0\n0\n")
+    (log_dir / "anaeig_pc1.log").write_bytes(proc1.stdout)
+    
+    # Run anaeig for PC2 separately
+    cmd_pc2 = [
+        gmx,
+        "anaeig",
+        "-s",
+        str(s),
+        "-f",
+        str(f),
+        "-v",
+        str(eig_trr),
+        "-first",
+        "2",
+        "-last",
+        "2",
+        "-proj",
+        str(proj_pc2_xvg),
+    ]
+    proc2 = run_cmd(cmd_pc2, stdin="0\n0\n")
+    (log_dir / "anaeig_pc2.log").write_bytes(proc2.stdout)
+    
+    # Run anaeig for RMSF (full range)
+    cmd_rmsf = [
+        gmx,
+        "anaeig",
+        "-s",
+        str(s),
+        "-f",
+        str(f),
         "-v",
         str(eig_trr),
         "-first",
         str(first),
         "-last",
         str(last),
-        "-proj",
-        str(proj_xvg),
-        "-eig",
-        str(eig_xvg),
         "-rmsf",
         str(rmsf_xvg),
-        "-comp",
-        str(comp_xvg),
     ]
-    # One group selection for analysis
-    proc = run_cmd(cmd, stdin="0\n")
-    (log_dir / "anaeig.log").write_bytes(proc.stdout)
-    return proj_xvg, eig_xvg, rmsf_xvg, comp_xvg
+    proc_rmsf = run_cmd(cmd_rmsf, stdin="0\n0\n")
+    (log_dir / "anaeig_rmsf.log").write_bytes(proc_rmsf.stdout)
+    
+    # Return PC1 projection as the main one (for backward compat)
+    return proj_pc1_xvg, eig_xvg, rmsf_xvg, comp_xvg
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -336,23 +442,29 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Fit/center trajectory
     fit_xtc = outdir / "fit.xtc"
+    fit_gro = outdir / "fit.gro"
     do_center = not args.no_center
     fit_mode = None if args.fit in ("", "none") else args.fit
 
     if fit_xtc.exists() and not args.overwrite:
         print(f"[skip] Using existing fitted trajectory: {fit_xtc}")
+        # Ensure we have the matching structure
+        if not fit_gro.exists():
+            print(f"Warning: {fit_gro} not found, recreating...")
+            cmd_gro = [gmx, "trjconv", "-s", str(s), "-f", str(fit_xtc), "-o", str(fit_gro), "-n", str(ndx), "-dump", "0"]
+            run_cmd(cmd_gro, stdin="0\n")
     else:
         print("[2/5] Fitting and centering trajectory (trjconv)...")
-        trj_fit_center(gmx, s, f, ndx, fit_xtc, args.pbc, do_center, fit_mode, log_dir)
+        fit_gro = trj_fit_center(gmx, s, f, ndx, fit_xtc, args.pbc, do_center, fit_mode, log_dir)
 
-    # PCA: covar
+    # PCA: covar (use filtered structure that matches the trajectory, NO index needed)
     print("[3/5] Running covariance analysis (covar)...")
-    ev_xvg, ev_trr, avg_pdb = run_covar(gmx, s, fit_xtc, ndx, outdir, log_dir)
+    ev_xvg, ev_trr, avg_pdb = run_covar(gmx, fit_gro, fit_xtc, outdir, log_dir)
 
-    # PCA: anaeig
+    # PCA: anaeig (use filtered structure that matches the trajectory, NO index needed)
     print("[4/5] Analyzing eigenvectors and projecting (anaeig)...")
     proj_xvg, eig_xvg, rmsf_xvg, comp_xvg = run_anaeig(
-        gmx, s, fit_xtc, ndx, ev_trr, outdir, args.first, args.last, log_dir
+        gmx, fit_gro, fit_xtc, ev_trr, outdir, args.first, args.last, log_dir
     )
 
     # Plotting
@@ -373,11 +485,36 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"Warning: failed eigenvalue plots: {e}")
 
     try:
-        proj_data = parse_xvg(proj_xvg)
-        plot_pc_scatter(proj_data, outdir / "plot_pc1_pc2_scatter", color_by_time=True)
-        plot_pc_timeseries(proj_data, outdir / "plot_pc1_timeseries")
+        proj_pc1_data = parse_xvg(outdir / "projection_pc1.xvg")
+        proj_pc2_data = parse_xvg(outdir / "projection_pc2.xvg")
+        print(f"  PC1 projection shape: {proj_pc1_data.shape}")
+        print(f"  PC2 projection shape: {proj_pc2_data.shape}")
+        print(f"  PC1 range: {proj_pc1_data[:, 1].min():.3f} to {proj_pc1_data[:, 1].max():.3f}")
+        print(f"  PC2 range: {proj_pc2_data[:, 1].min():.3f} to {proj_pc2_data[:, 1].max():.3f}")
+        
+        # Verify they have the same number of frames
+        if proj_pc1_data.shape[0] != proj_pc2_data.shape[0]:
+            print(f"  ERROR: PC1 has {proj_pc1_data.shape[0]} frames but PC2 has {proj_pc2_data.shape[0]} frames!")
+            raise ValueError("PC1 and PC2 projections have different numbers of frames")
+        
+        # Verify time columns match
+        if not np.allclose(proj_pc1_data[:, 0], proj_pc2_data[:, 0]):
+            print("  Warning: Time columns don't match between PC1 and PC2!")
+        
+        # Combine PC1 and PC2 for scatter plot: columns = [time, PC1, PC2]
+        combined_proj = np.column_stack([proj_pc1_data[:, 0], proj_pc1_data[:, 1], proj_pc2_data[:, 1]])
+        print(f"  Combined data shape for scatter: {combined_proj.shape}")
+        print(f"  First few rows of combined [time, PC1, PC2]:")
+        print(f"{combined_proj[:3]}")
+        
+        plot_pc_scatter(combined_proj, outdir / "plot_pc1_pc2_scatter", color_by_time=True)
+        plot_pc_timeseries(proj_pc1_data, outdir / "plot_pc1_timeseries", pc_label="PC1")
+        plot_pc_timeseries(proj_pc2_data, outdir / "plot_pc2_timeseries", pc_label="PC2")
+        print(f"  Plots saved successfully")
     except Exception as e:
         print(f"Warning: failed projection plots: {e}")
+        import traceback
+        traceback.print_exc()
 
     print("Done. Outputs in:", outdir)
     return 0
