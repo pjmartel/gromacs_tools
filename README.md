@@ -83,6 +83,65 @@ Notes:
 - The script feeds group selections programmatically using the generated `selection.ndx`, which contains a single group. If you want different atoms, change `--selection` (GROMACS selection language).
 - Ensure GROMACS is installed and callable (try `gmx --version`).
 
+### gromacs_pca_movie.py
+
+Creates trajectory movies showing conformational changes along principal components. This generates interpolated structures that can be animated in molecular visualization software.
+
+#### Requirements
+
+- GROMACS 2021+ in PATH (binary `gmx`) or specify with `--gmx-bin`
+- Outputs from `gromacs_pca.py` (or equivalent PCA workflow): `fit.gro` and `eigenvectors.trr`
+
+#### What it does
+
+Uses `gmx anaeig -extr` to interpolate structures along a principal component, creating a trajectory that shows the motion captured by that PC. This is useful for:
+- Visualizing what conformational change a PC represents
+- Creating animations for presentations
+- Understanding the dominant motions in your system
+
+#### Usage
+
+```bash
+# Generate a 50-frame movie along PC1
+python gromacs_pca_movie.py -s pca_out/fit.gro -v pca_out/eigenvectors.trr \\
+  -o pc1_movie.pdb --pc 1 --nframes 50 --extreme 2.0
+
+# Generate only the extreme structures (min and max)
+python gromacs_pca_movie.py -s pca_out/fit.gro -v pca_out/eigenvectors.trr \\
+  -o extremes.pdb --pc 1 --extremes-only --extreme 2.0
+```
+
+Key options:
+
+- `-s, --structure`: Structure file matching PCA atoms (use `fit.gro` from `gromacs_pca.py`)
+- `-v, --eigenvec`: Eigenvectors file (use `eigenvectors.trr` from `gromacs_pca.py`)
+- `-o, --output`: Output trajectory file (PDB/XTC/TRR)
+- `--pc`: Principal component number (default: 1)
+- `--nframes`: Number of interpolated frames (default: 50)
+- `--extreme`: Extent along eigenvector in nm (default: 2.0)
+- `--extremes-only`: Generate only min/max structures instead of full movie
+- `--outdir`: Output directory for logs
+- `--gmx-bin`: GROMACS binary to use
+
+Output:
+- A trajectory file showing interpolated motion along the selected PC
+- Can be opened in VMD, PyMOL, ChimeraX, etc., and played as an animation
+
+Workflow example:
+```bash
+# 1. Run PCA analysis
+python gromacs_pca.py -s topol.tpr -f traj.xtc -o pca_out
+
+# 2. Generate movie for PC1
+python gromacs_pca_movie.py -s pca_out/fit.gro -v pca_out/eigenvectors.trr \\
+  -o pc1_movie.pdb --pc 1 --nframes 100
+
+# 3. Visualize in VMD
+vmd pc1_movie.pdb
+
+# 4. In VMD: Graphics → Representations, then play the trajectory
+```
+
 ## Installation
 
 Clone this repository:

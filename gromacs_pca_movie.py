@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+"""
+GROMACS PCA movie generator
+
+Creates trajectory movies showing conformational changes along principal components.
+This script generates structures along a PC by interpolating between extreme conformations,
+which can then be visualized as an animation in VMD, PyMOL, etc.
+
+Requires the outputs from gromacs_pca.py (or manual PCA workflow):
+- fit.gro (or any structure matching the PCA atoms)
+- eigenvectors.trr (from gmx covar)
+
+Usage:
+    python gromacs_pca_movie.py -s fit.gro -v eigenvectors.trr -o pc1_movie.pdb \\
+        --pc 1 --nframes 50 --extreme 2.0
+
+This will create a trajectory showing motion along PC1, interpolating 50 frames
+between -2.0 and +2.0 nm along the eigenvector.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import List, Optional
+
+
+class CommandError(RuntimeError):
+    pass
+
+
+def run_cmd(cmd: List[str], stdin: Optional[str] = None, cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
+    """Run a command and raise on non-zero return code."""
+    proc = subprocess.run(
+        cmd,
+        input=stdin.encode() if stdin is not None else None,
+        cwd=str(cwd) if cwd else None,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if proc.returncode != 0:
+        raise CommandError(f"Command failed ({proc.returncode}): {' '.join(cmd)}\nOutput:\n{proc.stdout.decode(errors='ignore')}")
+    return proc
+
+
+def which_gmx(user_bin: Optional[str]) -> str:
+    """Find the GROMACS binary to use."""
+    candidates: List[Optional[str]] = [
+        user_bin,
+        os.environ.get("GMX_BIN"),
+        shutil.which("gmx"),
+        shutil.which("gmx_mpi"),
+    ]
+    for c in candidates:
+        if c and (shutil.which(c) or (Path(c).exists() and os.access(c, os.X_OK))):
+            return c
+    raise FileNotFoundError(
+        "No GROMACS binary found. Install GROMACS or provide --gmx-bin or set $GMX_BIN."
+    )
+
+
+def generate_pc_movie(
+    gmx: str,
+    s: Path,
+    v: Path,
+    f: Path,
+    out: Path,
+    pc_num: int,
+    nframes: int,
+    extreme: float,
+    log_dir: Path,
+) -> None:
+    """Generate a trajectory showing motion along a principal component.
+    
+    Args:
+        gmx: GROMACS binary path
+        s: Structure file (GRO/PDB) matching the PCA atoms
+        v: Eigenvectors file (TRR from gmx covar)
+        f: Input trajectory (the fitted trajectory from PCA analysis)
+        out: Output trajectory file (PDB/XTC/TRR)
+        pc_num: Principal component number (1-indexed)
+        nframes: Number of frames to interpolate
+        extreme: Extent along the eigenvector (in nm)
+        log_dir: Directory for log files
+    """
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    # GROMACS 2023 requires -f even for -extr
+    cmd = [
+        gmx,
+        "anaeig",
+        "-s",
+        str(s),
+        "-f",
+        str(f),
+        "-v",
+        str(v),
+        "-first",
+        str(pc_num),
+        "-last",
+        str(pc_num),
+        "-nframes",
+        str(nframes),
+        "-extr",
+        str(out),
+    ]
+    
+    # anaeig asks for TWO groups:
+    # 1. The group used for least squares fit in covar (System = 0)
+    # 2. The group corresponding to eigenvectors (System = 0)
+    stdin = "0\n0\n"
+    
+    print(f"Generating {nframes}-frame trajectory along PC{pc_num}...")
+    print(f"  Extent along eigenvector: determined automatically by GROMACS")
+    proc = run_cmd(cmd, stdin=stdin)
+    (log_dir / f"anaeig_pc{pc_num}_movie.log").write_bytes(proc.stdout)
+    print(f"Movie trajectory saved to: {out}")
+
+
+def fix_connectivity(gmx: str, s: Path, traj: Path, out: Path, log_dir: Path) -> None:
+    """Fix bond connectivity in PDB output using gmx trjconv -conect.
+    
+    This helps visualization tools correctly display bonds.
+    """
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Only works for PDB output
+    if not str(out).endswith('.pdb'):
+        print("  Note: --fix-connectivity only works with PDB output")
+        return
+    
+    temp = out.parent / f"{out.stem}_temp.pdb"
+    traj.rename(temp)
+    
+    cmd = [
+        gmx,
+        "trjconv",
+        "-s",
+        str(s),
+        "-f",
+        str(temp),
+        "-o",
+        str(out),
+        "-conect",
+    ]
+    
+    print("  Fixing bond connectivity...")
+    proc = run_cmd(cmd, stdin="0\n")
+    (log_dir / "fix_connectivity.log").write_bytes(proc.stdout)
+    temp.unlink()
+    print(f"  Connectivity fixed in: {out}")
+
+
+def generate_extreme_structures(
+    gmx: str,
+    s: Path,
+    v: Path,
+    f: Path,
+    out_prefix: Path,
+    pc_num: int,
+    extreme: float,
+    log_dir: Path,
+) -> tuple[Path, Path]:
+    """Generate the two extreme structures along a PC.
+    
+    Returns:
+        Tuple of (min_structure, max_structure) paths
+    """
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Generate extreme structures (min and max)
+    extremes_file = out_prefix.parent / f"extremes_pc{pc_num}.pdb"
+    
+    cmd = [
+        gmx,
+        "anaeig",
+        "-s",
+        str(s),
+        "-f",
+        str(f),
+        "-v",
+        str(v),
+        "-first",
+        str(pc_num),
+        "-last",
+        str(pc_num),
+        "-extr",
+        str(extremes_file),
+        "-nframes",
+        "2",  # Just the two extremes
+    ]
+    
+    # anaeig asks for TWO groups even for -extr
+    stdin = "0\n0\n"
+    
+    print(f"Generating extreme structures for PC{pc_num}...")
+    proc = run_cmd(cmd, stdin=stdin)
+    (log_dir / f"anaeig_pc{pc_num}_extremes.log").write_bytes(proc.stdout)
+    
+    if extremes_file.exists():
+        print(f"Extreme structures saved to: {extremes_file}")
+        print(f"  Frame 1: minimum (most negative) along PC{pc_num}")
+        print(f"  Frame 2: maximum (most positive) along PC{pc_num}")
+        return extremes_file, extremes_file
+    else:
+        raise FileNotFoundError(f"Expected output {extremes_file} not found")
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    p = argparse.ArgumentParser(
+        description="Generate movies/trajectories showing motion along principal components.",
+        epilog="Tip: Use outputs from gromacs_pca.py as inputs (fit.gro and eigenvectors.trr)",
+    )
+    
+    # Input files
+    p.add_argument("-s", "--structure", required=True, help="Structure file matching PCA atoms (GRO/PDB, e.g., fit.gro from gromacs_pca.py)")
+    p.add_argument("-f", "--trajectory", required=True, help="Fitted trajectory file (XTC/TRR, e.g., fit.xtc from gromacs_pca.py)")
+    p.add_argument("-v", "--eigenvec", required=True, help="Eigenvectors file (TRR from gmx covar, e.g., eigenvectors.trr)")
+    
+    # Output options
+    p.add_argument("-o", "--output", required=True, help="Output trajectory file (PDB/XTC/TRR)")
+    p.add_argument("--outdir", default=".", help="Output directory for logs (default: current dir)")
+    
+    # PC selection
+    p.add_argument("--pc", type=int, default=1, help="Principal component number to visualize (default: 1)")
+    
+    # Movie parameters
+    p.add_argument("--nframes", type=int, default=50, help="Number of frames to interpolate (default: 50)")
+    p.add_argument("--extreme", type=float, default=2.0, help="[Informational only] Typical extent along eigenvector in nm (default: 2.0). GROMACS determines actual extent automatically.")
+    
+    # Optional: just generate extreme structures instead of full movie
+    p.add_argument("--extremes-only", action="store_true", help="Generate only the two extreme structures (min/max)")
+    
+    # Quality options
+    p.add_argument("--fix-connectivity", action="store_true", help="Fix bond connectivity issues (visualization only, using gmx trjconv -conect)")
+    
+    # GROMACS options
+    p.add_argument("--gmx-bin", default=None, help="GROMACS binary to use (e.g., gmx or full path)")
+    
+    args = p.parse_args(argv)
+    
+    # Resolve paths
+    s = Path(args.structure).expanduser().resolve()
+    f = Path(args.trajectory).expanduser().resolve()
+    v = Path(args.eigenvec).expanduser().resolve()
+    out = Path(args.output).expanduser().resolve()
+    outdir = Path(args.outdir).expanduser().resolve()
+    log_dir = outdir / "logs"
+    
+    # Validation
+    if not s.exists():
+        print(f"Error: structure file not found: {s}", file=sys.stderr)
+        return 2
+    if not f.exists():
+        print(f"Error: trajectory file not found: {f}", file=sys.stderr)
+        return 2
+    if not v.exists():
+        print(f"Error: eigenvector file not found: {v}", file=sys.stderr)
+        return 2
+    
+    try:
+        gmx = which_gmx(args.gmx_bin)
+    except FileNotFoundError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    
+    print(f"Using GROMACS: {gmx}")
+    print(f"Structure: {s}")
+    print(f"Trajectory: {f}")
+    print(f"Eigenvectors: {v}")
+    print()
+    
+    try:
+        if args.extremes_only:
+            generate_extreme_structures(gmx, s, v, f, out, args.pc, args.extreme, log_dir)
+        else:
+            generate_pc_movie(gmx, s, v, f, out, args.pc, args.nframes, args.extreme, log_dir)
+        
+        # Optionally fix connectivity for PDB output
+        if args.fix_connectivity and out.suffix.lower() == '.pdb':
+            fix_connectivity(gmx, s, out, out, log_dir)
+        
+        print()
+        print("Done! Next steps:")
+        print(f"  - Open {out} in VMD, PyMOL, or ChimeraX")
+        print("  - Play as animation to see motion along PC" + str(args.pc))
+        print()
+        print("Note: Structures are interpolated along eigenvectors and may have:")
+        print("  - Unrealistic bond lengths (linear interpolation artifacts)")
+        print("  - Atom clashes (no energy minimization applied)")
+        print()
+        print("Tips for better visualization:")
+        print("  - In VMD: Delete old bonds, use 'mol bondsrecalc' to rebuild")
+        print("  - In PyMOL: Use 'rebuild' command or adjust 'stick_radius'")
+        print("  - These are meant to show DIRECTION of motion, not exact structures")
+        
+        return 0
+        
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
