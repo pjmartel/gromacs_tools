@@ -100,118 +100,124 @@ def run_gromacs_command(command, description, log_filename):
         return False
 
 def get_solvent_group_number(tpr_file):
-    """Get the group number for solvent from the tpr file using gmx make_ndx"""
+    """Get the group number for solvent (SOL) from the TPR using gmx make_ndx.
+
+    Returns the numeric group id as a string (e.g., '13') if found, else None.
+    """
     try:
         result = subprocess.run(f"gmx make_ndx -f {tpr_file} -o index.ndx", 
                                 shell=True, check=True, 
                                 input="q\n", capture_output=True, text=True)
         output = result.stdout
         for line in output.splitlines():
-            if "SOL" in line: # or "Water" in line: don't think I need "Water"
+            if "SOL" in line:
                 parts = line.split()
-                group_number = parts[0]
-                return group_number
+                if parts and parts[0].isdigit():
+                    return parts[0]
     except subprocess.CalledProcessError as e:
         print("Error determining solvent group number.")
-        return None
+    return None
 
-def automate_gromacs(input_pdb, forcefield, water_model, box_type, box_distance, 
-                     solvent_group=13, neutral=True):
+def automate_gromacs(args):
+    """Automate GROMACS preparation steps for MD simulations.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Parsed command-line arguments containing at least:
+        pdb_file, forcefield, water_model, box_type, box_distance,
+        solvent_file, cation, anion.
     """
-    Automate GROMACS preparation steps for MD simulations
-    
-    Args:
-        input_pdb: Path to input PDB file
-        forcefield: Force field to use (e.g., 'amber99sb-ildn')
-        water_model: Water model (e.g., 'tip3p')
-        box_type: Type of box (e.g., 'cubic', 'dodecahedron')
-        box_distance: Distance from protein to box edge (nm)
-        solvent_group: Group number for solvent (default: 13 for SOL)
-        neutral: Whether to neutralize the system (default: True)
-    """
-    # Initialize command logging
+    # Initialize command logging script
     commands_file = Path.cwd() / "commands.sh"
     set_command_script_path(commands_file)
     print(f"\nAll GROMACS commands will be logged to: {commands_file}")
-    
-    # Convert input PDB path to Path object for easier manipulation
-    
+
+    # Derive stem from input pdb file
+    input_pdb_path = Path(args.pdb_file)
+    stem = input_pdb_path.stem
+
     # Step 1: pdb2gmx
     topology_file = f"{stem}.top"
     gro_output = f"{stem}.gro"
     pdb2gmx_log = f"{stem}_pdb2gmx.log"
-    
-    pdb2gmx_cmd = f"gmx pdb2gmx -f {args.pdb_file} -o {gro_output} -p {topology_file} -ff {args.forcefield} -water {args.water_model}"
-    
+    pdb2gmx_cmd = (
+        f"gmx pdb2gmx -f {args.pdb_file} -o {gro_output} -p {topology_file} "
+        f"-ff {args.forcefield} -water {args.water_model}"
+    )
     if not run_gromacs_command(pdb2gmx_cmd, "pdb2gmx", pdb2gmx_log):
         return False
-    
-    # Step 2: editconf
+
+    # Step 2: editconf (define box)
     box_output = f"{stem}_box.gro"
     editconf_log = f"{stem}_editconf.log"
-    
-    editconf_cmd = f"gmx editconf -f {gro_output} -o {box_output} -c -d {args.box_distance} -bt {args.box_type}"
-    
+    editconf_cmd = (
+        f"gmx editconf -f {gro_output} -o {box_output} -c -d {args.box_distance} "
+        f"-bt {args.box_type}"
+    )
     if not run_gromacs_command(editconf_cmd, "editconf", editconf_log):
         return False
-    
+
     # Step 3: solvate
     solvent_output = f"{stem}_solvent.gro"
     solvate_log = f"{stem}_solvate.log"
-    
-    solvate_cmd = f"gmx solvate -cp {box_output} -cs {args.solvent_file} -o {solvent_output} -p {topology_file}"
-    
+    solvate_cmd = (
+        f"gmx solvate -cp {box_output} -cs {args.solvent_file} -o {solvent_output} "
+        f"-p {topology_file}"
+    )
     if not run_gromacs_command(solvate_cmd, "solvate", solvate_log):
         return False
-    
-    # Step 4: genion
-    ions_output = f"{stem}_ions.gro"
-    genion_log = f"{stem}_genion.log"
-    
-    # Create minimal mdp file
+
+    # Step 4: prepare for ion addition (minimal mdp + grompp)
     with open("minimal.mdp", "w") as f:
-        f.write(
-"""
-integrator  = md
-dt          = 0.001
-nsteps      = 1
-""")
-    
-    # Grompp for genion (with its own log file)
+        f.write("integrator = md\n")
+        f.write("dt = 0.001\n")
+        f.write("nsteps = 1\n")
+
     grompp_log = f"{stem}_grompp.log"
     tpr_file = f"{stem}_ions.tpr"
-    grompp_cmd = f"gmx grompp -f minimal.mdp -c {solvent_output} -p {topology_file} -o {tpr_file}"
-    
+    grompp_cmd = (
+        f"gmx grompp -f minimal.mdp -c {solvent_output} -p {topology_file} -o {tpr_file}"
+    )
     if not run_gromacs_command(grompp_cmd, "grompp", grompp_log):
         return False
 
+    # Step 5: genion (determine solvent group dynamically)
+    ions_output = f"{stem}_ions.gro"
+    genion_log = f"{stem}_genion.log"
     solvent_group_number = get_solvent_group_number(tpr_file)
-    # Genion
-    genion_cmd = f"echo {solvent_group_number} | gmx genion -s {tpr_file} -o {ions_output} -p {topology_file} -pname {args.cation} -nname {args.anion} -neutral"
+    if not solvent_group_number:
+        print("Error: Could not detect SOL group in index (from make_ndx). Aborting.")
+        return False
 
+    # Build genion command with optional neutralization
+    neutral_flag = "" if getattr(args, "no_neutral", False) else " -neutral"
+    genion_cmd = (
+        f"echo {solvent_group_number} | gmx genion -s {tpr_file} -o {ions_output} -p {topology_file} "
+        f"-pname {args.cation} -nname {args.anion}{neutral_flag}"
+    )
     if not run_gromacs_command(genion_cmd, "genion", genion_log):
         return False
-    
-    # Cleanup
-    temp_files = ["minimal.mdp", "mdout.mdp", tpr_file]
-    for temp_file in temp_files:
+
+    # Cleanup temporary files
+    for temp_file in ["minimal.mdp", "mdout.mdp", tpr_file]:
         if os.path.exists(temp_file):
             os.remove(temp_file)
-    
+
+    # Summary
     print(f"\n{'='*60}")
     print("✓ GROMACS AUTOMATION COMPLETED SUCCESSFULLY!")
     print(f"{'='*60}")
-    print(f"Final output files:")
+    print("Final output files:")
     print(f"- Topology: {topology_file}")
     print(f"- Final structure: {ions_output}")
-    print(f"- Intermediate structures: {stem}_box.gro, {stem}_solvent.gro")
-    print(f"\nLog files:")
-    print(f"- pdb2gmx: {stem}_pdb2gmx.log")
-    print(f"- editconf: {stem}_editconf.log")
-    print(f"- solvate: {stem}_solvate.log")
-    print(f"- grompp: {stem}_grompp.log")
-    print(f"- genion: {stem}_genion.log")
-    
+    print(f"- Intermediate structures: {box_output}, {solvent_output}")
+    print("\nLog files:")
+    print(f"- pdb2gmx: {pdb2gmx_log}")
+    print(f"- editconf: {editconf_log}")
+    print(f"- solvate: {solvate_log}")
+    print(f"- grompp: {grompp_log}")
+    print(f"- genion: {genion_log}")
     return True
 
 def main():
@@ -224,6 +230,7 @@ def main():
     parser.add_argument("-wm", "--water-model", default="tip3p", help="Water model for pdb2gmx (default: tip3p)")
     parser.add_argument("-pname", "--cation", default="NA", help="Cation type (default: NA)")
     parser.add_argument("-nname", "--anion", default="CL", help="Anion type (default: CL)")
+    parser.add_argument("--no-neutral", action="store_true", help="Do not add neutralizing ions (omit -neutral in genion)")
     
     args = parser.parse_args()
     
