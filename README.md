@@ -34,16 +34,20 @@ For detailed options and configuration, see the script's help documentation.
 
 ### plot_xvg.py
 
-A command-line tool for plotting GROMACS XVG files with Matplotlib. Supports single or multiple XVG files, moving averages, multiple plot styles, and time-ordered scatter plots similar to PCA visualizations.
+A versatile command-line tool for plotting GROMACS XVG files with Matplotlib. Supports single or multiple XVG files, various plot modes (xy plots, scatter plots, histograms, correlations), moving averages, and extensive customization options.
 
 #### Features
 
+- **Multiple plot modes:**
+  - Standard XY plots with customizable styles (dots, lines, lines+dots)
+  - Scatter plots with time/frame-ordered color gradient (ideal for PCA projections)
+  - Histogram mode for distribution analysis
+  - XY correlation mode to plot two datasets against each other
 - Plot single or multiple XVG files on the same axes
-- Multiple plot styles: dots (default), lines, or lines+dots
-- Scatter mode with time/frame-ordered color gradient (ideal for PCA projections)
 - Apply moving average smoothing to time series data
-- Custom legends, titles, and axis labels
-- Save plots to various formats (PNG, PDF, SVG, etc.)
+- Custom legends, titles, axis labels, and colormaps
+- Backend selection for different display environments (Qt5Agg, TkAgg, etc.)
+- Save plots to various formats (PNG, PDF, SVG, EPS, etc.)
 - Automatically parses XVG metadata (titles, labels, legends)
 
 #### Requirements
@@ -52,6 +56,7 @@ A command-line tool for plotting GROMACS XVG files with Matplotlib. Supports sin
 
 #### Usage
 
+**Basic XY plots:**
 ```bash
 # Plot a single XVG file (default: dots)
 python plot_xvg.py energy.xvg
@@ -59,55 +64,127 @@ python plot_xvg.py energy.xvg
 # Plot with line style
 python plot_xvg.py energy.xvg --style lines
 
-# Plot with moving average smoothing
-python plot_xvg.py energy.xvg --moving-avg --window 50 --style lines
+# Plot with lines and dots
+python plot_xvg.py rmsd.xvg --style lines+dots
+```
 
+**Moving average:**
+```bash
+# Apply moving average smoothing
+python plot_xvg.py energy.xvg --moving-avg --window 50 --style lines
+```
+
+**Scatter plots (colored by time/frame order):**
+```bash
 # Scatter plot colored by frame/time order (like PCA plots)
 python plot_xvg.py pc_projection.xvg --scatter --colormap viridis
 
-# Plot multiple XVG files on the same axes
-python plot_xvg.py file1.xvg file2.xvg file3.xvg --multi
-
-# Plot with custom legends and style
-python plot_xvg.py rmsd1.xvg rmsd2.xvg --multi --legends "System A" "System B" --style lines+dots
-
-# Save plot to file
-python plot_xvg.py energy.xvg --output energy_plot.png --dpi 300
-
-# Combine options: scatter plot with custom labels saved to PDF
+# Scatter with custom colormap
 python plot_xvg.py pc1_vs_pc2.xvg --scatter --colormap plasma \\
-  --title "PC1 vs PC2" --xlabel "PC1" --ylabel "PC2" --output pca.pdf
+  --title "PC1 vs PC2" --output pca.pdf
 ```
 
-Key options:
+**Histogram mode:**
+```bash
+# Plot histogram of second column (distribution analysis)
+python plot_xvg.py rmsd.xvg --histogram --bins 50
 
+# Histogram with custom labels
+python plot_xvg.py rmsd.xvg --histogram --bins 100 \\
+  --title "RMSD Distribution" --xlabel "RMSD (nm)" --output rmsd_dist.png
+
+# Compare distributions from multiple files
+python plot_xvg.py run1.xvg run2.xvg run3.xvg --multi --histogram \\
+  --bins 40 --legends "Wild Type" "Mutant A" "Mutant B"
+```
+
+**XY correlation (plot two datasets against each other):**
+```bash
+# Plot second column of file1 vs second column of file2
+python plot_xvg.py rmsd_protein.xvg rmsd_ligand.xvg --xy-correlation
+
+# Correlation with scatter coloring by time
+python plot_xvg.py pc1.xvg pc2.xvg --xy-correlation --scatter \\
+  --title "PC1 vs PC2" --colormap coolwarm --output pc_correlation.png
+
+# Will error if files have different number of rows (validation included)
+```
+
+**Multiple files on same axes:**
+```bash
+# Plot multiple XVG files overlaid
+python plot_xvg.py file1.xvg file2.xvg file3.xvg --multi
+
+# With custom legends and style
+python plot_xvg.py rmsd1.xvg rmsd2.xvg --multi \\
+  --legends "System A" "System B" --style lines+dots
+```
+
+**Output and customization:**
+```bash
+# Save plot to file with high DPI
+python plot_xvg.py energy.xvg --output energy_plot.png --dpi 300
+
+# Custom title and labels
+python plot_xvg.py rmsd.xvg --title "Backbone RMSD" \\
+  --xlabel "Time (ns)" --ylabel "RMSD (nm)"
+
+# Specify matplotlib backend (useful for headless/remote systems)
+python plot_xvg.py --backend Qt5Agg energy.xvg
+python plot_xvg.py --backend Agg energy.xvg --output energy.png
+```
+
+#### Key Options
+
+**Input and mode:**
 - `files`: One or more XVG files to plot (positional argument)
 - `--style, -s`: Plot style - `dots` (default), `lines`, or `lines+dots`
 - `--scatter`: Enable scatter mode with color gradient by frame/time order
+- `--histogram, --hist`: Plot histogram of second column (y-values)
+- `--xy-correlation, --xycorr`: Plot y-values of file1 vs file2 (requires exactly 2 files)
+
+**Customization:**
 - `--colormap, --cmap`: Colormap for scatter mode (default: `viridis`). Options: `viridis`, `plasma`, `inferno`, `magma`, `coolwarm`, `rainbow`
-- `--moving-avg, --ma`: Apply moving average filter (only works with single dataset)
+- `--bins`: Number of bins for histogram mode (default: 50)
+- `--moving-avg, --ma`: Apply moving average filter (only for single dataset in xy mode)
 - `--window, -w`: Window size for moving average (default: 10)
-- `--multi, -m`: Plot multiple XVG files on the same axes
-- `--legends, -l`: Custom legend labels for multiple files
-- `--output, -o`: Save plot to file instead of displaying interactively
 - `--title, -t`: Custom plot title (overrides XVG title)
 - `--xlabel`: Custom x-axis label (overrides XVG label)
 - `--ylabel`: Custom y-axis label (overrides XVG label)
-- `--figsize`: Figure size in inches (default: 10 6)
-- `--dpi`: Resolution for saved figures (default: 300)
 
-Outputs:
+**Multiple files:**
+- `--multi, -m`: Plot multiple XVG files on the same axes
+- `--legends, -l`: Custom legend labels for multiple files (must match number of files)
+
+**Output:**
+- `--output, -o`: Save plot to file instead of displaying interactively
+- `--figsize WIDTH HEIGHT`: Figure size in inches (default: 10 6)
+- `--dpi`: Resolution for saved figures (default: 300)
+- `--backend, --mpl-backend`: Matplotlib backend (e.g., Qt5Agg, TkAgg, Agg)
+
+#### Outputs
 
 - Interactive plot window (if `--output` not specified)
-- Saved plot file in specified format (PNG, PDF, SVG, etc.)
+- Saved plot file in specified format (PNG, PDF, SVG, EPS, etc.)
 
-Notes:
+#### Use Cases
 
-- **Default style is `dots`** which is better for most GROMACS data (PCA, scatter plots, etc.)
-- **Scatter mode** (`--scatter`) is ideal for PCA projection plots where you want to see temporal evolution via color gradient
-- The script automatically parses XVG metadata including titles, axis labels, and data legends
-- Moving average is only applied when plotting a single dataset (not multiple columns or files)
+- **Time series analysis**: Plot energy, RMSD, RMSF, distances over time
+- **PCA visualization**: Scatter plots with time-ordered coloring for principal component projections
+- **Distribution analysis**: Histograms of RMSD, energy, angles, distances
+- **Correlation studies**: Compare two observables (e.g., protein vs ligand RMSD, PC1 vs PC2)
+- **Multi-system comparison**: Overlay multiple datasets with custom legends
+
+#### Notes
+
+- **Default style is `dots`** which works well for most GROMACS data
+- **Scatter mode** (`--scatter`) shows temporal evolution via color gradient - ideal for PCA projections
+- **Histogram mode** analyzes distributions of the second column (y-values)
+- **XY correlation mode** validates that both files have matching row counts (errors if different)
+- The script automatically parses XVG metadata (titles, axis labels, legends)
+- Moving average only applies to single datasets in standard xy plot mode
 - When using `--multi` with `--legends`, the number of legends must match the number of files
+- Use `--backend` to control display behavior (useful for remote/headless systems)
 - Scatter mode adds a colorbar showing frame/time progression for single dataset plots
 
 ### gromacs_pca.py
