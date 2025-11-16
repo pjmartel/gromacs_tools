@@ -100,14 +100,40 @@ python plot_xvg.py run1.xvg run2.xvg run3.xvg --multi --histogram \\
 
 **XY correlation (plot two datasets against each other):**
 ```bash
-# Plot second column of file1 vs second column of file2
+# 2D: Plot second column of file1 vs second column of file2
 python plot_xvg.py rmsd_protein.xvg rmsd_ligand.xvg --xy-correlation
 
-# Correlation with scatter coloring by time
+# 2D correlation with scatter coloring by time
 python plot_xvg.py pc1.xvg pc2.xvg --xy-correlation --scatter \\
   --title "PC1 vs PC2" --colormap coolwarm --output pc_correlation.png
 
+# Square aspect ratio for proper correlation visualization
+python plot_xvg.py pc1.xvg pc2.xvg --xy-correlation --aspect equal
+
+# 3D: Plot three datasets as x, y, z coordinates
+python plot_xvg.py pc1.xvg pc2.xvg pc3.xvg --xy-correlation --scatter \\
+  --title "PC1 vs PC2 vs PC3" --colormap viridis --output pc_3d.png
+
+# 3D trajectory path
+python plot_xvg.py x.xvg y.xvg z.xvg --xy-correlation --style lines \\
+  --aspect equal --title "3D Trajectory"
+
 # Will error if files have different number of rows (validation included)
+```
+
+**Marker size and aspect ratio control:**
+```bash
+# Adjust marker/dot size for dense data
+python plot_xvg.py trajectory.xvg --markersize 1 --style dots
+
+# Larger markers for visibility
+python plot_xvg.py sparse_data.xvg --markersize 6
+
+# Square plot for correlation analysis
+python plot_xvg.py data.xvg --aspect equal
+
+# Custom aspect ratio (width/height)
+python plot_xvg.py data.xvg --aspect 1.5
 ```
 
 **Multiple files on same axes:**
@@ -141,11 +167,18 @@ python plot_xvg.py --backend Agg energy.xvg --output energy.png
 - `--style, -s`: Plot style - `dots` (default), `lines`, or `lines+dots`
 - `--scatter`: Enable scatter mode with color gradient by frame/time order
 - `--histogram, --hist`: Plot histogram of second column (y-values)
-- `--xy-correlation, --xycorr`: Plot y-values of file1 vs file2 (requires exactly 2 files)
+- `--xy-correlation, --xycorr`: Plot y-values from files as coordinates
+  - 2 files: 2D correlation plot (x from file1, y from file2)
+  - 3 files: 3D correlation plot (x, y, z from file1, file2, file3)
 
 **Customization:**
 - `--colormap, --cmap`: Colormap for scatter mode (default: `viridis`). Options: `viridis`, `plasma`, `inferno`, `magma`, `coolwarm`, `rainbow`
 - `--bins`: Number of bins for histogram mode (default: 50)
+- `--markersize, --ms`: Size of markers/dots (default: 3.0). Smaller for dense data (1-2), larger for visibility (4-6)
+- `--aspect`: Aspect ratio of plot axes
+  - `equal`: 1:1 square aspect (perfect for correlations)
+  - `auto`: Default matplotlib behavior
+  - Numeric (e.g., `1.5`): Custom width/height ratio
 - `--moving-avg, --ma`: Apply moving average filter (only for single dataset in xy mode)
 - `--window, -w`: Window size for moving average (default: 10)
 - `--title, -t`: Custom plot title (overrides XVG title)
@@ -170,22 +203,38 @@ python plot_xvg.py --backend Agg energy.xvg --output energy.png
 #### Use Cases
 
 - **Time series analysis**: Plot energy, RMSD, RMSF, distances over time
-- **PCA visualization**: Scatter plots with time-ordered coloring for principal component projections
+- **PCA visualization**: 
+  - 2D: Scatter plots with time-ordered coloring for PC1 vs PC2
+  - 3D: Interactive 3D plots for PC1 vs PC2 vs PC3 conformational space
 - **Distribution analysis**: Histograms of RMSD, energy, angles, distances
-- **Correlation studies**: Compare two observables (e.g., protein vs ligand RMSD, PC1 vs PC2)
+- **2D correlation studies**: Compare two observables (e.g., protein vs ligand RMSD)
+- **3D correlation studies**: Explore three observables simultaneously (e.g., three distances, PC1-PC2-PC3)
+- **3D trajectories**: Visualize center-of-mass motion or particle tracking in 3D space
 - **Multi-system comparison**: Overlay multiple datasets with custom legends
+- **Publication figures**: Control marker size, aspect ratio, DPI for journal-quality plots
 
 #### Notes
 
 - **Default style is `dots`** which works well for most GROMACS data
 - **Scatter mode** (`--scatter`) shows temporal evolution via color gradient - ideal for PCA projections
 - **Histogram mode** analyzes distributions of the second column (y-values)
-- **XY correlation mode** validates that both files have matching row counts (errors if different)
+- **XY correlation mode** supports both 2D (2 files) and 3D (3 files) plots:
+  - Validates that all files have matching row counts (errors if different)
+  - 3D plots are interactive: rotate, zoom, and pan to explore data
+  - Use `--aspect equal` for proper geometric scaling in correlation/PCA plots
+- **Marker size** (`--markersize`):
+  - Dense data with many points: 1-2
+  - Default/medium: 3 (current default)
+  - Sparse data or presentations: 4-6
+- **Aspect ratio** (`--aspect`):
+  - Use `equal` for correlation plots where x and y have the same units
+  - Critical for PC1 vs PC2 plots to see true geometric relationships
+  - For 3D plots with `equal`, creates cube-like scaling
 - The script automatically parses XVG metadata (titles, axis labels, legends)
 - Moving average only applies to single datasets in standard xy plot mode
 - When using `--multi` with `--legends`, the number of legends must match the number of files
 - Use `--backend` to control display behavior (useful for remote/headless systems)
-- Scatter mode adds a colorbar showing frame/time progression for single dataset plots
+- Scatter mode adds a colorbar showing frame/time progression
 
 ### gromacs_pca.py
 
