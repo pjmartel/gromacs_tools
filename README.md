@@ -118,6 +118,16 @@ python plot_xvg.py pc1.xvg pc2.xvg pc3.xvg --xy-correlation --scatter \\
 python plot_xvg.py x.xvg y.xvg z.xvg --xy-correlation --style lines \\
   --aspect equal --title "3D Trajectory"
 
+# Multiple 2D correlations on same plot (different color per dataset)
+python plot_xvg.py rmsd1a.xvg rmsd2a.xvg rmsd1b.xvg rmsd2b.xvg \\
+  --xy-correlation --multi --legends "System A" "System B" \\
+  --title "RMSD Correlations"
+
+# Multiple 3D correlations overlaid
+python plot_xvg.py pc1a.xvg pc2a.xvg pc3a.xvg pc1b.xvg pc2b.xvg pc3b.xvg \\
+  --xy-correlation --multi --style lines \\
+  --legends "Wild Type" "Mutant" --title "PC Space Comparison"
+
 # Will error if files have different number of rows (validation included)
 ```
 
@@ -170,6 +180,7 @@ python plot_xvg.py --backend Agg energy.xvg --output energy.png
 - `--xy-correlation, --xycorr`: Plot y-values from files as coordinates
   - 2 files: 2D correlation plot (x from file1, y from file2)
   - 3 files: 3D correlation plot (x, y, z from file1, file2, file3)
+  - With `--multi`: overlay multiple correlations (pairs or triplets) with different colors
 
 **Customization:**
 - `--colormap, --cmap`: Colormap for scatter mode (default: `viridis`). Options: `viridis`, `plasma`, `inferno`, `magma`, `coolwarm`, `rainbow`
@@ -187,7 +198,11 @@ python plot_xvg.py --backend Agg energy.xvg --output energy.png
 
 **Multiple files:**
 - `--multi, -m`: Plot multiple XVG files on the same axes
-- `--legends, -l`: Custom legend labels for multiple files (must match number of files)
+  - Standard mode: each file is plotted as a separate series
+  - With `--xy-correlation`: expects pairs (2D) or triplets (3D) of files
+- `--legends, -l`: Custom legend labels
+  - Standard/histogram mode: must match number of files
+  - XY correlation with `--multi`: must match number of correlation sets (pairs/triplets)
 
 **Output:**
 - `--output, -o`: Save plot to file instead of displaying interactively
@@ -207,8 +222,13 @@ python plot_xvg.py --backend Agg energy.xvg --output energy.png
   - 2D: Scatter plots with time-ordered coloring for PC1 vs PC2
   - 3D: Interactive 3D plots for PC1 vs PC2 vs PC3 conformational space
 - **Distribution analysis**: Histograms of RMSD, energy, angles, distances
-- **2D correlation studies**: Compare two observables (e.g., protein vs ligand RMSD)
-- **3D correlation studies**: Explore three observables simultaneously (e.g., three distances, PC1-PC2-PC3)
+- **Single correlation studies**: 
+  - 2D: Compare two observables (e.g., protein vs ligand RMSD)
+  - 3D: Explore three observables simultaneously (e.g., three distances, PC1-PC2-PC3)
+- **Multiple correlation studies**: Overlay correlation plots from different systems
+  - Compare WT vs mutant in PC space
+  - Multiple replicas or conditions on same correlation plot
+  - Different color for each dataset
 - **3D trajectories**: Visualize center-of-mass motion or particle tracking in 3D space
 - **Multi-system comparison**: Overlay multiple datasets with custom legends
 - **Publication figures**: Control marker size, aspect ratio, DPI for journal-quality plots
@@ -219,6 +239,9 @@ python plot_xvg.py --backend Agg energy.xvg --output energy.png
 - **Scatter mode** (`--scatter`) shows temporal evolution via color gradient - ideal for PCA projections
 - **Histogram mode** analyzes distributions of the second column (y-values)
 - **XY correlation mode** supports both 2D (2 files) and 3D (3 files) plots:
+  - Single correlation: 2 or 3 files for one correlation plot
+  - Multiple correlations with `--multi`: 4, 6, 8... files (pairs) or 6, 9, 12... files (triplets)
+  - Each correlation set gets a different color (no time-based coloring in multi mode)
   - Validates that all files have matching row counts (errors if different)
   - 3D plots are interactive: rotate, zoom, and pan to explore data
   - Use `--aspect equal` for proper geometric scaling in correlation/PCA plots
@@ -232,9 +255,11 @@ python plot_xvg.py --backend Agg energy.xvg --output energy.png
   - For 3D plots with `equal`, creates cube-like scaling
 - The script automatically parses XVG metadata (titles, axis labels, legends)
 - Moving average only applies to single datasets in standard xy plot mode
-- When using `--multi` with `--legends`, the number of legends must match the number of files
+- When using `--legends`:
+  - Standard mode: number of legends must match number of files
+  - Multi-correlation mode: number of legends must match number of correlation sets
 - Use `--backend` to control display behavior (useful for remote/headless systems)
-- Scatter mode adds a colorbar showing frame/time progression
+- Scatter mode adds a colorbar showing frame/time progression (single correlations only)
 
 ### gromacs_pca.py
 
