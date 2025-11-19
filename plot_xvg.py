@@ -74,7 +74,7 @@ def parse_xvg(filename):
 
 def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots', 
              scatter_colormap='viridis', use_scatter=False, use_histogram=False, 
-             hist_bins=50, markersize=3):
+             hist_bins=50, markersize=3, start_row=None, end_row=None):
     """Plot a single XVG file and return (fig, ax) without displaying.
 
     The previous implementation called plt.show() internally which prevented
@@ -89,8 +89,17 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
         Number of bins for histogram (default: 50).
     markersize : float
         Size of markers/dots in plots (default: 3).
+    start_row : int or None
+        First data row to include (0-indexed). If None, start from beginning.
+    end_row : int or None
+        Last data row to include (exclusive, 0-indexed). If None, include until end.
     """
     data_columns, legends, labels = parse_xvg(filename)
+    
+    # Apply row slicing to all columns
+    if start_row is not None or end_row is not None:
+        data_columns = [list(col)[start_row:end_row] for col in data_columns]
+    
     x = data_columns[0]
     num_datasets = len(data_columns) - 1
 
@@ -151,9 +160,15 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
 # shared ax variable (should replace the plot_xvg, but it is not completely tested)
 def plot_xvg_multi(filename, show_moving_avg=False, window_size=10, ax=None, 
                    custom_legend=None, style='dots', scatter_colormap='viridis', 
-                   use_scatter=False, use_histogram=False, hist_bins=50, markersize=3):
+                   use_scatter=False, use_histogram=False, hist_bins=50, markersize=3,
+                   start_row=None, end_row=None):
 
     data_columns, legends, labels = parse_xvg(filename)
+    
+    # Apply row slicing to all columns
+    if start_row is not None or end_row is not None:
+        data_columns = [list(col)[start_row:end_row] for col in data_columns]
+    
     x = data_columns[0]
     num_datasets = len(data_columns) - 1
 
@@ -248,6 +263,15 @@ Examples:
   %(prog)s pc1a.xvg pc2a.xvg pc3a.xvg pc1b.xvg pc2b.xvg pc3b.xvg \\
     --xy-correlation --multi --legends "Trajectory A" "Trajectory B"
   
+  # Plot only frames 100-500 (view specific simulation portion)
+  %(prog)s rmsd.xvg --start 100 --end 500 --style lines
+  
+  # Plot from frame 1000 onwards (exclude equilibration)
+  %(prog)s energy.xvg --start 1000 --style lines
+  
+  # Plot up to frame 2000 (early trajectory portion)
+  %(prog)s trajectory.xvg --end 2000 --scatter
+  
   # Plot multiple XVG files on the same axes
   %(prog)s file1.xvg file2.xvg file3.xvg --multi
   
@@ -336,6 +360,14 @@ Examples:
                              'Note: must be provided before other options to take effect; '
                              'this script reads it early to configure Matplotlib before importing pyplot.')
     
+    parser.add_argument('--start', type=int, default=None,
+                        help='First data row to plot (0-indexed). Allows viewing specific '
+                             'portions of trajectories. If omitted, starts from beginning.')
+    
+    parser.add_argument('--end', type=int, default=None,
+                        help='Last data row to plot (exclusive, 0-indexed). Allows viewing '
+                             'specific portions of trajectories. If omitted, includes until end.')
+    
     args = parser.parse_args()
     
     # Validate inputs
@@ -393,6 +425,11 @@ Examples:
                         
                         data1_columns, legends1, labels1 = parse_xvg(file1)
                         data2_columns, legends2, labels2 = parse_xvg(file2)
+                        
+                        # Apply row slicing
+                        if args.start is not None or args.end is not None:
+                            data1_columns = [list(col)[args.start:args.end] for col in data1_columns]
+                            data2_columns = [list(col)[args.start:args.end] for col in data2_columns]
                         
                         y1 = data1_columns[1]
                         y2 = data2_columns[1]
@@ -463,6 +500,12 @@ Examples:
                         data1_columns, legends1, labels1 = parse_xvg(file1)
                         data2_columns, legends2, labels2 = parse_xvg(file2)
                         data3_columns, legends3, labels3 = parse_xvg(file3)
+                        
+                        # Apply row slicing
+                        if args.start is not None or args.end is not None:
+                            data1_columns = [list(col)[args.start:args.end] for col in data1_columns]
+                            data2_columns = [list(col)[args.start:args.end] for col in data2_columns]
+                            data3_columns = [list(col)[args.start:args.end] for col in data3_columns]
                         
                         y1 = data1_columns[1]
                         y2 = data2_columns[1]
@@ -543,6 +586,11 @@ Examples:
                 data1_columns, legends1, labels1 = parse_xvg(args.files[0])
                 data2_columns, legends2, labels2 = parse_xvg(args.files[1])
                 
+                # Apply row slicing
+                if args.start is not None or args.end is not None:
+                    data1_columns = [list(col)[args.start:args.end] for col in data1_columns]
+                    data2_columns = [list(col)[args.start:args.end] for col in data2_columns]
+                
                 # Validate that both files have the same number of data points
                 y1 = data1_columns[1]  # second column (y-values) from file 1
                 y2 = data2_columns[1]  # second column (y-values) from file 2
@@ -602,6 +650,12 @@ Examples:
                 data1_columns, legends1, labels1 = parse_xvg(args.files[0])
                 data2_columns, legends2, labels2 = parse_xvg(args.files[1])
                 data3_columns, legends3, labels3 = parse_xvg(args.files[2])
+                
+                # Apply row slicing
+                if args.start is not None or args.end is not None:
+                    data1_columns = [list(col)[args.start:args.end] for col in data1_columns]
+                    data2_columns = [list(col)[args.start:args.end] for col in data2_columns]
+                    data3_columns = [list(col)[args.start:args.end] for col in data3_columns]
                 
                 # Extract second columns
                 y1 = data1_columns[1]
@@ -670,7 +724,8 @@ Examples:
             # Single file mode (deferred display)
             fig, ax = plot_xvg(args.files[0], show_moving_avg=args.moving_avg, window_size=args.window,
                                style=args.style, scatter_colormap=args.colormap, use_scatter=args.scatter,
-                               use_histogram=args.histogram, hist_bins=args.bins, markersize=args.markersize)
+                               use_histogram=args.histogram, hist_bins=args.bins, markersize=args.markersize,
+                               start_row=args.start, end_row=args.end)
 
             # Apply custom labels if provided (override XVG metadata)
             if args.title:
@@ -702,7 +757,8 @@ Examples:
                              window_size=args.window, ax=ax, custom_legend=custom_legend,
                              style=args.style, scatter_colormap=args.colormap, 
                              use_scatter=args.scatter, use_histogram=args.histogram,
-                             hist_bins=args.bins, markersize=args.markersize)
+                             hist_bins=args.bins, markersize=args.markersize,
+                             start_row=args.start, end_row=args.end)
             
             # Apply custom labels if provided
             if args.title:

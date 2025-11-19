@@ -170,6 +170,21 @@ python plot_xvg.py --backend Qt5Agg energy.xvg
 python plot_xvg.py --backend Agg energy.xvg --output energy.png
 ```
 
+**Trajectory slicing (view specific portions):**
+```bash
+# Plot only frames 100-500 (exclude equilibration and late trajectory)
+python plot_xvg.py rmsd.xvg --start 100 --end 500 --style lines
+
+# Plot from frame 1000 onwards (skip equilibration period)
+python plot_xvg.py energy.xvg --start 1000 --style lines
+
+# Plot up to frame 2000 (early trajectory analysis)
+python plot_xvg.py trajectory.xvg --end 2000 --scatter
+
+# Combine slicing with other options
+python plot_xvg.py rmsd.xvg --start 500 --end 2000 --moving-avg --window 50
+```
+
 #### Key Options
 
 **Input and mode:**
@@ -195,6 +210,12 @@ python plot_xvg.py --backend Agg energy.xvg --output energy.png
 - `--title, -t`: Custom plot title (overrides XVG title)
 - `--xlabel`: Custom x-axis label (overrides XVG label)
 - `--ylabel`: Custom y-axis label (overrides XVG label)
+
+**Data slicing:**
+- `--start`: First data row to plot (0-indexed). Allows viewing specific trajectory portions by skipping initial frames
+- `--end`: Last data row to plot (exclusive, 0-indexed). Allows viewing specific trajectory portions by limiting to early frames
+- These options work with all plot modes (single, multi, correlation, histogram, etc.)
+- Useful for excluding equilibration, focusing on specific time windows, or comparing trajectory segments
 
 **Multiple files:**
 - `--multi, -m`: Plot multiple XVG files on the same axes
@@ -231,6 +252,11 @@ python plot_xvg.py --backend Agg energy.xvg --output energy.png
   - Different color for each dataset
 - **3D trajectories**: Visualize center-of-mass motion or particle tracking in 3D space
 - **Multi-system comparison**: Overlay multiple datasets with custom legends
+- **Trajectory slicing**: Analyze specific simulation segments
+  - Exclude equilibration period using `--start`
+  - Focus on early/late trajectory portions using `--start` and `--end`
+  - Compare different time windows from same trajectory
+  - Production run analysis (skip equilibration frames)
 - **Publication figures**: Control marker size, aspect ratio, DPI for journal-quality plots
 
 #### Notes
@@ -254,6 +280,12 @@ python plot_xvg.py --backend Agg energy.xvg --output energy.png
   - Critical for PC1 vs PC2 plots to see true geometric relationships
   - For 3D plots with `equal`, creates cube-like scaling
 - The script automatically parses XVG metadata (titles, axis labels, legends)
+- **Data slicing** (`--start` and `--end`):
+  - Row indices are 0-based (first data row is 0)
+  - `--end` is exclusive (like Python slicing)
+  - Works with all modes: single, multi, correlation, histogram, scatter
+  - Applied after parsing, before plotting (preserves file integrity)
+  - Useful for equilibration removal, time window analysis, or reducing plot density
 - Moving average only applies to single datasets in standard xy plot mode
 - When using `--legends`:
   - Standard mode: number of legends must match number of files
