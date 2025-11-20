@@ -40,16 +40,34 @@ def log_command_to_script(command, comment=None):
             f.write(f"\n# {comment}\n")
         f.write(f"{command}\n")
 
-def run_gromacs_command(command, description, log_filename):
-    """Run a GROMACS command, capture output to log file, and handle errors"""
+def run_gromacs_command(command, description, log_filename, dry_run=False):
+    """Run a GROMACS command, capture output to log file, and handle errors
+    
+    Parameters
+    ----------
+    command : str
+        The command to execute
+    description : str
+        Human-readable description of the command
+    log_filename : str
+        Path to log file for output
+    dry_run : bool
+        If True, only log the command without executing it
+    """
     print(f"\n{'='*50}")
-    print(f"Running: {description}")
+    print(f"{'[DRY RUN] ' if dry_run else ''}Running: {description}")
     print(f"Command: {command}")
-    print(f"Log file: {log_filename}")
+    if not dry_run:
+        print(f"Log file: {log_filename}")
     print(f"{'='*50}")
     
     # Log to reproducibility script
     log_command_to_script(command, description)
+    
+    # In dry-run mode, skip execution
+    if dry_run:
+        print("[DRY RUN] Command logged but not executed")
+        return True
     
     # Write command and timestamp to log file
     with open(log_filename, 'w') as log_file:
@@ -126,11 +144,17 @@ def automate_gromacs(args):
     args : argparse.Namespace
         Parsed command-line arguments containing at least:
         pdb_file, forcefield, water_model, box_type, box_distance,
-        solvent_file, cation, anion.
+        solvent_file, cation, anion, dry_run.
     """
     # Initialize command logging script
     commands_file = Path.cwd() / "commands.sh"
     set_command_script_path(commands_file)
+    
+    if args.dry_run:
+        print(f"\n{'='*60}")
+        print("DRY RUN MODE: Commands will be logged but not executed")
+        print(f"{'='*60}")
+    
     print(f"\nAll GROMACS commands will be logged to: {commands_file}")
 
     # Derive stem from input pdb file
@@ -145,7 +169,7 @@ def automate_gromacs(args):
         f"gmx pdb2gmx -f {args.pdb_file} -o {gro_output} -p {topology_file} "
         f"-ff {args.forcefield} -water {args.water_model}"
     )
-    if not run_gromacs_command(pdb2gmx_cmd, "pdb2gmx", pdb2gmx_log):
+    if not run_gromacs_command(pdb2gmx_cmd, "pdb2gmx", pdb2gmx_log, dry_run=args.dry_run):
         return False
 
     # Step 2: editconf (define box)
@@ -155,7 +179,7 @@ def automate_gromacs(args):
         f"gmx editconf -f {gro_output} -o {box_output} -c -d {args.box_distance} "
         f"-bt {args.box_type}"
     )
-    if not run_gromacs_command(editconf_cmd, "editconf", editconf_log):
+    if not run_gromacs_command(editconf_cmd, "editconf", editconf_log, dry_run=args.dry_run):
         return False
 
     # Step 3: solvate
@@ -165,7 +189,7 @@ def automate_gromacs(args):
         f"gmx solvate -cp {box_output} -cs {args.solvent_file} -o {solvent_output} "
         f"-p {topology_file}"
     )
-    if not run_gromacs_command(solvate_cmd, "solvate", solvate_log):
+    if not run_gromacs_command(solvate_cmd, "solvate", solvate_log, dry_run=args.dry_run):
         return False
 
     # Step 4: prepare for ion addition (minimal mdp + grompp)
@@ -179,16 +203,23 @@ def automate_gromacs(args):
     grompp_cmd = (
         f"gmx grompp -f minimal.mdp -c {solvent_output} -p {topology_file} -o {tpr_file}"
     )
-    if not run_gromacs_command(grompp_cmd, "grompp", grompp_log):
+    if not run_gromacs_command(grompp_cmd, "grompp", grompp_log, dry_run=args.dry_run):
         return False
 
     # Step 5: genion (determine solvent group dynamically)
     ions_output = f"{stem}_ions.gro"
     genion_log = f"{stem}_genion.log"
-    solvent_group_number = get_solvent_group_number(tpr_file)
-    if not solvent_group_number:
-        print("Error: Could not detect SOL group in index (from make_ndx). Aborting.")
-        return False
+    
+    # In dry-run mode, use placeholder for solvent group number
+    if args.dry_run:
+        solvent_group_number = "SOL_GROUP"  # Placeholder for dry-run
+        print("[DRY RUN] Using placeholder 'SOL_GROUP' for solvent group number")
+        log_command_to_script("", "NOTE: Replace SOL_GROUP below with actual solvent group number from 'gmx make_ndx'")
+    else:
+        solvent_group_number = get_solvent_group_number(tpr_file)
+        if not solvent_group_number:
+            print("Error: Could not detect SOL group in index (from make_ndx). Aborting.")
+            return False
 
     # Build genion command with optional neutralization
     neutral_flag = "" if getattr(args, "no_neutral", False) else " -neutral"
@@ -196,28 +227,37 @@ def automate_gromacs(args):
         f"echo {solvent_group_number} | gmx genion -s {tpr_file} -o {ions_output} -p {topology_file} "
         f"-pname {args.cation} -nname {args.anion}{neutral_flag}"
     )
-    if not run_gromacs_command(genion_cmd, "genion", genion_log):
+    if not run_gromacs_command(genion_cmd, "genion", genion_log, dry_run=args.dry_run):
         return False
 
-    # Cleanup temporary files
-    for temp_file in ["minimal.mdp", "mdout.mdp", tpr_file]:
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
+    # Cleanup temporary files (skip in dry-run mode)
+    if not args.dry_run:
+        for temp_file in ["minimal.mdp", "mdout.mdp", tpr_file]:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
 
     # Summary
     print(f"\n{'='*60}")
-    print("✓ GROMACS AUTOMATION COMPLETED SUCCESSFULLY!")
-    print(f"{'='*60}")
-    print("Final output files:")
-    print(f"- Topology: {topology_file}")
-    print(f"- Final structure: {ions_output}")
-    print(f"- Intermediate structures: {box_output}, {solvent_output}")
-    print("\nLog files:")
-    print(f"- pdb2gmx: {pdb2gmx_log}")
-    print(f"- editconf: {editconf_log}")
-    print(f"- solvate: {solvate_log}")
-    print(f"- grompp: {grompp_log}")
-    print(f"- genion: {genion_log}")
+    if args.dry_run:
+        print("✓ DRY RUN COMPLETED SUCCESSFULLY!")
+        print(f"{'='*60}")
+        print(f"\nCommands have been written to: {commands_file}")
+        print("\nTo execute the pipeline, run:")
+        print(f"  bash {commands_file}")
+        print("\nOr run this script without --dry-run")
+    else:
+        print("✓ GROMACS AUTOMATION COMPLETED SUCCESSFULLY!")
+        print(f"{'='*60}")
+        print("Final output files:")
+        print(f"- Topology: {topology_file}")
+        print(f"- Final structure: {ions_output}")
+        print(f"- Intermediate structures: {box_output}, {solvent_output}")
+        print("\nLog files:")
+        print(f"- pdb2gmx: {pdb2gmx_log}")
+        print(f"- editconf: {editconf_log}")
+        print(f"- solvate: {solvate_log}")
+        print(f"- grompp: {grompp_log}")
+        print(f"- genion: {genion_log}")
     return True
 
 def main():
@@ -231,6 +271,7 @@ def main():
     parser.add_argument("-pname", "--cation", default="NA", help="Cation type (default: NA)")
     parser.add_argument("-nname", "--anion", default="CL", help="Anion type (default: CL)")
     parser.add_argument("--no-neutral", action="store_true", help="Do not add neutralizing ions (omit -neutral in genion)")
+    parser.add_argument("--dry-run", action="store_true", help="Generate commands.sh without executing commands (dry-run mode)")
     
     args = parser.parse_args()
     

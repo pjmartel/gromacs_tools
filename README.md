@@ -11,26 +11,76 @@ A comprehensive preparation script for GROMACS molecular dynamics simulations. T
 #### Features
 
 - Automatic protein/ligand structure preparation
-- Topology generation
+- Topology generation (pdb2gmx)
 - System solvation and ionization
-- Energy minimization
-- NVT and NPT equilibration
-- Production MD setup
+- Box definition (editconf)
+- Water addition (solvate)
+- Ion addition for neutralization (genion)
 - Comprehensive error handling and logging
+- Command logging to `commands.sh` for reproducibility
+- **Dry-run mode**: Generate command script without execution
 
 #### Requirements
 
 - Python 3.x
 - GROMACS (tested with version 2021 or later)
-- Required Python packages: (add your dependencies here)
 
 #### Usage
 
+**Basic usage:**
 ```bash
-python gromacs_prepare.py [options]
+# Run the full preparation pipeline
+python gromacs_prepare.py protein.pdb
+
+# With custom force field and water model
+python gromacs_prepare.py protein.pdb --forcefield amber99sb-ildn --water-model tip4p
+
+# Custom box size and type
+python gromacs_prepare.py protein.pdb --box-distance 1.5 --box-type dodecahedron
+
+# Specify ion types
+python gromacs_prepare.py protein.pdb --cation K --anion CL
 ```
 
-For detailed options and configuration, see the script's help documentation.
+**Dry-run mode:**
+```bash
+# Generate commands.sh without executing (preview workflow)
+python gromacs_prepare.py protein.pdb --dry-run
+
+# Then execute the generated script when ready
+bash commands.sh
+
+# Dry-run with custom parameters
+python gromacs_prepare.py protein.pdb --dry-run \
+  --forcefield charmm27 --box-distance 1.2 --water-model tip3p
+```
+
+**Command-line options:**
+- `pdb_file`: Input PDB file (required)
+- `-ff, --forcefield`: Force field (default: charmm27)
+- `-d, --box-distance`: Distance to box wall in nm (default: 1.0)
+- `-bt, --box-type`: Box type - cubic, triclinic, dodecahedron, octahedron (default: cubic)
+- `-cs, --solvent-file`: Solvent configuration file (default: spc216.gro)
+- `-wm, --water-model`: Water model for pdb2gmx (default: tip3p)
+- `-pname, --cation`: Cation type (default: NA)
+- `-nname, --anion`: Anion type (default: CL)
+- `--no-neutral`: Skip neutralizing ion addition
+- `--dry-run`: Generate commands.sh without executing commands
+
+**Outputs:**
+- Topology file: `{basename}.top`
+- Final structure with ions: `{basename}_ions.gro`
+- Intermediate structures: `{basename}_box.gro`, `{basename}_solvent.gro`
+- Log files: `{basename}_pdb2gmx.log`, `{basename}_editconf.log`, etc.
+- **Command script**: `commands.sh` (reproducible workflow)
+
+**Dry-run mode benefits:**
+- Preview all commands before execution
+- Review parameters and file names
+- Manual editing of commands if needed
+- Share workflow with collaborators
+- Learn GROMACS command syntax
+- Safe testing of parameters
 
 ### plot_xvg.py
 
