@@ -181,6 +181,41 @@ python plot_xvg.py pc1a.xvg pc2a.xvg pc3a.xvg pc1b.xvg pc2b.xvg pc3b.xvg \\
 # Will error if files have different number of rows (validation included)
 ```
 
+**Explicit dimensionality control for multi-correlation plots:**
+```bash
+# Ambiguous case: 6 files could be 3 pairs (2D) OR 2 triplets (3D)
+# Without flags, auto-detection prefers 3D (defaults to 2 triplets)
+
+# Force 2D mode: 6 files as 3 pairs of 2D correlations
+python plot_xvg.py file1.xvg file2.xvg file3.xvg file4.xvg file5.xvg file6.xvg \\
+  --xy-correlation --multi --2d \\
+  --legends "Pair A" "Pair B" "Pair C"
+
+# Force 3D mode: 6 files as 2 triplets of 3D correlations
+python plot_xvg.py file1.xvg file2.xvg file3.xvg file4.xvg file5.xvg file6.xvg \\
+  --xy-correlation --multi --3d \\
+  --legends "Triplet A" "Triplet B"
+
+# Auto-detect (no flags): prefers 3D when divisible by 3
+python plot_xvg.py file1.xvg file2.xvg file3.xvg file4.xvg file5.xvg file6.xvg \\
+  --xy-correlation --multi \\
+  --legends "Default A" "Default B"  # Interpreted as 2 triplets (3D)
+
+# Real example: Multiple protein-ligand RMSD correlations (2D)
+python plot_xvg.py prot1.xvg lig1.xvg prot2.xvg lig2.xvg prot3.xvg lig3.xvg \\
+  --xy-correlation --multi --2d \\
+  --legends "System 1" "System 2" "System 3" \\
+  --title "Protein vs Ligand RMSD (3 Systems)" \\
+  --xlabel "Protein RMSD (nm)" --ylabel "Ligand RMSD (nm)"
+
+# Real example: PC space comparison across conditions (3D)
+python plot_xvg.py pc1_wt.xvg pc2_wt.xvg pc3_wt.xvg \\
+                   pc1_mut.xvg pc2_mut.xvg pc3_mut.xvg \\
+  --xy-correlation --multi --3d --scatter \\
+  --legends "Wild Type" "Mutant" \\
+  --title "Conformational Space Comparison"
+```
+
 **Marker size and aspect ratio control:**
 ```bash
 # Adjust marker/dot size for dense data
@@ -246,6 +281,15 @@ python plot_xvg.py rmsd.xvg --start 500 --end 2000 --moving-avg --window 50
   - 2 files: 2D correlation plot (x from file1, y from file2)
   - 3 files: 3D correlation plot (x, y, z from file1, file2, file3)
   - With `--multi`: overlay multiple correlations (pairs or triplets) with different colors
+- `--2d`: Force 2D correlation mode (requires `--xy-correlation`)
+  - Treats files as pairs (x, y) for 2D correlation plots
+  - File count must be even
+  - Useful when file count is ambiguous (e.g., 6 files = 3 pairs vs 2 triplets)
+- `--3d`: Force 3D correlation mode (requires `--xy-correlation`)
+  - Treats files as triplets (x, y, z) for 3D correlation plots
+  - File count must be divisible by 3
+  - Useful when file count is ambiguous (e.g., 6 files = 3 pairs vs 2 triplets)
+  - Cannot use both `--2d` and `--3d` simultaneously
 
 **Customization:**
 - `--colormap, --cmap`: Colormap for scatter mode (default: `viridis`). Options: `viridis`, `plasma`, `inferno`, `magma`, `coolwarm`, `rainbow`
@@ -321,6 +365,16 @@ python plot_xvg.py rmsd.xvg --start 500 --end 2000 --moving-avg --window 50
   - Validates that all files have matching row counts (errors if different)
   - 3D plots are interactive: rotate, zoom, and pan to explore data
   - Use `--aspect equal` for proper geometric scaling in correlation/PCA plots
+  - **Auto-detection**: When file count is ambiguous (divisible by both 2 and 3, like 6):
+    - Without flags: prefers 3D (e.g., 6 files → 2 triplets)
+    - Use `--2d` to force 2D mode (e.g., 6 files → 3 pairs)
+    - Use `--3d` to force 3D mode (e.g., 6 files → 2 triplets, explicitly)
+  - **Explicit dimensionality** (`--2d` or `--3d`):
+    - Resolves ambiguous cases where file count could be interpreted either way
+    - Only valid with `--xy-correlation` flag
+    - Cannot use both `--2d` and `--3d` together
+    - `--2d` requires even number of files
+    - `--3d` requires files divisible by 3
 - **Marker size** (`--markersize`):
   - Dense data with many points: 1-2
   - Default/medium: 3 (current default)

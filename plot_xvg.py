@@ -263,6 +263,14 @@ Examples:
   %(prog)s pc1a.xvg pc2a.xvg pc3a.xvg pc1b.xvg pc2b.xvg pc3b.xvg \\
     --xy-correlation --multi --legends "Trajectory A" "Trajectory B"
   
+  # Explicit 2D mode: 6 files as 3 pairs (not 2 triplets)
+  %(prog)s r1a.xvg r2a.xvg r1b.xvg r2b.xvg r1c.xvg r2c.xvg \\
+    --xy-correlation --multi --2d --legends "Set A" "Set B" "Set C"
+  
+  # Explicit 3D mode: 6 files as 2 triplets (not 3 pairs)
+  %(prog)s x1.xvg y1.xvg z1.xvg x2.xvg y2.xvg z2.xvg \\
+    --xy-correlation --multi --3d --legends "Traj 1" "Traj 2"
+  
   # Plot only frames 100-500 (view specific simulation portion)
   %(prog)s rmsd.xvg --start 100 --end 500 --style lines
   
@@ -311,7 +319,18 @@ Examples:
                         help='Plot second column of first file vs second column of second file. '
                              'For 2 files: 2D correlation. For 3 files: 3D correlation (x, y, z). '
                              'With --multi: expects pairs (2D) or triplets (3D) of files to overlay. '
+                             'Use --2d or --3d to explicitly specify dimensionality when ambiguous. '
                              'Useful for correlation analysis (e.g., RMSD1 vs RMSD2, PC1 vs PC2).')
+    
+    parser.add_argument('--2d', action='store_true',
+                        help='Force 2D correlation mode (plot file pairs as x vs y). '
+                             'Use with --xy-correlation --multi to explicitly request 2D correlations '
+                             'when number of files is ambiguous (e.g., 6 files = 3 pairs, not 2 triplets).')
+    
+    parser.add_argument('--3d', action='store_true',
+                        help='Force 3D correlation mode (plot file triplets as x, y, z). '
+                             'Use with --xy-correlation --multi to explicitly request 3D correlations '
+                             'when number of files is ambiguous (e.g., 6 files = 2 triplets, not 3 pairs).')
     
     parser.add_argument('--bins', type=int, default=50,
                         help='Number of bins for histogram mode (default: 50)')
@@ -378,29 +397,61 @@ Examples:
         if args.histogram:
             parser.error("--xy-correlation cannot be used with --histogram")
         
+        # Check for conflicting dimension flags
+        if getattr(args, '2d', False) and getattr(args, '3d', False):
+            parser.error("Cannot use both --2d and --3d flags simultaneously")
+        
         # Determine correlation dimensionality
         if args.multi:
             # Multi-correlation mode: files should be divisible by 2 or 3
             num_files = len(args.files)
-            if num_files % 3 == 0 and num_files >= 3:
-                corr_dim = 3  # 3D correlations
-                num_corr_sets = num_files // 3
-            elif num_files % 2 == 0 and num_files >= 2:
-                corr_dim = 2  # 2D correlations
+            
+            # Use explicit dimension flags if provided
+            if getattr(args, '2d', False):
+                if num_files % 2 != 0:
+                    parser.error(f"--2d requires an even number of files (pairs). Got {num_files} files.")
+                corr_dim = 2
                 num_corr_sets = num_files // 2
+            elif getattr(args, '3d', False):
+                if num_files % 3 != 0:
+                    parser.error(f"--3d requires number of files divisible by 3 (triplets). Got {num_files} files.")
+                corr_dim = 3
+                num_corr_sets = num_files // 3
             else:
-                parser.error("--xy-correlation with --multi requires files in pairs (2D) or triplets (3D). "
-                           f"Got {num_files} files.")
+                # Auto-detect: prefer 3D if divisible by 3, otherwise 2D
+                if num_files % 3 == 0 and num_files >= 3:
+                    corr_dim = 3  # 3D correlations
+                    num_corr_sets = num_files // 3
+                elif num_files % 2 == 0 and num_files >= 2:
+                    corr_dim = 2  # 2D correlations
+                    num_corr_sets = num_files // 2
+                else:
+                    parser.error("--xy-correlation with --multi requires files in pairs (2D) or triplets (3D). "
+                               f"Got {num_files} files. Use --2d or --3d to specify dimensionality.")
             
             # Validate legends for multi-correlation mode
             if args.legends and len(args.legends) != num_corr_sets:
                 parser.error(f"Number of legends ({len(args.legends)}) must match number of correlation sets ({num_corr_sets})")
         else:
             # Single correlation mode
-            if len(args.files) not in (2, 3):
-                parser.error("--xy-correlation requires exactly 2 files (2D) or 3 files (3D)")
-            corr_dim = len(args.files)
+            if getattr(args, '2d', False):
+                if len(args.files) != 2:
+                    parser.error("--2d with --xy-correlation requires exactly 2 files")
+                corr_dim = 2
+            elif getattr(args, '3d', False):
+                if len(args.files) != 3:
+                    parser.error("--3d with --xy-correlation requires exactly 3 files")
+                corr_dim = 3
+            else:
+                # Auto-detect based on file count
+                if len(args.files) not in (2, 3):
+                    parser.error("--xy-correlation requires exactly 2 files (2D) or 3 files (3D)")
+                corr_dim = len(args.files)
     else:
+        # Not using xy-correlation mode
+        if getattr(args, '2d', False) or getattr(args, '3d', False):
+            parser.error("--2d and --3d flags require --xy-correlation")
+        
         # Standard multi-file mode: legends should match file count
         if args.legends and len(args.legends) != len(args.files):
             parser.error(f"Number of legends ({len(args.legends)}) must match number of files ({len(args.files)})")
