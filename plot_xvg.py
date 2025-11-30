@@ -228,6 +228,16 @@ def plot_xvg_multi(filename, show_moving_avg=False, window_size=10, ax=None,
 
 def main():
     """Main function for command-line interface."""
+    
+    # Special case: handle --plot-style available before full argument parsing
+    if '--plot-style' in sys.argv:
+        idx = sys.argv.index('--plot-style')
+        if idx + 1 < len(sys.argv) and sys.argv[idx + 1].lower() == 'available':
+            print("Available matplotlib styles:")
+            for style in sorted(plt.style.available):
+                print(f"  {style}")
+            return 0
+    
     parser = argparse.ArgumentParser(
         description='Plot GROMACS XVG files with optional moving averages.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -381,6 +391,11 @@ Examples:
                         help='Manually set y-axis limits (e.g., --ylim 0 10). '
                              'Useful for matching scales across different plots.')
     
+    parser.add_argument('--plot-style', type=str, default=None,
+                        help='Matplotlib style to use for the plot (e.g., seaborn, ggplot, dark_background, '
+                             'bmh, grayscale). Use "available" to see list of available styles. '
+                             'See matplotlib.style.available for all options.')
+    
     parser.add_argument('--dpi', type=int, default=300,
                         help='DPI for saved figures (default: 300)')
 
@@ -398,6 +413,15 @@ Examples:
                              'specific portions of trajectories. If omitted, includes until end.')
     
     args = parser.parse_args()
+    
+    # Apply plot style if specified (already handled 'available' case above)
+    if args.plot_style:
+        try:
+            plt.style.use(args.plot_style)
+        except OSError:
+            print(f"Error: Style '{args.plot_style}' not found.", file=sys.stderr)
+            print(f"Use '--plot-style available' to see available styles.", file=sys.stderr)
+            return 1
     
     # Validate inputs
     if args.window < 1:
