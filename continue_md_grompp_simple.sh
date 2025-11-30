@@ -14,7 +14,7 @@ dt=100
 # Steps for given time interval
 steps=$((dt*500000))  # assumes a 2fs timestep
 
-# Initial segment,  run online for tinit=0
+# Initial segment.  Run once, for tstart=0
 if [ $tstart -eq 0 ]; then
     sed  -e "s/\(steps\s\+= \)[0-9]\+/\1${steps}/" ${base_name}_0_0.mdp > ${base_name}_0_${dt}.mdp
     gmx grompp -f ${base_name}_0_${dt}.mdp -c ${base_name}_0_0.gro -t ${base_name}_0_0.cpt -e ${base_name}_0_0.edr -p topol.top -o ${base_name}_0_${dt}.tpr
