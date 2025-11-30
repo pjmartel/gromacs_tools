@@ -371,6 +371,16 @@ Examples:
                              'or a number (e.g., 1.5 for width/height ratio). '
                              'Useful for correlation plots or when you need square axes.')
     
+    parser.add_argument('--xlim', nargs=2, type=float, default=None,
+                        metavar=('XMIN', 'XMAX'),
+                        help='Manually set x-axis limits (e.g., --xlim 0 100). '
+                             'Useful for matching scales across different plots.')
+    
+    parser.add_argument('--ylim', nargs=2, type=float, default=None,
+                        metavar=('YMIN', 'YMAX'),
+                        help='Manually set y-axis limits (e.g., --ylim 0 10). '
+                             'Useful for matching scales across different plots.')
+    
     parser.add_argument('--dpi', type=int, default=300,
                         help='DPI for saved figures (default: 300)')
 
@@ -536,6 +546,12 @@ Examples:
                             except ValueError:
                                 print(f"Warning: Invalid aspect ratio '{args.aspect}', using auto", file=sys.stderr)
                     
+                    # Set axis limits if specified
+                    if args.xlim:
+                        ax.set_xlim(args.xlim[0], args.xlim[1])
+                    if args.ylim:
+                        ax.set_ylim(args.ylim[0], args.ylim[1])
+                    
                     fig.tight_layout()
                 
                 else:  # corr_dim == 3
@@ -630,6 +646,12 @@ Examples:
                         ax.set_ylim(mid_y - max_range, mid_y + max_range)
                         ax.set_zlim(mid_z - max_range, mid_z + max_range)
                     
+                    # Override with manual limits if specified (after equal aspect)
+                    if args.xlim:
+                        ax.set_xlim(args.xlim[0], args.xlim[1])
+                    if args.ylim:
+                        ax.set_ylim(args.ylim[0], args.ylim[1])
+                    
                     fig.tight_layout()
             
             elif len(args.files) == 2:
@@ -693,6 +715,12 @@ Examples:
                             ax.set_aspect(float(args.aspect), adjustable='box')
                         except ValueError:
                             print(f"Warning: Invalid aspect ratio '{args.aspect}', using auto", file=sys.stderr)
+                
+                # Set axis limits if specified
+                if args.xlim:
+                    ax.set_xlim(args.xlim[0], args.xlim[1])
+                if args.ylim:
+                    ax.set_ylim(args.ylim[0], args.ylim[1])
                 
                 fig.tight_layout()
             
@@ -769,6 +797,12 @@ Examples:
                     ax.set_ylim(mid_y - max_range, mid_y + max_range)
                     ax.set_zlim(mid_z - max_range, mid_z + max_range)
                 
+                # Override with manual limits if specified (after equal aspect)
+                if args.xlim:
+                    ax.set_xlim(args.xlim[0], args.xlim[1])
+                if args.ylim:
+                    ax.set_ylim(args.ylim[0], args.ylim[1])
+                
                 fig.tight_layout()
             
         elif len(args.files) == 1 and not args.multi:
@@ -830,6 +864,12 @@ Examples:
                         ax.set_aspect(float(args.aspect), adjustable='box')
                     except ValueError:
                         print(f"Warning: Invalid aspect ratio '{args.aspect}', using auto", file=sys.stderr)
+            
+            # Set axis limits if specified
+            if args.xlim:
+                ax.set_xlim(args.xlim[0], args.xlim[1])
+            if args.ylim:
+                ax.set_ylim(args.ylim[0], args.ylim[1])
             
             plt.tight_layout()
         
