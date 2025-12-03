@@ -396,6 +396,10 @@ Examples:
                              'bmh, grayscale). Use "available" to see list of available styles. '
                              'See matplotlib.style.available for all options.')
     
+    parser.add_argument('--fontsize', '--fs', type=float, default=None,
+                        help='Base font size for all text elements (title, labels, legends, ticks). '
+                             'If not specified, uses matplotlib defaults. Typical values: 10-16.')
+    
     parser.add_argument('--dpi', type=int, default=300,
                         help='DPI for saved figures (default: 300)')
 
@@ -422,6 +426,17 @@ Examples:
             print(f"Error: Style '{args.plot_style}' not found.", file=sys.stderr)
             print(f"Use '--plot-style available' to see available styles.", file=sys.stderr)
             return 1
+    
+    # Apply font size scaling if specified
+    if args.fontsize:
+        plt.rcParams.update({
+            'font.size': args.fontsize,
+            'axes.titlesize': args.fontsize * 1.2,
+            'axes.labelsize': args.fontsize,
+            'xtick.labelsize': args.fontsize * 0.9,
+            'ytick.labelsize': args.fontsize * 0.9,
+            'legend.fontsize': args.fontsize * 0.9,
+        })
     
     # Validate inputs
     if args.window < 1:
