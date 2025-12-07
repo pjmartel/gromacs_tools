@@ -870,6 +870,12 @@ Examples:
                         ax.set_aspect(float(args.aspect), adjustable='box')
                     except ValueError:
                         print(f"Warning: Invalid aspect ratio '{args.aspect}', using auto", file=sys.stderr)
+            
+            # Set axis limits if specified
+            if args.xlim:
+                ax.set_xlim(args.xlim[0], args.xlim[1])
+            if args.ylim:
+                ax.set_ylim(args.ylim[0], args.ylim[1])
 
         else:
             # Multiple files mode
