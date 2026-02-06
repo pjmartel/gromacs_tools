@@ -74,7 +74,7 @@ def parse_xvg(filename):
 
 def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots', 
              scatter_colormap='viridis', use_scatter=False, use_histogram=False, 
-             hist_bins=50, markersize=3, start_row=None, end_row=None):
+             hist_bins=50, markersize=3, start_row=None, end_row=None, columns=None):
     """Plot a single XVG file and return (fig, ax) without displaying.
 
     The previous implementation called plt.show() internally which prevented
@@ -93,6 +93,9 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
         First data row to include (0-indexed). If None, start from beginning.
     end_row : int or None
         Last data row to include (exclusive, 0-indexed). If None, include until end.
+    columns : list of int or None
+        Specific column indices (1-indexed) to plot. If None, plot all columns.
+        Example: [1, 3, 5] plots only columns 1, 3, and 5.
     """
     data_columns, legends, labels = parse_xvg(filename)
     
@@ -161,7 +164,7 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
 def plot_xvg_multi(filename, show_moving_avg=False, window_size=10, ax=None, 
                    custom_legend=None, style='dots', scatter_colormap='viridis', 
                    use_scatter=False, use_histogram=False, hist_bins=50, markersize=3,
-                   start_row=None, end_row=None):
+                   start_row=None, end_row=None, columns=None):
 
     data_columns, legends, labels = parse_xvg(filename)
     
@@ -290,6 +293,12 @@ Examples:
   # Plot up to frame 2000 (early trajectory portion)
   %(prog)s trajectory.xvg --end 2000 --scatter
   
+  # Plot only specific columns from a multi-column XVG file
+  %(prog)s multicolumn.xvg --columns 1 3 5 --style lines
+  
+  # Plot only the first two columns with custom legends
+  %(prog)s data.xvg --columns 1 2 --style lines+dots
+  
   # Plot multiple XVG files on the same axes
   %(prog)s file1.xvg file2.xvg file3.xvg --multi
   
@@ -415,6 +424,12 @@ Examples:
     parser.add_argument('--end', type=int, default=None,
                         help='Last data row to plot (exclusive, 0-indexed). Allows viewing '
                              'specific portions of trajectories. If omitted, includes until end.')
+    
+    parser.add_argument('--columns', '--cols', type=int, nargs='+', default=None,
+                        help='Specific column numbers to plot (1-indexed, space-separated). '
+                             'By default, all columns are plotted. Example: --columns 1 3 5 '
+                             'plots only the 1st, 3rd, and 5th data columns. '
+                             'Note: Column 0 is the x-axis, so data columns start at 1.')
     
     args = parser.parse_args()
     
@@ -849,7 +864,7 @@ Examples:
             fig, ax = plot_xvg(args.files[0], show_moving_avg=args.moving_avg, window_size=args.window,
                                style=args.style, scatter_colormap=args.colormap, use_scatter=args.scatter,
                                use_histogram=args.histogram, hist_bins=args.bins, markersize=args.markersize,
-                               start_row=args.start, end_row=args.end)
+                               start_row=args.start, end_row=args.end, columns=args.columns)
 
             # Apply custom labels if provided (override XVG metadata)
             if args.title:
@@ -888,7 +903,7 @@ Examples:
                              style=args.style, scatter_colormap=args.colormap, 
                              use_scatter=args.scatter, use_histogram=args.histogram,
                              hist_bins=args.bins, markersize=args.markersize,
-                             start_row=args.start, end_row=args.end)
+                             start_row=args.start, end_row=args.end, columns=args.columns)
             
             # Apply custom labels if provided
             if args.title:
