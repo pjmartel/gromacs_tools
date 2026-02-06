@@ -74,7 +74,8 @@ def parse_xvg(filename):
 
 def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots', 
              scatter_colormap='viridis', use_scatter=False, use_histogram=False, 
-             hist_bins=50, markersize=3, start_row=None, end_row=None, columns=None):
+             hist_bins=50, markersize=3, start_row=None, end_row=None, columns=None,
+             custom_legends=None):
     """Plot a single XVG file and return (fig, ax) without displaying.
 
     The previous implementation called plt.show() internally which prevented
@@ -96,6 +97,8 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
     columns : list of int or None
         Specific column indices (1-indexed) to plot. If None, plot all columns.
         Example: [1, 3, 5] plots only columns 1, 3, and 5.
+    custom_legends : list of str or None
+        Custom legend labels for each column. If provided, overrides XVG legend metadata.
     """
     data_columns, legends, labels = parse_xvg(filename)
     
@@ -121,6 +124,12 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
         legends = selected_legends
     
     num_datasets = len(data_columns) - 1
+    
+    # Apply custom legends if provided (overrides XVG metadata)
+    if custom_legends is not None:
+        if len(custom_legends) != num_datasets:
+            raise ValueError(f"Number of custom legends ({len(custom_legends)}) must match number of datasets ({num_datasets})")
+        legends = {i: custom_legends[i] for i in range(num_datasets)}
 
     fig, ax = plt.subplots(figsize=(10, 6))
 
@@ -331,6 +340,12 @@ Examples:
   # Plot only the first two columns with custom legends
   %(prog)s data.xvg --columns 1 2 --style lines+dots
   
+  # Multi-column file without header: provide custom legends
+  %(prog)s raw_data.dat --columns 1 2 3 --legends "RMSD" "RMSF" "Gyration" --style lines
+  
+  # Single multi-column file with custom legends (useful for files without XVG headers)
+  %(prog)s multicolumn.dat --legends "Temperature" "Pressure" "Volume" --style lines
+  
   # Plot multiple XVG files on the same axes
   %(prog)s file1.xvg file2.xvg file3.xvg --multi
   
@@ -398,7 +413,9 @@ Examples:
                         help='Plot multiple XVG files on the same axes')
     
     parser.add_argument('--legends', '-l', nargs='+', type=str,
-                        help='Custom legend labels for multiple files (must match number of files)')
+                        help='Custom legend labels. For multiple files (--multi), must match number of files. '
+                             'For single multi-column files, must match number of columns plotted. '
+                             'Useful for files without XVG headers.')
     
     parser.add_argument('--output', '-o', type=str,
                         help='Output file for saving the plot (e.g., plot.png, plot.pdf). '
@@ -548,8 +565,9 @@ Examples:
         if getattr(args, '2d', False) or getattr(args, '3d', False):
             parser.error("--2d and --3d flags require --xy-correlation")
         
-        # Standard multi-file mode: legends should match file count
-        if args.legends and len(args.legends) != len(args.files):
+        # Validate legends: for multi-file mode, must match file count
+        # For single-file mode, validation happens later based on number of columns
+        if args.multi and args.legends and len(args.legends) != len(args.files):
             parser.error(f"Number of legends ({len(args.legends)}) must match number of files ({len(args.files)})")
     
     # Check that all files exist
@@ -896,7 +914,8 @@ Examples:
             fig, ax = plot_xvg(args.files[0], show_moving_avg=args.moving_avg, window_size=args.window,
                                style=args.style, scatter_colormap=args.colormap, use_scatter=args.scatter,
                                use_histogram=args.histogram, hist_bins=args.bins, markersize=args.markersize,
-                               start_row=args.start, end_row=args.end, columns=args.columns)
+                               start_row=args.start, end_row=args.end, columns=args.columns,
+                               custom_legends=args.legends)
 
             # Apply custom labels if provided (override XVG metadata)
             if args.title:
