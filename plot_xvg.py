@@ -104,6 +104,22 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
         data_columns = [list(col)[start_row:end_row] for col in data_columns]
     
     x = data_columns[0]
+    
+    # Filter columns if specified (columns are 1-indexed from user perspective)
+    if columns is not None:
+        # Validate column indices
+        max_col = len(data_columns) - 1  # exclude x-column
+        for col_idx in columns:
+            if col_idx < 1 or col_idx > max_col:
+                raise ValueError(f"Column index {col_idx} out of range. Valid range: 1-{max_col}")
+        # Keep only selected columns
+        selected_data = [x] + [data_columns[col_idx] for col_idx in columns]
+        # Update legends to match selected columns
+        selected_legends = {i: legends.get(col_idx - 1, f'Dataset {col_idx}') 
+                           for i, col_idx in enumerate(columns)}
+        data_columns = selected_data
+        legends = selected_legends
+    
     num_datasets = len(data_columns) - 1
 
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -173,6 +189,22 @@ def plot_xvg_multi(filename, show_moving_avg=False, window_size=10, ax=None,
         data_columns = [list(col)[start_row:end_row] for col in data_columns]
     
     x = data_columns[0]
+    
+    # Filter columns if specified (columns are 1-indexed from user perspective)
+    if columns is not None:
+        # Validate column indices
+        max_col = len(data_columns) - 1  # exclude x-column
+        for col_idx in columns:
+            if col_idx < 1 or col_idx > max_col:
+                raise ValueError(f"Column index {col_idx} out of range. Valid range: 1-{max_col}")
+        # Keep only selected columns
+        selected_data = [x] + [data_columns[col_idx] for col_idx in columns]
+        # Update legends to match selected columns
+        selected_legends = {i: legends.get(col_idx - 1, f'Dataset {col_idx}') 
+                           for i, col_idx in enumerate(columns)}
+        data_columns = selected_data
+        legends = selected_legends
+    
     num_datasets = len(data_columns) - 1
 
     # Create new Axes if none provided
