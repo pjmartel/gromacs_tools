@@ -1,8 +1,30 @@
 #!/bin/bash -e 
+
+# This script continues a GROMACS MD simulation in segments, starting from an initial segment (0 to dt ns) 
+# and then proceeding in increments of dt until tend ns is reached. IO files from the previous segment 
+# are used as input for the next segment. 
+# The intial segment is run only if tstart is 0, otherwise the script assumes that the initial segment 
+# has already been run and starts from the continuation segments.
+# The script also checks for a STOP file after each segment, and if found, it halts further processing.
+# The script assumes that the initial segment's mdp file is named ${base_name}_0_0.mdp, and that the
+# output files from each segment are named in the format ${base_name}_${start_time}_${end_time}.* 
+# (e.g. .gro, .cpt, .edr, .mdp, .tpr)
+# The initial segment is run only if the users sets the start tine to 0, 
+# otherwise the script assumes that the initial segment has already been run and starts from the 
+# continuation segments.
+# This scritp does not use the "mdrun -cpi" option, but instead uses the .cpt file from the previous 
+# segment as input for grompp, which is a common approach for continuing simulations in segments.
+# (The Gromacs manual recommends using the -cpi option for continuing simulations, but it is not strictly 
+# necessary as long as the .cpt file is used correctly in grompp.)
+# The script also corrects the in each segment's mdp file to set the correct tinit value, which is important
+# for proper continuation of the simulation.
+# This script does not handle interrupted simulations or restarts, but it can be easily modified to 
+# include such functionality if needed. 
 if ! command -v gmx &> /dev/null; then
     . /programs/gromacs-2025.2/bin/GMXRC.bash
 fi
 
+# User-defined variables
 prefix=md
 replica=0
 base_name=${prefix}_${replica}
