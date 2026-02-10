@@ -1,0 +1,35 @@
+; Energy Minimization - Conjugate Gradient
+; Force field: CHARMM36
+; Purpose: Refinement after steepest descent
+; Use: Optional second minimization step for better geometry
+
+title                   = charmm36,energy_minimization_cg
+
+; RUN CONTROL
+integrator              = cg
+nsteps                  = 50000
+emtol                   = 100.0         ; Stricter convergence than steep
+emstep                  = 0.01
+
+; OUTPUT CONTROL
+nstlog                  = 1000
+nstenergy               = 1000
+
+; NEIGHBOR SEARCHING
+cutoff-scheme           = Verlet
+nstlist                 = 10
+ns_type                 = grid
+pbc                     = xyz
+
+; ELECTROSTATICS
+coulombtype             = PME
+rcoulomb                = 1.2
+pme_order               = 4
+fourierspacing          = 0.12
+
+; VAN DER WAALS
+vdwtype                 = Cut-off
+vdw-modifier            = Force-switch
+rvdw-switch             = 1.0
+rvdw                    = 1.2
+DispCorr                = no

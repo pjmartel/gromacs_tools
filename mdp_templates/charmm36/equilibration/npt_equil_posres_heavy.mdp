@@ -1,0 +1,66 @@
+; NPT Equilibration with Heavy Atom Position Restraints
+; Force field: CHARMM36
+; Purpose: Equilibrate with protein heavy atoms restrained
+; Use: Allows solvent/hydrogens to equilibrate while keeping protein structure
+
+title                   = charmm36,npt_equilibration_posres_heavy
+define                  = -DPOSRES      ; Restrain heavy atoms (non-hydrogen)
+
+; RUN CONTROL
+integrator              = md
+dt                      = 0.002         ; 2 fs
+nsteps                  = 50000         ; 100 ps (adjust as needed)
+tinit                   = 0
+
+; OUTPUT CONTROL
+nstxout                 = 0
+nstvout                 = 0
+nstfout                 = 0
+nstlog                  = 5000
+nstenergy               = 5000
+nstxout-compressed      = 5000
+compressed-x-grps       = System
+
+; NEIGHBOR SEARCHING
+cutoff-scheme           = Verlet
+nstlist                 = 10
+ns_type                 = grid
+pbc                     = xyz
+
+; ELECTROSTATICS
+coulombtype             = PME
+rcoulomb                = 1.2
+pme_order               = 4
+fourierspacing          = 0.12
+
+; VAN DER WAALS
+vdwtype                 = Cut-off
+vdw-modifier            = Force-switch
+rvdw-switch             = 1.0
+rvdw                    = 1.2
+DispCorr                = EnerPres
+
+; TEMPERATURE COUPLING
+tcoupl                  = V-rescale
+tc-grps                 = System
+tau_t                   = 0.1
+ref_t                   = 300
+
+; PRESSURE COUPLING
+pcoupl                  = Berendsen
+pcoupltype              = isotropic
+tau_p                   = 2.0
+ref_p                   = 1.0
+compressibility         = 4.5e-5
+
+; CONSTRAINTS
+constraints             = all-bonds
+constraint-algorithm    = lincs
+lincs-order             = 4
+lincs-iter              = 1
+
+; VELOCITY GENERATION
+gen_vel                 = no
+
+; NOTE: Create posre_heavy.itp with gmx genrestr selecting heavy atoms:
+;       echo "MainChain-H" | gmx genrestr -f structure.gro -o posre_heavy.itp -fc 1000 1000 1000

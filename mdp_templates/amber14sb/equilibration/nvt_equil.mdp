@@ -1,0 +1,60 @@
+; NVT Equilibration (Constant Volume, Constant Temperature)
+; Force field: AMBER14SB
+; Purpose: Initial equilibration to reach target temperature
+; Use: First equilibration step after minimization (100 ps typical)
+
+title                   = amber14sb,nvt_equilibration
+define                  = -DPOSRES      ; Position restraints
+
+; RUN CONTROL
+integrator              = md
+dt                      = 0.002         ; 2 fs
+nsteps                  = 50000         ; 100 ps (adjust as needed)
+tinit                   = 0
+
+; OUTPUT CONTROL
+nstxout                 = 0
+nstvout                 = 0
+nstfout                 = 0
+nstlog                  = 5000
+nstenergy               = 5000
+nstxout-compressed      = 5000
+compressed-x-grps       = System
+
+; NEIGHBOR SEARCHING
+cutoff-scheme           = Verlet
+nstlist                 = 10
+ns_type                 = grid
+pbc                     = xyz
+
+; ELECTROSTATICS
+coulombtype             = PME
+rcoulomb                = 1.0
+pme_order               = 4
+fourierspacing          = 0.12
+
+; VAN DER WAALS
+vdwtype                 = Cut-off
+vdw-modifier            = Potential-shift-verlet
+rvdw                    = 1.0
+DispCorr                = EnerPres
+
+; TEMPERATURE COUPLING
+tcoupl                  = V-rescale
+tc-grps                 = System
+tau_t                   = 0.1
+ref_t                   = 300
+
+; PRESSURE COUPLING
+pcoupl                  = no            ; NVT: No pressure coupling
+
+; CONSTRAINTS
+constraints             = h-bonds       ; AMBER typically uses h-bonds
+constraint-algorithm    = lincs
+lincs-order             = 4
+lincs-iter              = 1
+
+; VELOCITY GENERATION
+gen_vel                 = yes
+gen_temp                = 300
+gen_seed                = -1

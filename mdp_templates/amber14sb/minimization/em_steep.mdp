@@ -1,0 +1,34 @@
+; Energy Minimization - Steepest Descent
+; Force field: AMBER14SB
+; Purpose: Initial energy minimization
+; Use: Remove steric clashes and bad contacts before equilibration
+
+title                   = amber14sb,energy_minimization_steep
+
+; RUN CONTROL
+integrator              = steep
+nsteps                  = 50000
+emtol                   = 1000.0        ; Stop when Fmax < 1000 kJ/mol/nm
+emstep                  = 0.01          ; Initial step size
+
+; OUTPUT CONTROL
+nstlog                  = 1000
+nstenergy               = 1000
+
+; NEIGHBOR SEARCHING
+cutoff-scheme           = Verlet
+nstlist                 = 10
+ns_type                 = grid
+pbc                     = xyz
+
+; ELECTROSTATICS
+coulombtype             = PME
+rcoulomb                = 1.0
+pme_order               = 4
+fourierspacing          = 0.12
+
+; VAN DER WAALS
+vdwtype                 = Cut-off
+vdw-modifier            = Potential-shift-verlet
+rvdw                    = 1.0
+DispCorr                = no            ; No dispersion correction during minimization
