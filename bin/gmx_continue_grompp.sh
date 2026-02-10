@@ -3,7 +3,7 @@
 # It uses grompp to prepare the input files for continuation
 # Required files: topology (.top), structure (.gro), checkpoint (.cpt), and energy (.edr)
 #
-# Usage: ./md_continue_grompp.sh <basename> <replica> <start_time> <end_time> <dt> [template_mdp] [initial_basename] [timestep]
+# Usage: ./md_continue_grompp.sh <basename> <replica> <start_time> <end_time> <dt> [template_mdp] [initial_basename] [timestep] [title_suffix]
 #   basename:         Base name for output files (e.g., "md")
 #   replica:          Replica number (e.g., 0, 1, 2)
 #   start_time:       Start time in ns (e.g., 0)
@@ -12,9 +12,11 @@
 #   template_mdp:     (Optional) MDP template for production runs, default: "md.mdp"
 #   initial_basename: (Optional) Basename for initial equilibration files, default: "npt"
 #   timestep:         (Optional) Integration timestep in ps, default: 0.002 (2 fs)
+#   title_suffix:     (Optional) System-specific title to append (e.g., "TRP_cage_replica_1")
 #
-# Example: ./md_continue_grompp.sh md 0 0 500 100 md_production.mdp npt 0.002
+# Example: ./md_continue_grompp.sh md 0 0 500 100 md_production.mdp npt 0.002 "TRP_cage"
 #   Uses npt.gro/cpt/edr as starting point, md_production.mdp as template
+#   Appends "TRP_cage" to MDP title
 #   Then runs: md_0_0_100, md_0_100_200, md_0_200_300, etc.
 #
 # CRASH RECOVERY:
@@ -29,9 +31,9 @@
 #     (Same command - the script figures out where to continue)
 
 # Check arguments
-if [[ $# -lt 5 ]] || [[ $# -gt 8 ]]; then
+if [[ $# -lt 5 ]] || [[ $# -gt 9 ]]; then
     echo "Error: Incorrect number of arguments"
-    echo "Usage: $0 <basename> <replica> <start_time> <end_time> <dt> [template_mdp] [initial_basename] [timestep]"
+    echo "Usage: $0 <basename> <replica> <start_time> <end_time> <dt> [template_mdp] [initial_basename] [timestep] [title_suffix]"
     echo "  basename:         Base name for output files (e.g., 'md')"
     echo "  replica:          Replica number (e.g., 0)"
     echo "  start_time:       Start time in ns (e.g., 0)"
@@ -40,10 +42,11 @@ if [[ $# -lt 5 ]] || [[ $# -gt 8 ]]; then
     echo "  template_mdp:     (Optional) MDP template for production runs (default: 'md.mdp')"
     echo "  initial_basename: (Optional) Basename for initial equilibration files (default: 'npt')"
     echo "  timestep:         (Optional) Integration timestep in ps (default: 0.002)"
+    echo "  title_suffix:     (Optional) System-specific title to append (e.g., 'TRP_cage_replica_1')"
     echo ""
-    echo "Example: $0 md 0 0 500 100 md_production.mdp npt 0.002"
+    echo "Example: $0 md 0 0 500 100 md_production.mdp npt 0.002 'TRP_cage'"
     echo "  Uses npt.gro/cpt/edr as starting point, md_production.mdp as template"
-    echo "  Then runs md_0_0_100, md_0_100_200, etc."
+    echo "  Appends 'TRP_cage' to MDP title, then runs md_0_0_100, md_0_100_200, etc."
     exit 1
 fi
 
@@ -56,6 +59,7 @@ dt="$5"
 template_mdp="${6:-md.mdp}"      # Default to "md.mdp" if not provided
 initial_basename="${7:-npt}"     # Default to "npt" if not provided
 timestep_ps="${8:-0.002}"        # Default to 0.002 ps (2 fs) if not provided
+title_suffix="${9:-}"            # Optional title suffix
 topology="topol.top"
 base_name="${basename_arg}_${replica}"
 
@@ -183,6 +187,11 @@ if [[ ${actual_start} -eq ${tstart} ]] && [[ ${tstart} -eq 0 ]]; then
             -e "s/\(nsteps\s*=\s*\)[0-9]\+/\1${nsteps_per_segment}/" \
             ${template_mdp} > ${initial_cur}.mdp
         
+        # Append title suffix if provided
+        if [[ -n "${title_suffix}" ]]; then
+            sed -i "s/\(title\s*=\s*.*\)/\1,${title_suffix}/" ${initial_cur}.mdp
+        fi
+        
         # Use checkpoint if available, otherwise continue without it
         if [[ -f ${initial_basename}.cpt ]]; then
             echo "Using checkpoint from ${initial_basename}"
@@ -240,6 +249,11 @@ for ((time=${start_time} ; time<${tend} ; time+=${dt})) ; do
         sed -e "s/\(tinit\s*=\s*\)[0-9]\+/\1${timeps}/" \
             -e "s/\(nsteps\s*=\s*\)[0-9]\+/\1${nsteps_per_segment}/" \
             ${template_mdp} > ${cur}.mdp
+        
+        # Append title suffix if provided
+        if [[ -n "${title_suffix}" ]]; then
+            sed -i "s/\(title\s*=\s*.*\)/\1,${title_suffix}/" ${cur}.mdp
+        fi
 
         echo "Running grompp (using ${template_mdp} with tinit=${timeps} ps, nsteps=${nsteps_per_segment})..."
         
