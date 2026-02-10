@@ -3,7 +3,7 @@
 # It uses grompp to prepare the input files for continuation
 # Required files: topology (.top), structure (.gro), checkpoint (.cpt), and energy (.edr)
 #
-# Usage: ./md_continue_grompp.sh <basename> <replica> <start_time> <end_time> <dt> [template_mdp] [initial_basename]
+# Usage: ./md_continue_grompp.sh <basename> <replica> <start_time> <end_time> <dt> [template_mdp] [initial_basename] [timestep]
 #   basename:         Base name for output files (e.g., "md")
 #   replica:          Replica number (e.g., 0, 1, 2)
 #   start_time:       Start time in ns (e.g., 0)
@@ -11,8 +11,9 @@
 #   dt:               Time step per segment in ns (e.g., 100)
 #   template_mdp:     (Optional) MDP template for production runs, default: "md.mdp"
 #   initial_basename: (Optional) Basename for initial equilibration files, default: "npt"
+#   timestep:         (Optional) Integration timestep in ps, default: 0.002 (2 fs)
 #
-# Example: ./md_continue_grompp.sh md 0 0 500 100 md_production.mdp npt
+# Example: ./md_continue_grompp.sh md 0 0 500 100 md_production.mdp npt 0.002
 #   Uses npt.gro/cpt/edr as starting point, md_production.mdp as template
 #   Then runs: md_0_0_100, md_0_100_200, md_0_200_300, etc.
 #
@@ -28,9 +29,9 @@
 #     (Same command - the script figures out where to continue)
 
 # Check arguments
-if [[ $# -lt 5 ]] || [[ $# -gt 7 ]]; then
+if [[ $# -lt 5 ]] || [[ $# -gt 8 ]]; then
     echo "Error: Incorrect number of arguments"
-    echo "Usage: $0 <basename> <replica> <start_time> <end_time> <dt> [template_mdp] [initial_basename]"
+    echo "Usage: $0 <basename> <replica> <start_time> <end_time> <dt> [template_mdp] [initial_basename] [timestep]"
     echo "  basename:         Base name for output files (e.g., 'md')"
     echo "  replica:          Replica number (e.g., 0)"
     echo "  start_time:       Start time in ns (e.g., 0)"
@@ -38,8 +39,9 @@ if [[ $# -lt 5 ]] || [[ $# -gt 7 ]]; then
     echo "  dt:               Time step per segment in ns (e.g., 100)"
     echo "  template_mdp:     (Optional) MDP template for production runs (default: 'md.mdp')"
     echo "  initial_basename: (Optional) Basename for initial equilibration files (default: 'npt')"
+    echo "  timestep:         (Optional) Integration timestep in ps (default: 0.002)"
     echo ""
-    echo "Example: $0 md 0 0 500 100 md_production.mdp npt"
+    echo "Example: $0 md 0 0 500 100 md_production.mdp npt 0.002"
     echo "  Uses npt.gro/cpt/edr as starting point, md_production.mdp as template"
     echo "  Then runs md_0_0_100, md_0_100_200, etc."
     exit 1
@@ -53,14 +55,19 @@ tend="$4"
 dt="$5"
 template_mdp="${6:-md.mdp}"      # Default to "md.mdp" if not provided
 initial_basename="${7:-npt}"     # Default to "npt" if not provided
+timestep_ps="${8:-0.002}"        # Default to 0.002 ps (2 fs) if not provided
 topology="topol.top"
 base_name="${basename_arg}_${replica}"
+
+# Calculate nsteps per segment: (dt_ns * 1000 ps/ns) / timestep_ps
+nsteps_per_segment=$(awk -v dt="$dt" -v ts="$timestep_ps" 'BEGIN {printf "%.0f\n", (dt * 1000) / ts}')
 
 echo "=== MD Continuation Script ==="
 echo "Base name:       ${basename_arg}"
 echo "Replica:         ${replica}"
 echo "Time range:      ${tstart} -> ${tend} ns"
-echo "Segment dt:      ${dt} ns"
+echo "Segment dt:      ${dt} ns (${nsteps_per_segment} steps)"
+echo "Timestep:        ${timestep_ps} ps"
 echo "Template MDP:    ${template_mdp}"
 echo "Initial files:   ${initial_basename}.gro/cpt/edr"
 echo "=============================="
@@ -93,9 +100,9 @@ fi
 check_segment_complete() {
     local segment_name="$1"
     
-    # Check if all essential output files exist
-    if [[ ! -f ${segment_name}.gro ]] || [[ ! -f ${segment_name}.cpt ]] || \
-       [[ ! -f ${segment_name}.edr ]] || [[ ! -f ${segment_name}.log ]]; then
+    # Check if essential output files exist (.cpt is optional)
+    if [[ ! -f ${segment_name}.gro ]] || [[ ! -f ${segment_name}.edr ]] || \
+       [[ ! -f ${segment_name}.log ]]; then
         return 1
     fi
     
@@ -148,9 +155,15 @@ if [[ ${actual_start} -eq ${tstart} ]] && [[ ${tstart} -eq 0 ]]; then
     echo "Setting up initial segment: 0 -> ${dt} ns (using ${initial_basename} as starting point)"
 
     # Check for initial equilibration files
-    if [[ ! -f ${initial_basename}.gro ]] || [[ ! -f ${initial_basename}.cpt ]] || [[ ! -f ${initial_basename}.edr ]]; then
-        echo "Error: Missing initial equilibration files (${initial_basename}.gro, .cpt, or .edr)"
-        echo "These files should come from your NPT/NVT equilibration step."
+    if [[ ! -f ${initial_basename}.gro ]]; then
+        echo "Error: Missing initial structure file (${initial_basename}.gro)"
+        echo "This file should come from your NPT/NVT equilibration step."
+        exit 1
+    fi
+    
+    if [[ ! -f ${initial_basename}.edr ]]; then
+        echo "Error: Missing initial energy file (${initial_basename}.edr)"
+        echo "This file should come from your NPT/NVT equilibration step."
         exit 1
     fi
 
@@ -165,11 +178,22 @@ if [[ ${actual_start} -eq ${tstart} ]] && [[ ${tstart} -eq 0 ]]; then
         fi
     else
         echo "Running grompp for initial segment (using ${template_mdp})..."
-        # Create MDP with tinit=0 for first segment
-        sed -e "s/\(tinit\s*=\s*\)[0-9]\+/\10/" ${template_mdp} > ${initial_cur}.mdp
+        # Create MDP with tinit=0 and nsteps for first segment
+        sed -e "s/\(tinit\s*=\s*\)[0-9]\+/\10/" \
+            -e "s/\(nsteps\s*=\s*\)[0-9]\+/\1${nsteps_per_segment}/" \
+            ${template_mdp} > ${initial_cur}.mdp
         
-        gmx grompp -f ${initial_cur}.mdp -c ${initial_basename}.gro -t ${initial_basename}.cpt \
-                   -e ${initial_basename}.edr -p ${topology} -o ${initial_cur}.tpr
+        # Use checkpoint if available, otherwise continue without it
+        if [[ -f ${initial_basename}.cpt ]]; then
+            echo "Using checkpoint from ${initial_basename}"
+            gmx grompp -f ${initial_cur}.mdp -c ${initial_basename}.gro -t ${initial_basename}.cpt \
+                       -e ${initial_basename}.edr -p ${topology} -o ${initial_cur}.tpr
+        else
+            echo "Warning: No checkpoint file found (${initial_basename}.cpt)"
+            echo "Continuing without checkpoint. Velocities will be regenerated."
+            gmx grompp -f ${initial_cur}.mdp -c ${initial_basename}.gro \
+                       -e ${initial_basename}.edr -p ${topology} -o ${initial_cur}.tpr
+        fi
 
         echo "Running mdrun for initial segment..."
         gmx mdrun -deffnm ${initial_cur}
@@ -202,17 +226,34 @@ for ((time=${start_time} ; time<${tend} ; time+=${dt})) ; do
         fi
     else
         # Normal workflow: prepare and run
-        if [[ ! -f ${prev}.gro ]] || [[ ! -f ${prev}.cpt ]] || [[ ! -f ${prev}.edr ]]; then
-            echo "Error: Missing output files from previous segment (${prev}.gro, .cpt, or .edr). Aborting."
+        if [[ ! -f ${prev}.gro ]]; then
+            echo "Error: Missing structure file from previous segment (${prev}.gro). Aborting."
+            exit 1
+        fi
+        
+        if [[ ! -f ${prev}.edr ]]; then
+            echo "Error: Missing energy file from previous segment (${prev}.edr). Aborting."
             exit 1
         fi
 
-        # Update tinit in template MDP file for current segment
-        sed -e "s/\(tinit\s*=\s*\)[0-9]\+/\1${timeps}/" ${template_mdp} > ${cur}.mdp
+        # Update tinit and nsteps in template MDP file for current segment
+        sed -e "s/\(tinit\s*=\s*\)[0-9]\+/\1${timeps}/" \
+            -e "s/\(nsteps\s*=\s*\)[0-9]\+/\1${nsteps_per_segment}/" \
+            ${template_mdp} > ${cur}.mdp
 
-        echo "Running grompp (using ${template_mdp} with tinit=${timeps} ps)..."
-        gmx grompp -f ${cur}.mdp -c ${prev}.gro -t ${prev}.cpt \
-                   -e ${prev}.edr -p ${topology} -o ${cur}.tpr
+        echo "Running grompp (using ${template_mdp} with tinit=${timeps} ps, nsteps=${nsteps_per_segment})..."
+        
+        # Check if checkpoint exists (optional for continuation)
+        if [[ -f ${prev}.cpt ]]; then
+            echo "Using checkpoint from previous segment"
+            gmx grompp -f ${cur}.mdp -c ${prev}.gro -t ${prev}.cpt \
+                       -e ${prev}.edr -p ${topology} -o ${cur}.tpr
+        else
+            echo "Warning: No checkpoint file found (${prev}.cpt), continuing without it"
+            echo "Velocities will be regenerated. This is fine but less seamless."
+            gmx grompp -f ${cur}.mdp -c ${prev}.gro \
+                       -e ${prev}.edr -p ${topology} -o ${cur}.tpr
+        fi
         
         echo "Running mdrun..."
         gmx mdrun -deffnm ${cur}
