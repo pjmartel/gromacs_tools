@@ -199,6 +199,165 @@ python bin/plot_xvg.py rmsd_rep*.xvg --multi \
     --output replicas_rmsd.png
 ```
 
+### 6. Trajectory Preprocessing: PBC Removal and Centering
+
+```bash
+#!/bin/bash
+# trajectory_preprocessing.sh - Remove PBC artifacts and center
+
+TRAJ="md_complete.xtc"
+TPR="npt.tpr"
+
+# 1. Remove PBC artifacts (make molecules whole)
+echo "Protein System" | gmx trjconv -s $TPR -f $TRAJ \
+    -o traj_nojump.xtc -pbc nojump
+
+# 2. Center protein in box and remove PBC
+echo "Protein System" | gmx trjconv -s $TPR -f $TRAJ \
+    -o traj_centered.xtc -pbc mol -center
+
+# 3. Center and make compact (protein in center, minimum image)
+echo "Protein System" | gmx trjconv -s $TPR -f $TRAJ \
+    -o traj_compact.xtc -pbc mol -center -ur compact
+
+# 4. Full preprocessing: whole molecules + center + compact
+echo "Protein Protein" | gmx trjconv -s $TPR -f $TRAJ \
+    -o traj_processed.xtc -pbc mol -center -ur compact
+
+# Note: First selection = group to center, Second = output group
+```
+
+**PBC options explained:**
+- `nojump` - Make molecules whole (no broken molecules across boundaries)
+- `mol` - Put molecules back in box
+- `res` - Put residues back in box
+- `atom` - Put atoms back in box
+
+**Unit cell representation (-ur):**
+- `rect` - Rectangular box (default)
+- `compact` - Compact representation (minimum image)
+- `tric` - Triclinic box
+
+### 7. Trajectory Fitting and Alignment
+
+```bash
+#!/bin/bash
+# trajectory_fitting.sh - Fit trajectory to remove rotation/translation
+
+TRAJ="md_complete.xtc"
+TPR="npt.tpr"
+
+# 1. Fit to initial structure (standard approach)
+echo "Backbone Protein" | gmx trjconv -s $TPR -f $TRAJ \
+    -o traj_fit.xtc -fit rot+trans
+
+# 2. Progressive fitting (each frame to previous frame)
+# Better for large conformational changes
+echo "Backbone Protein" | gmx trjconv -s $TPR -f $TRAJ \
+    -o traj_progressive.xtc -fit progressive
+
+# 3. Fit to average structure
+# First: create average structure
+echo "Protein" | gmx trjconv -s $TPR -f $TRAJ -o average.pdb -dump 0
+
+# Then: fit all frames to average
+echo "Backbone Protein" | gmx trjconv -s average.pdb -f $TRAJ \
+    -o traj_fit_avg.xtc -fit rot+trans
+
+# 4. Rotation only (no translation)
+echo "Backbone Protein" | gmx trjconv -s $TPR -f $TRAJ \
+    -o traj_rot.xtc -fit rotxy+transxy
+
+# 5. Complete preprocessing + fitting workflow
+echo "Backbone Protein" | gmx trjconv -s $TPR -f $TRAJ \
+    -o traj_final.xtc -pbc mol -center -ur compact -fit rot+trans
+
+# Note: First selection = fitting group, Second = output group
+```
+
+**Fitting modes:**
+- `rot+trans` - Remove rotation and translation (standard)
+- `rotxy+transxy` - Remove rotation/translation in XY plane only
+- `progressive` - Fit each frame to previous frame
+- `none` - No fitting
+
+**Common use cases:**
+- **Standard analysis**: `rot+trans` with backbone fitting
+- **Large conformational changes**: `progressive` fitting
+- **Membrane systems**: `rotxy+transxy` (keep Z-dimension)
+- **Visualization**: Combine with `-pbc mol -center`
+
+### 8. Trajectory Format Conversion
+
+```bash
+#!/bin/bash
+# trajectory_conversion.sh - Convert between trajectory formats
+
+TRAJ="md_complete.xtc"
+TPR="npt.tpr"
+
+# 1. Convert XTC to PDB (entire trajectory)
+echo "Protein" | gmx trjconv -s $TPR -f $TRAJ -o trajectory.pdb
+
+# 2. Convert to PDB with specific time range
+echo "Protein" | gmx trjconv -s $TPR -f $TRAJ -o traj_100-200ns.pdb \
+    -b 100000 -e 200000  # Time in ps
+
+# 3. Convert to TRR (full precision)
+echo "System" | gmx trjconv -s $TPR -f $TRAJ -o trajectory.trr
+
+# 4. Extract specific frames
+# Single frame (e.g., frame at 50 ns)
+echo "Protein" | gmx trjconv -s $TPR -f $TRAJ -o frame_50ns.pdb -dump 50000
+
+# Every 10th frame
+echo "Protein" | gmx trjconv -s $TPR -f $TRAJ -o traj_skip10.xtc -skip 10
+
+# Every 100 ps
+echo "Protein" | gmx trjconv -s $TPR -f $TRAJ -o traj_dt100.xtc -dt 100
+
+# 5. Convert with selection (e.g., only protein without water)
+echo "Protein" | gmx trjconv -s $TPR -f $TRAJ -o protein_only.pdb
+
+# 6. High-quality PDB for VMD/PyMOL
+echo "Protein" | gmx trjconv -s $TPR -f $TRAJ -o movie.pdb \
+    -pbc mol -center -ur compact -fit rot+trans -skip 5
+
+# 7. Convert GRO to PDB
+gmx trjconv -s structure.gro -f structure.gro -o structure.pdb
+
+# 8. Create multi-model PDB (for NMR-style visualization)
+echo "Protein" | gmx trjconv -s $TPR -f $TRAJ -o multimodel.pdb -sep
+```
+
+**Format options:**
+- `.xtc` - Compressed, lossy (typical for MD)
+- `.trr` - Full precision, larger files
+- `.pdb` - Visualization, single/multi-model
+- `.gro` - GROMACS structure format
+- `.dcd` - CHARMM/NAMD format
+
+**Useful conversion flags:**
+- `-b` / `-e` - Begin/end time (ps)
+- `-dt` - Output every X ps
+- `-skip` - Output every Nth frame
+- `-dump` - Extract single frame at time X
+- `-sep` - Separate file for each frame
+- `-pbc mol -center -ur compact` - Clean up for visualization
+
+**Example: Prepare trajectory for publication figure**
+```bash
+# 1. Extract key transition (100-120 ns)
+# 2. Fit and center
+# 3. Output only protein
+# 4. Reduce to 1 frame per ns
+echo "Backbone Protein" | gmx trjconv -s npt.tpr -f md_complete.xtc \
+    -o figure_trajectory.pdb \
+    -b 100000 -e 120000 \
+    -dt 1000 \
+    -pbc mol -center -ur compact -fit rot+trans
+```
+
 ## Quick Reference Commands
 
 ### System Preparation
