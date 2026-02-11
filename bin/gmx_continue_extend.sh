@@ -18,6 +18,7 @@
 #   --append               Use append mode (single output file, default: noappend)
 #   --noappend             Use noappend mode (creates part000X files)
 #   --tpr <file>           Start from existing TPR instead of creating new one
+#   --cpt <file>           Checkpoint file to use with --tpr (optional)
 #   --topology <file>      Topology file (default: topol.top)
 #
 # MODES:
@@ -65,6 +66,7 @@ if [[ $# -lt 5 ]]; then
     echo "  --append              Single output file (extends continuously)"
     echo "  --noappend            Multiple part files (default)"
     echo "  --tpr <file>          Start from existing TPR"
+    echo "  --cpt <file>          Checkpoint file for --tpr (optional)"
     echo "  --topology <file>     Topology file (default: topol.top)"
     echo ""
     echo "Examples:"
@@ -87,6 +89,7 @@ timestep_ps="0.002"
 title_suffix=""
 append_mode="no"  # Default to noappend
 existing_tpr=""
+existing_cpt=""
 topology="topol.top"
 
 # Parse optional arguments
@@ -120,6 +123,10 @@ while [[ $# -gt 0 ]]; do
             existing_tpr="$2"
             shift 2
             ;;
+        --cpt)
+            existing_cpt="$2"
+            shift 2
+            ;;
         --topology)
             topology="$2"
             shift 2
@@ -145,6 +152,9 @@ echo "Timestep:        ${timestep_ps} ps"
 echo "Append mode:     ${append_mode}"
 if [[ -n "${existing_tpr}" ]]; then
     echo "Starting TPR:    ${existing_tpr}"
+    if [[ -n "${existing_cpt}" ]]; then
+        echo "Starting CPT:    ${existing_cpt}"
+    fi
 else
     echo "Template MDP:    ${template_mdp}"
     echo "Initial files:   ${initial_basename}.gro/cpt/edr"
@@ -214,6 +224,24 @@ if [[ -n "${existing_tpr}" ]]; then
     if [[ "${existing_tpr}" != "${main_tpr}" ]]; then
         cp "${existing_tpr}" "${main_tpr}"
         echo "Copied to ${main_tpr}"
+    fi
+    
+    # Handle checkpoint file if provided
+    if [[ -n "${existing_cpt}" ]]; then
+        if [[ ! -f ${existing_cpt} ]]; then
+            echo "Error: Specified checkpoint file '${existing_cpt}' not found"
+            exit 1
+        fi
+        
+        echo "Using existing checkpoint: ${existing_cpt}"
+        
+        # Copy to expected location if different
+        if [[ "${existing_cpt}" != "${main_cpt}" ]]; then
+            cp "${existing_cpt}" "${main_cpt}"
+            echo "Copied to ${main_cpt}"
+        fi
+    else
+        echo "No checkpoint specified. Will run without -cpi if none exists."
     fi
     
     # Check if first segment already completed
