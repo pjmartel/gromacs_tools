@@ -140,6 +140,18 @@ done
 
 base_name="${basename_arg}_${replica}"
 
+# Validate numeric arguments
+if ! [[ "${tstart}" =~ ^[0-9]+$ ]] || ! [[ "${tend}" =~ ^[0-9]+$ ]] || ! [[ "${dt}" =~ ^[0-9]+$ ]]; then
+    echo "Error: start_time, end_time, and dt must be integers"
+    echo "Got: start=${tstart}, end=${tend}, dt=${dt}"
+    exit 1
+fi
+
+if ! [[ "${replica}" =~ ^[0-9]+$ ]]; then
+    echo "Error: replica must be an integer, got: ${replica}"
+    exit 1
+fi
+
 # Calculate nsteps per segment
 nsteps_per_segment=$(awk -v dt="$dt" -v ts="$timestep_ps" 'BEGIN {printf "%.0f\n", (dt * 1000) / ts}')
 
