@@ -57,10 +57,15 @@
 #       --initial npt --timestep 0.002 --title "MyProtein" --noappend
 
 # =============================================================================
-# EASY MODE: Single argument = extend time (auto-detect files)
+# EASY MODE: One or two arguments
+#   1 arg:  extend_time (auto-detect TPR)
+#   2 args: extend_time tpr_file (explicit TPR)
 # =============================================================================
-if [[ $# -eq 1 ]] && [[ "$1" =~ ^[0-9]+$ ]]; then
+if ([[ $# -eq 1 ]] && [[ "$1" =~ ^[0-9]+$ ]]) || \
+   ([[ $# -eq 2 ]] && [[ "$1" =~ ^[0-9]+$ ]] && [[ ! "$2" =~ ^-- ]]); then
+    
     extend_time="$1"
+    explicit_tpr="$2"  # Empty if not provided
     
     echo "=== Easy Mode: Extending simulation by ${extend_time} ps ==="
     echo ""
@@ -75,28 +80,42 @@ if [[ $# -eq 1 ]] && [[ "$1" =~ ^[0-9]+$ ]]; then
         fi
     fi
     
-    # Find TPR file(s) in current directory
-    tpr_files=(*.tpr)
-    
-    if [[ ${#tpr_files[@]} -eq 0 ]] || [[ ! -f "${tpr_files[0]}" ]]; then
-        echo "Error: No TPR file found in current directory"
-        echo "Please run this command in the directory containing your simulation files"
-        exit 1
+    # Find TPR file
+    if [[ -n "${explicit_tpr}" ]]; then
+        # User specified which TPR to use
+        if [[ ! -f "${explicit_tpr}" ]]; then
+            echo "Error: Specified TPR file '${explicit_tpr}' not found"
+            exit 1
+        fi
+        found_tpr="${explicit_tpr}"
+        echo "Using specified TPR file: ${found_tpr}"
+    else
+        # Auto-detect TPR file(s) in current directory
+        tpr_files=(*.tpr)
+        
+        if [[ ${#tpr_files[@]} -eq 0 ]] || [[ ! -f "${tpr_files[0]}" ]]; then
+            echo "Error: No TPR file found in current directory"
+            echo "Please run this command in the directory containing your simulation files"
+            exit 1
+        fi
+        
+        if [[ ${#tpr_files[@]} -gt 1 ]]; then
+            echo "Error: Multiple TPR files found in current directory:"
+            for tpr in "${tpr_files[@]}"; do
+                echo "  - $tpr"
+            done
+            echo ""
+            echo "Please specify which one to use:"
+            echo "  $0 ${extend_time} <tpr_file>"
+            echo ""
+            echo "Example:"
+            echo "  $0 ${extend_time} md_0.tpr"
+            exit 1
+        fi
+        
+        found_tpr="${tpr_files[0]}"
+        echo "Auto-detected TPR file: ${found_tpr}"
     fi
-    
-    if [[ ${#tpr_files[@]} -gt 1 ]]; then
-        echo "Error: Multiple TPR files found in current directory:"
-        for tpr in "${tpr_files[@]}"; do
-            echo "  - $tpr"
-        done
-        echo ""
-        echo "Please specify which one to use with full syntax:"
-        echo "  $0 <basename> <replica> <start_time> <end_time> <dt> --tpr <file>"
-        exit 1
-    fi
-    
-    # Use the found TPR file
-    found_tpr="${tpr_files[0]}"
     found_base="${found_tpr%.tpr}"
     found_cpt="${found_base}.cpt"
     
