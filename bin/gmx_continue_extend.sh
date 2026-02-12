@@ -206,15 +206,43 @@ if [[ -z "${existing_tpr}" ]] && [[ ! -f ${topology} ]]; then
 fi
 
 # Function to check if a segment completed successfully
-# Args: segment_number, append_mode
+# Args: segment_number, append_mode, target_time_ns
 check_segment_complete() {
     local seg_num="$1"
     local append="$2"
+    local target_time_ns="$3"
     local log_file
     
     if [[ "${append}" == "yes" ]]; then
-        # In append mode, always check main log file
+        # In append mode, check if we've reached the target time
         log_file="${base_name}.log"
+        
+        if [[ ! -f ${log_file} ]]; then
+            return 1
+        fi
+        
+        # Check if log indicates completion
+        if ! grep -q "Finished mdrun" ${log_file} 2>/dev/null; then
+            return 1
+        fi
+        
+        # Check actual time reached in log file
+        local last_time=$(grep "Statistics over" ${log_file} 2>/dev/null | tail -1 | awk '{print $3}')
+        if [[ -z "${last_time}" ]]; then
+            # Try alternative: check the time line before "Finished mdrun"
+            last_time=$(grep -B 20 "Finished mdrun" ${log_file} 2>/dev/null | grep "step" | tail -1 | awk '{print $NF}' | sed 's/ps//')
+        fi
+        
+        if [[ -n "${last_time}" ]]; then
+            local last_time_ns=$(echo "scale=2; ${last_time} / 1000" | bc)
+            # Check if we've reached at least the target time (with small tolerance)
+            local reached=$(echo "${last_time_ns} >= ${target_time_ns} - 0.1" | bc)
+            if [[ ${reached} -eq 1 ]]; then
+                return 0
+            fi
+        fi
+        
+        return 1
     else
         # In noappend mode, first segment is main log, rest are partXXXX
         if [[ ${seg_num} -eq 0 ]]; then
@@ -222,16 +250,16 @@ check_segment_complete() {
         else
             log_file="${base_name}.part$(printf '%04d' ${seg_num}).log"
         fi
-    fi
-    
-    if [[ ! -f ${log_file} ]]; then
-        return 1
-    fi
-    
-    if grep -q "Finished mdrun" ${log_file} 2>/dev/null; then
-        return 0
-    else
-        return 1
+        
+        if [[ ! -f ${log_file} ]]; then
+            return 1
+        fi
+        
+        if grep -q "Finished mdrun" ${log_file} 2>/dev/null; then
+            return 0
+        else
+            return 1
+        fi
     fi
 }
 
@@ -287,7 +315,7 @@ if [[ -n "${existing_tpr}" ]]; then
     fi
     
     # Check if first segment already completed
-    if check_segment_complete 0 "${append_mode}"; then
+    if check_segment_complete 0 "${append_mode}" ${dt}; then
         echo "First segment already completed. Will continue from segment 2..."
         segment_num=1
         current_time=$((tstart + dt))
@@ -297,7 +325,7 @@ elif [[ ${tstart} -eq 0 ]]; then
     # Create initial TPR from template and equilibration files
     
     # Check if already completed
-    if [[ -f ${main_tpr} ]] && check_segment_complete 0 "${append_mode}"; then
+    if [[ -f ${main_tpr} ]] && check_segment_complete 0 "${append_mode}" ${dt}; then
         echo "First segment already completed. Will continue from segment 2..."
         segment_num=1
         current_time=${dt}
@@ -358,7 +386,7 @@ for ((seg=segment_num; seg<total_segments; seg++)); do
     echo "=== Segment $((seg + 1))/${total_segments}: ${current_time} -> ${segment_time} ns ==="
     
     # Check if segment already completed
-    if check_segment_complete $((seg + 1)) "${append_mode}"; then
+    if check_segment_complete $((seg + 1)) "${append_mode}" ${segment_time}; then
         echo "Segment $((seg + 1)) already completed. Skipping..."
         current_time=${segment_time}
         continue
