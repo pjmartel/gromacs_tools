@@ -226,18 +226,15 @@ check_segment_complete() {
             return 1
         fi
         
-        # Check actual time reached in log file
-        local last_time=$(grep "Statistics over" ${log_file} 2>/dev/null | tail -1 | awk '{print $3}')
-        if [[ -z "${last_time}" ]]; then
-            # Try alternative: check the time line before "Finished mdrun"
-            last_time=$(grep -B 20 "Finished mdrun" ${log_file} 2>/dev/null | grep "step" | tail -1 | awk '{print $NF}' | sed 's/ps//')
-        fi
+        # Check the TPR file to see what time it's set to run until
+        local tpr_end_time=$(gmx check -f ${base_name}.tpr 2>&1 | grep "Last frame" | tail -1 | awk '{print $NF}')
         
-        if [[ -n "${last_time}" ]]; then
-            local last_time_ns=$(echo "scale=2; ${last_time} / 1000" | bc)
-            # Check if we've reached at least the target time (with small tolerance)
-            local reached=$(echo "${last_time_ns} >= ${target_time_ns} - 0.1" | bc)
-            if [[ ${reached} -eq 1 ]]; then
+        if [[ -n "${tpr_end_time}" ]]; then
+            # tpr_end_time is in ps, target_time_ns is in ns
+            local tpr_end_ns=$(awk -v t="${tpr_end_time}" 'BEGIN {printf "%.0f", t/1000}')
+            
+            # If TPR is set to at least target time, segment is complete
+            if [[ ${tpr_end_ns} -ge ${target_time_ns} ]]; then
                 return 0
             fi
         fi
