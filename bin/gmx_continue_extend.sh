@@ -105,51 +105,29 @@ if [[ $# -eq 1 ]] && [[ "$1" =~ ^[0-9]+$ ]]; then
     # Check for checkpoint
     if [[ -f "${found_cpt}" ]]; then
         echo "Auto-detected checkpoint: ${found_cpt}"
-        existing_cpt="${found_cpt}"
+        echo ""
     else
         echo "Note: No checkpoint found (${found_cpt})"
         echo "Will start from TPR end time"
-        existing_cpt=""
+        echo ""
     fi
     
-    # Get current end time from TPR
-    tpr_info=$(gmx dump -s "${found_tpr}" 2>&1)
+    # Extend TPR
+    echo "Extending TPR by ${extend_time} ps..."
+    gmx convert-tpr -s "${found_tpr}" -o "${found_tpr}" -extend ${extend_time}
     
-    # Extract end time (t = XXX in ps)
-    current_end=$(echo "$tpr_info" | grep "t =" | head -1 | awk '{print $3}')
-    
-    if [[ -z "${current_end}" ]]; then
-        echo "Error: Could not determine current end time from TPR"
-        echo "Output from 'gmx dump -s ${found_tpr}':"
-        echo "$tpr_info" | head -20
-        exit 1
+    # Run mdrun
+    echo ""
+    echo "Running mdrun in append mode..."
+    if [[ -f "${found_cpt}" ]]; then
+        gmx mdrun -deffnm "${found_base}" -cpi "${found_cpt}" -append
+    else
+        gmx mdrun -deffnm "${found_base}" -append
     fi
     
-    # Calculate new end time (current_end is in ps from gmx dump)
-    new_end=$(awk "BEGIN {printf \"%.0f\", ${current_end} + ${extend_time}}")
-    
     echo ""
-    echo "Current end time: ${current_end} ps"
-    echo "Extension: ${extend_time} ps"
-    echo "New end time: ${new_end} ps"
-    echo "Mode: append (default for easy mode)"
-    echo ""
-    
-    # Set up arguments for main script logic (convert ps to ns since script expects ns)
-    basename_arg="${found_base}"
-    replica=0
-    tstart=0
-    tend=$(awk "BEGIN {printf \"%.3f\", ${new_end} / 1000}")
-    dt=$(awk "BEGIN {printf \"%.3f\", ${extend_time} / 1000}")
-    existing_tpr="${found_tpr}"
-    append_mode="yes"
-    
-    # Set default values
-    template_mdp="md.mdp"
-    initial_basename="npt"
-    timestep_ps="0.002"
-    title_suffix=""
-    topology="topol.top"
+    echo "=== Easy Mode Complete ==="
+    exit 0
 
 # =============================================================================
 # NORMAL MODE: 5+ arguments
@@ -218,6 +196,7 @@ else
     existing_tpr=""
     existing_cpt=""
     topology="topol.top"
+    use_ps_units="no"  # Normal mode uses ns
 
     # Parse optional arguments
     while [[ $# -gt 0 ]]; do
@@ -285,13 +264,21 @@ if ! [[ "${replica}" =~ ^[0-9]+$ ]]; then
 fi
 
 # Calculate nsteps per segment
-nsteps_per_segment=$(awk -v dt="$dt" -v ts="$timestep_ps" 'BEGIN {printf "%.0f\n", (dt * 1000) / ts}')
+if [[ "${use_ps_units}" == "yes" ]]; then
+    # Easy mode: dt already in ps
+    nsteps_per_segment=$(awk -v dt="$dt" -v ts="$timestep_ps" 'BEGIN {printf "%.0f\n", dt / ts}')
+    time_unit="ps"
+else
+    # Normal mode: dt in ns, convert to ps
+    nsteps_per_segment=$(awk -v dt="$dt" -v ts="$timestep_ps" 'BEGIN {printf "%.0f\n", (dt * 1000) / ts}')
+    time_unit="ns"
+fi
 
 echo "=== MD Extension Script ==="
 echo "Base name:       ${basename_arg}"
 echo "Replica:         ${replica}"
-echo "Time range:      ${tstart} -> ${tend} ns"
-echo "Segment dt:      ${dt} ns (${nsteps_per_segment} steps)"
+echo "Time range:      ${tstart} -> ${tend} ${time_unit}"
+echo "Segment dt:      ${dt} ${time_unit} (${nsteps_per_segment} steps)"
 echo "Timestep:        ${timestep_ps} ps"
 echo "Append mode:     ${append_mode}"
 if [[ -n "${existing_tpr}" ]]; then
@@ -523,10 +510,17 @@ for ((seg=segment_num; seg<total_segments; seg++)); do
         continue
     fi
     
-    # Extend TPR by fixed increment (dt in ps)
+    # Extend TPR by fixed increment
     # Note: -extend is INCREMENTAL, not absolute time
-    extend_by=$((dt * 1000))
-    echo "Extending TPR by ${dt} ns (${extend_by} ps)..."
+    if [[ "${use_ps_units}" == "yes" ]]; then
+        # Easy mode: dt already in ps
+        extend_by=${dt}
+        echo "Extending TPR by ${dt} ps..."
+    else
+        # Normal mode: dt in ns, convert to ps
+        extend_by=$((dt * 1000))
+        echo "Extending TPR by ${dt} ns (${extend_by} ps)..."
+    fi
     extended_tpr="${main_tpr}"
     
     gmx convert-tpr -s ${main_tpr} -o ${extended_tpr} -extend ${extend_by}
