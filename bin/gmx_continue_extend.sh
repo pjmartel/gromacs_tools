@@ -173,31 +173,6 @@ elif [[ $# -lt 5 ]]; then
     echo "  $0 md 0 0 500 100 --tpr md_0.tpr --append       # Continue existing"
     exit 1
 else
-    echo "Error: Missing required arguments"
-    echo "Usage: $0 <basename> <replica> <start_time> <end_time> <dt> [OPTIONS]"
-    echo ""
-    echo "Required:"
-    echo "  basename          Base name for output files"
-    echo "  replica           Replica number"
-    echo "  start_time        Start time in ns"
-    echo "  end_time          End time in ns"
-    echo "  dt                Segment length in ns"
-    echo ""
-    echo "Optional:"
-    echo "  --template <file>     MDP template (default: md.mdp)"
-    echo "  --initial <name>      Initial files basename (default: npt)"
-    echo "  --timestep <ps>       Timestep in ps (default: 0.002)"
-    echo "  --title <suffix>      Title suffix for MDP"
-    echo "  --append              Single output file (extends continuously)"
-    echo "  --noappend            Multiple part files (default)"
-    echo "  --tpr <file>          Start from existing TPR"
-    echo "  --cpt <file>          Checkpoint file for --tpr (optional)"
-    echo "  --topology <file>     Topology file (default: topol.top)"
-    echo ""
-    echo "Examples:"
-    echo "  $0 md 0 0 500 100 --template production.mdp --noappend"
-    echo "  $0 md 0 0 500 100 --tpr md_0.tpr --cpt md_0.cpt --append"
-else
     # Check if first 5 args look like optional flags (common mistake)
     for arg in "$1" "$2" "$3" "$4" "$5"; do
         if [[ "$arg" == --* ]]; then
