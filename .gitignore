@@ -49,6 +49,13 @@ env/
 mdout.mdp
 \#*\#
 
+# Test data directory (keep test files local only)
+tests/data/
+tests/*/
+!tests/*.sh
+!tests/*.md
+!tests/README.md
+
 # OS
 .DS_Store
 Thumbs.db
