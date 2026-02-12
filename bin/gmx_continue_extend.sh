@@ -1,14 +1,21 @@
-#!/bin/bash -e
+#!/bin/bash
 # Script for continuing GROMACS MD simulations using TPR extension method
 # Unlike gmx_continue_grompp.sh which creates new TPR for each segment,
 # this script extends the existing TPR and uses mdrun continuation
 #
-# Usage: ./gmx_continue_extend.sh <basename> <replica> <start_time> <end_time> <dt> [OPTIONS]
+# Usage: 
+#   ./gmx_continue_extend.sh <extend_time>  # EASY MODE: auto-detect files
+#   ./gmx_continue_extend.sh <basename> <replica> <start_time> <end_time> <dt> [OPTIONS]
+#
+# EASY MODE (single argument):
+#   extend_time:      Time in ps to extend (auto-detects TPR/CPT in current directory)
+#
+# NORMAL MODE (5+ arguments):
 #   basename:         Base name for output files (e.g., "md")
 #   replica:          Replica number (e.g., 0, 1, 2)
-#   start_time:       Start time in ns (e.g., 0)
-#   end_time:         End time in ns (e.g., 500)
-#   dt:               Time step per segment in ns (e.g., 100)
+#   start_time:       Start time in ps (e.g., 0)
+#   end_time:         End time in ps (e.g., 500)
+#   dt:               Time step per segment in ps (e.g., 100)
 #
 # Optional arguments (order-independent after required args):
 #   --template <file>      MDP template for initial TPR creation (default: md.mdp)
@@ -33,6 +40,9 @@
 #   2nd+ segments: Extends TPR with gmx convert-tpr, continues with mdrun -cpi
 #
 # Examples:
+#   # Easy mode: extend by 5 ns (5000 ps)
+#   ./gmx_continue_extend.sh 5000
+#
 #   # Default (noappend mode, creates part files)
 #   ./gmx_continue_extend.sh md 0 0 500 100 --template production.mdp
 #
@@ -46,8 +56,123 @@
 #   ./gmx_continue_extend.sh md 0 0 500 100 --template production.mdp \
 #       --initial npt --timestep 0.002 --title "MyProtein" --noappend
 
-# Parse required arguments - need at least 5 positional args before any flags
-if [[ $# -lt 5 ]]; then
+# =============================================================================
+# EASY MODE: Single argument = extend time (auto-detect files)
+# =============================================================================
+if [[ $# -eq 1 ]] && [[ "$1" =~ ^[0-9]+$ ]]; then
+    extend_time="$1"
+    
+    echo "=== Easy Mode: Extending simulation by ${extend_time} ps ==="
+    echo ""
+    
+    # Find TPR file(s) in current directory
+    tpr_files=(*.tpr)
+    
+    if [[ ${#tpr_files[@]} -eq 0 ]] || [[ ! -f "${tpr_files[0]}" ]]; then
+        echo "Error: No TPR file found in current directory"
+        echo "Please run this command in the directory containing your simulation files"
+        exit 1
+    fi
+    
+    if [[ ${#tpr_files[@]} -gt 1 ]]; then
+        echo "Error: Multiple TPR files found in current directory:"
+        for tpr in "${tpr_files[@]}"; do
+            echo "  - $tpr"
+        done
+        echo ""
+        echo "Please specify which one to use with full syntax:"
+        echo "  $0 <basename> <replica> <start_time> <end_time> <dt> --tpr <file>"
+        exit 1
+    fi
+    
+    # Use the found TPR file
+    found_tpr="${tpr_files[0]}"
+    found_base="${found_tpr%.tpr}"
+    found_cpt="${found_base}.cpt"
+    
+    echo "Auto-detected TPR file: ${found_tpr}"
+    
+    # Check for checkpoint
+    if [[ -f "${found_cpt}" ]]; then
+        echo "Auto-detected checkpoint: ${found_cpt}"
+        existing_cpt="${found_cpt}"
+    else
+        echo "Note: No checkpoint found (${found_cpt})"
+        echo "Will start from TPR end time"
+        existing_cpt=""
+    fi
+    
+    # Get current end time from TPR
+    tpr_info=$(gmx check -s "${found_tpr}" 2>&1)
+    current_end=$(echo "$tpr_info" | grep "Last frame" | awk '{print $NF}')
+    
+    if [[ -z "${current_end}" ]]; then
+        echo "Error: Could not determine current end time from TPR"
+        exit 1
+    fi
+    
+    # Calculate new end time
+    new_end=$(awk "BEGIN {printf \"%.0f\", ${current_end} + ${extend_time}}")
+    
+    echo ""
+    echo "Current end time: ${current_end} ps"
+    echo "Extension: ${extend_time} ps"
+    echo "New end time: ${new_end} ps"
+    echo "Mode: append (default for easy mode)"
+    echo ""
+    
+    # Set up arguments for main script logic
+    basename_arg="${found_base}"
+    replica=0
+    tstart=0
+    tend="${new_end}"
+    dt="${extend_time}"
+    existing_tpr="${found_tpr}"
+    append_mode="yes"
+    
+    # Set default values
+    template_mdp="md.mdp"
+    initial_basename="npt"
+    timestep_ps="0.002"
+    title_suffix=""
+    topology="topol.top"
+
+# =============================================================================
+# NORMAL MODE: 5+ arguments
+# =============================================================================
+elif [[ $# -lt 5 ]]; then
+    echo "Error: Invalid arguments"
+    echo ""
+    echo "Usage: $0 <extend_time>  # Easy mode"
+    echo "   or: $0 <basename> <replica> <start_time> <end_time> <dt> [OPTIONS]"
+    echo ""
+    echo "Easy mode:"
+    echo "  extend_time       Time in ps to extend (auto-detects files)"
+    echo ""
+    echo "Normal mode:"
+    echo "  basename          Base name for output files"
+    echo "  replica           Replica number"
+    echo "  start_time        Start time in ps"
+    echo "  end_time          End time in ps"
+    echo "  dt                Segment length in ps"
+    echo ""
+    echo "Optional:"
+    echo "  --template <file>     MDP template (default: md.mdp)"
+    echo "  --initial <name>      Initial files basename (default: npt)"
+    echo "  --timestep <ps>       Timestep in ps (default: 0.002)"
+    echo "  --title <suffix>      Title suffix for MDP"
+    echo "  --append              Single output file (extends continuously)"
+    echo "  --noappend            Multiple part files (default)"
+    echo "  --tpr <file>          Start from existing TPR"
+    echo "  --cpt <file>          Checkpoint file for --tpr (optional)"
+    echo "  --topology <file>     Topology file (default: topol.top)"
+    echo ""
+    echo "Examples:"
+    echo "  $0 5000                                          # Easy: extend by 5 ns"
+    echo "  $0 md 0 0 500 100 --template production.mdp     # Normal mode"
+    echo "  $0 md 0 0 500 100 --tpr md_0.tpr --append       # Continue existing"
+    exit 1
+else
     echo "Error: Missing required arguments"
     echo "Usage: $0 <basename> <replica> <start_time> <end_time> <dt> [OPTIONS]"
     echo ""
@@ -72,86 +197,89 @@ if [[ $# -lt 5 ]]; then
     echo "Examples:"
     echo "  $0 md 0 0 500 100 --template production.mdp --noappend"
     echo "  $0 md 0 0 500 100 --tpr md_0.tpr --cpt md_0.cpt --append"
-    exit 1
+else
+    # Check if first 5 args look like optional flags (common mistake)
+    for arg in "$1" "$2" "$3" "$4" "$5"; do
+        if [[ "$arg" == --* ]]; then
+            echo "Error: Found optional flag '$arg' in required argument position"
+            echo ""
+            echo "You must provide 5 required arguments BEFORE any optional flags:"
+            echo "  $0 <basename> <replica> <start_time> <end_time> <dt> [OPTIONS]"
+            echo ""
+            echo "Example:"
+            echo "  $0 md 0 0 500 100 --template production.mdp"
+            echo "     ^^ ^  ^   ^   ^^  (5 required args first)"
+            exit 1
+        fi
+    done
+
+    basename_arg="$1"
+    replica="$2"
+    tstart="$3"
+    tend="$4"
+    dt="$5"
+    shift 5
+
+    # Default values
+    template_mdp="md.mdp"
+    initial_basename="npt"
+    timestep_ps="0.002"
+    title_suffix=""
+    append_mode="no"
+    existing_tpr=""
+    existing_cpt=""
+    topology="topol.top"
+
+    # Parse optional arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --template)
+                template_mdp="$2"
+                shift 2
+                ;;
+            --initial)
+                initial_basename="$2"
+                shift 2
+                ;;
+            --timestep)
+                timestep_ps="$2"
+                shift 2
+                ;;
+            --title)
+                title_suffix="$2"
+                shift 2
+                ;;
+            --append)
+                append_mode="yes"
+                shift
+                ;;
+            --noappend)
+                append_mode="no"
+                shift
+                ;;
+            --tpr)
+                existing_tpr="$2"
+                shift 2
+                ;;
+            --cpt)
+                existing_cpt="$2"
+                shift 2
+                ;;
+            --topology)
+                topology="$2"
+                shift 2
+                ;;
+            *)
+                echo "Error: Unknown option '$1'"
+                exit 1
+                ;;
+        esac
+    done
 fi
 
-# Check if first 5 args look like optional flags (common mistake)
-for arg in "$1" "$2" "$3" "$4" "$5"; do
-    if [[ "$arg" == --* ]]; then
-        echo "Error: Found optional flag '$arg' in required argument position"
-        echo ""
-        echo "You must provide 5 required arguments BEFORE any optional flags:"
-        echo "  $0 <basename> <replica> <start_time> <end_time> <dt> [OPTIONS]"
-        echo ""
-        echo "Example:"
-        echo "  $0 md 0 0 500 100 --template production.mdp"
-        echo "     ^^ ^  ^   ^   ^^  (5 required args first)"
-        exit 1
-    fi
-done
-
-basename_arg="$1"
-replica="$2"
-tstart="$3"
-tend="$4"
-dt="$5"
-shift 5
-
-# Default values
-template_mdp="md.mdp"
-initial_basename="npt"
-timestep_ps="0.002"
-title_suffix=""
-append_mode="no"  # Default to noappend
-existing_tpr=""
-existing_cpt=""
-topology="topol.top"
-
-# Parse optional arguments
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --template)
-            template_mdp="$2"
-            shift 2
-            ;;
-        --initial)
-            initial_basename="$2"
-            shift 2
-            ;;
-        --timestep)
-            timestep_ps="$2"
-            shift 2
-            ;;
-        --title)
-            title_suffix="$2"
-            shift 2
-            ;;
-        --append)
-            append_mode="yes"
-            shift
-            ;;
-        --noappend)
-            append_mode="no"
-            shift
-            ;;
-        --tpr)
-            existing_tpr="$2"
-            shift 2
-            ;;
-        --cpt)
-            existing_cpt="$2"
-            shift 2
-            ;;
-        --topology)
-            topology="$2"
-            shift 2
-            ;;
-        *)
-            echo "Error: Unknown option '$1'"
-            exit 1
-            ;;
-    esac
-done
+# =============================================================================
+# Common setup for both modes
+# =============================================================================
 
 base_name="${basename_arg}_${replica}"
 
@@ -287,7 +415,18 @@ if [[ -n "${existing_tpr}" ]]; then
     
     echo "Using existing TPR: ${existing_tpr}"
     
-    # Copy or link to main TPR name if different
+    echo "Using existing TPR: ${existing_tpr}"
+    
+    # When using existing TPR, derive base_name from TPR filename
+    # This ensures we work with the original files (critical for append mode
+    # since checkpoint contains filenames and checksums)
+    base_name="${existing_tpr%.tpr}"
+    main_tpr="${base_name}.tpr"
+    main_cpt="${base_name}.cpt"
+    
+    echo "Base name set to: ${base_name}"
+    
+    # Copy TPR only if path is different (e.g., if in subdirectory)
     if [[ "${existing_tpr}" != "${main_tpr}" ]]; then
         cp "${existing_tpr}" "${main_tpr}"
         echo "Copied to ${main_tpr}"
@@ -367,7 +506,13 @@ elif [[ ${tstart} -eq 0 ]]; then
         fi
         
         echo "Running mdrun for segment 1..."
-        gmx mdrun -deffnm ${base_name}
+        if [[ -f ${base_name}.cpt ]]; then
+            # Checkpoint exists, use it for crash recovery
+            gmx mdrun -deffnm ${base_name} -cpi ${base_name}.cpt
+        else
+            # No checkpoint yet, first run
+            gmx mdrun -deffnm ${base_name}
+        fi
         
         segment_num=1
         current_time=${dt}
