@@ -206,8 +206,23 @@ if [[ -z "${existing_tpr}" ]] && [[ ! -f ${topology} ]]; then
 fi
 
 # Function to check if a segment completed successfully
+# Args: segment_number, append_mode
 check_segment_complete() {
-    local log_file="$1"
+    local seg_num="$1"
+    local append="$2"
+    local log_file
+    
+    if [[ "${append}" == "yes" ]]; then
+        # In append mode, always check main log file
+        log_file="${base_name}.log"
+    else
+        # In noappend mode, first segment is main log, rest are partXXXX
+        if [[ ${seg_num} -eq 0 ]]; then
+            log_file="${base_name}.log"
+        else
+            log_file="${base_name}.part$(printf '%04d' ${seg_num}).log"
+        fi
+    fi
     
     if [[ ! -f ${log_file} ]]; then
         return 1
@@ -272,7 +287,7 @@ if [[ -n "${existing_tpr}" ]]; then
     fi
     
     # Check if first segment already completed
-    if check_segment_complete "${main_log}"; then
+    if check_segment_complete 0 "${append_mode}"; then
         echo "First segment already completed. Will continue from segment 2..."
         segment_num=1
         current_time=$((tstart + dt))
@@ -282,7 +297,7 @@ elif [[ ${tstart} -eq 0 ]]; then
     # Create initial TPR from template and equilibration files
     
     # Check if already completed
-    if [[ -f ${main_tpr} ]] && check_segment_complete "${main_log}"; then
+    if [[ -f ${main_tpr} ]] && check_segment_complete 0 "${append_mode}"; then
         echo "First segment already completed. Will continue from segment 2..."
         segment_num=1
         current_time=${dt}
@@ -343,53 +358,59 @@ for ((seg=segment_num; seg<total_segments; seg++)); do
     echo "=== Segment $((seg + 1))/${total_segments}: ${current_time} -> ${segment_time} ns ==="
     
     # Check if segment already completed
-    if [[ "${append_mode}" == "yes" ]]; then
-        check_log="${main_log}"
-    else
-        if [[ ${seg} -eq 0 ]]; then
-            check_log="${main_log}"
-        else
-            check_log="${base_name}.part$(printf '%04d' ${seg}).log"
-        fi
-    fi
-    
-    if check_segment_complete "${check_log}"; then
+    if check_segment_complete $((seg + 1)) "${append_mode}"; then
         echo "Segment $((seg + 1)) already completed. Skipping..."
         current_time=${segment_time}
+        # Update checkpoint location for next iteration
+        if [[ "${append_mode}" == "no" ]] && [[ $((seg + 1)) -gt 0 ]]; then
+            main_cpt="${base_name}.part$(printf '%04d' $((seg + 1))).cpt"
+        fi
         continue
     fi
     
-    # Extend TPR to new time
-    echo "Extending TPR to ${segment_time} ns (${segment_time_ps} ps)..."
+    # Get current TPR end time
+    current_tpr_time=$(gmx check -f ${main_tpr} 2>&1 | grep "Last frame" | awk '{print $NF}')
+    current_tpr_time_ps=$(echo "$current_tpr_time * 1000" | bc | cut -d. -f1)
+    extend_by=$((segment_time_ps - current_tpr_time_ps))
+    
+    # Extend TPR to new absolute time
+    echo "Extending TPR from ${current_tpr_time} ns to ${segment_time} ns (+${extend_by} ps)..."
     extended_tpr="${main_tpr}"
     
-    gmx convert-tpr -s ${main_tpr} -o ${extended_tpr} -extend $((dt * 1000))
+    gmx convert-tpr -s ${main_tpr} -o ${extended_tpr} -extend ${extend_by}
+    
+    # Determine checkpoint file for this segment
+    if [[ "${append_mode}" == "yes" ]]; then
+        # Append mode: always use main checkpoint
+        current_cpt="${main_cpt}"
+    else
+        # Noappend mode: segment 1 uses main cpt, rest use partXXXX.cpt from previous segment
+        if [[ ${seg} -eq 0 ]]; then
+            current_cpt="${main_cpt}"
+        else
+            current_cpt="${base_name}.part$(printf '%04d' ${seg}).cpt"
+        fi
+    fi
     
     # Run mdrun with checkpoint continuation
     echo "Running mdrun (segment $((seg + 1)))..."
     
     if [[ "${append_mode}" == "yes" ]]; then
         # Append mode: continue to same files
-        if [[ -f ${main_cpt} ]]; then
-            gmx mdrun -deffnm ${base_name} -cpi ${main_cpt} -s ${extended_tpr} -append
+        if [[ -f ${current_cpt} ]]; then
+            gmx mdrun -deffnm ${base_name} -cpi ${current_cpt} -s ${extended_tpr} -append
         else
-            echo "Warning: Checkpoint not found, starting from structure"
+            echo "Warning: Checkpoint ${current_cpt} not found, starting from structure"
             gmx mdrun -deffnm ${base_name} -s ${extended_tpr} -append
         fi
     else
         # Noappend mode: creates part000X files
-        if [[ -f ${main_cpt} ]]; then
-            gmx mdrun -deffnm ${base_name} -cpi ${main_cpt} -s ${extended_tpr} -noappend
+        if [[ -f ${current_cpt} ]]; then
+            gmx mdrun -deffnm ${base_name} -cpi ${current_cpt} -s ${extended_tpr} -noappend
         else
-            echo "Warning: Checkpoint not found, starting from structure"
+            echo "Warning: Checkpoint ${current_cpt} not found, starting from structure"
             gmx mdrun -deffnm ${base_name} -s ${extended_tpr} -noappend
         fi
-    fi
-    
-    # Update checkpoint location
-    if [[ "${append_mode}" == "no" ]] && [[ ${seg} -gt 0 ]]; then
-        # In noappend mode, checkpoint gets part number
-        main_cpt="${base_name}.part$(printf '%04d' $((seg + 1))).cpt"
     fi
     
     current_time=${segment_time}
