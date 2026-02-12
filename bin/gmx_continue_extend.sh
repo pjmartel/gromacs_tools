@@ -46,7 +46,7 @@
 #   ./gmx_continue_extend.sh md 0 0 500 100 --template production.mdp \
 #       --initial npt --timestep 0.002 --title "MyProtein" --noappend
 
-# Parse required arguments
+# Parse required arguments - need at least 5 positional args before any flags
 if [[ $# -lt 5 ]]; then
     echo "Error: Missing required arguments"
     echo "Usage: $0 <basename> <replica> <start_time> <end_time> <dt> [OPTIONS]"
@@ -71,9 +71,24 @@ if [[ $# -lt 5 ]]; then
     echo ""
     echo "Examples:"
     echo "  $0 md 0 0 500 100 --template production.mdp --noappend"
-    echo "  $0 md 0 0 500 100 --tpr md_0.tpr --append"
+    echo "  $0 md 0 0 500 100 --tpr md_0.tpr --cpt md_0.cpt --append"
     exit 1
 fi
+
+# Check if first 5 args look like optional flags (common mistake)
+for arg in "$1" "$2" "$3" "$4" "$5"; do
+    if [[ "$arg" == --* ]]; then
+        echo "Error: Found optional flag '$arg' in required argument position"
+        echo ""
+        echo "You must provide 5 required arguments BEFORE any optional flags:"
+        echo "  $0 <basename> <replica> <start_time> <end_time> <dt> [OPTIONS]"
+        echo ""
+        echo "Example:"
+        echo "  $0 md 0 0 500 100 --template production.mdp"
+        echo "     ^^ ^  ^   ^   ^^  (5 required args first)"
+        exit 1
+    fi
+done
 
 basename_arg="$1"
 replica="$2"
