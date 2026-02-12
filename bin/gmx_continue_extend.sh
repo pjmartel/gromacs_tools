@@ -65,6 +65,16 @@ if [[ $# -eq 1 ]] && [[ "$1" =~ ^[0-9]+$ ]]; then
     echo "=== Easy Mode: Extending simulation by ${extend_time} ps ==="
     echo ""
     
+    # Source GROMACS if not already available
+    if ! command -v gmx &> /dev/null; then
+        if [[ -f /programs/gromacs-2025.2/bin/GMXRC.bash ]]; then
+            . /programs/gromacs-2025.2/bin/GMXRC.bash
+        else
+            echo "Error: GROMACS not found. Please source GMXRC.bash or add gmx to PATH."
+            exit 1
+        fi
+    fi
+    
     # Find TPR file(s) in current directory
     tpr_files=(*.tpr)
     
