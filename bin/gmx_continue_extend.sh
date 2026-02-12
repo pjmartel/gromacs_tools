@@ -125,7 +125,7 @@ if [[ $# -eq 1 ]] && [[ "$1" =~ ^[0-9]+$ ]]; then
         exit 1
     fi
     
-    # Calculate new end time
+    # Calculate new end time (current_end is in ps from gmx dump)
     new_end=$(awk "BEGIN {printf \"%.0f\", ${current_end} + ${extend_time}}")
     
     echo ""
@@ -135,12 +135,12 @@ if [[ $# -eq 1 ]] && [[ "$1" =~ ^[0-9]+$ ]]; then
     echo "Mode: append (default for easy mode)"
     echo ""
     
-    # Set up arguments for main script logic
+    # Set up arguments for main script logic (convert ps to ns since script expects ns)
     basename_arg="${found_base}"
     replica=0
     tstart=0
-    tend="${new_end}"
-    dt="${extend_time}"
+    tend=$(awk "BEGIN {printf \"%.3f\", ${new_end} / 1000}")
+    dt=$(awk "BEGIN {printf \"%.3f\", ${extend_time} / 1000}")
     existing_tpr="${found_tpr}"
     append_mode="yes"
     
