@@ -109,7 +109,7 @@ Contributions welcome! Feel free to open issues or submit pull requests.
 
 ## 📜 License
 
-[Your License Here]
+MIT License - see [LICENSE](LICENSE) file for details.
 
 ## 🔗 Resources
 
