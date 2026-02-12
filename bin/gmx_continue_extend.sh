@@ -361,34 +361,35 @@ for ((seg=segment_num; seg<total_segments; seg++)); do
     if check_segment_complete $((seg + 1)) "${append_mode}"; then
         echo "Segment $((seg + 1)) already completed. Skipping..."
         current_time=${segment_time}
-        # Update checkpoint location for next iteration
-        if [[ "${append_mode}" == "no" ]] && [[ $((seg + 1)) -gt 0 ]]; then
-            main_cpt="${base_name}.part$(printf '%04d' $((seg + 1))).cpt"
-        fi
         continue
     fi
     
-    # Get current TPR end time
-    current_tpr_time=$(gmx check -f ${main_tpr} 2>&1 | grep "Last frame" | awk '{print $NF}')
-    current_tpr_time_ps=$(echo "$current_tpr_time * 1000" | bc | cut -d. -f1)
-    extend_by=$((segment_time_ps - current_tpr_time_ps))
-    
-    # Extend TPR to new absolute time
-    echo "Extending TPR from ${current_tpr_time} ns to ${segment_time} ns (+${extend_by} ps)..."
+    # Extend TPR by fixed increment (dt in ps)
+    # Note: -extend is INCREMENTAL, not absolute time
+    extend_by=$((dt * 1000))
+    echo "Extending TPR by ${dt} ns (${extend_by} ps)..."
     extended_tpr="${main_tpr}"
     
     gmx convert-tpr -s ${main_tpr} -o ${extended_tpr} -extend ${extend_by}
     
     # Determine checkpoint file for this segment
+    # In noappend mode: seg 1 uses md_0.cpt, seg 2 uses md_0.cpt, seg 3 uses md_0.part0001.cpt, etc.
+    # In append mode: always use md_0.cpt
     if [[ "${append_mode}" == "yes" ]]; then
         # Append mode: always use main checkpoint
-        current_cpt="${main_cpt}"
+        current_cpt="${base_name}.cpt"
     else
-        # Noappend mode: segment 1 uses main cpt, rest use partXXXX.cpt from previous segment
-        if [[ ${seg} -eq 0 ]]; then
-            current_cpt="${main_cpt}"
+        # Noappend mode checkpoint logic:
+        # Segment 2 (seg=1): uses md_0.cpt from segment 1
+        # Segment 3 (seg=2): uses md_0.part0001.cpt from segment 2
+        # Segment 4 (seg=3): uses md_0.part0002.cpt from segment 3
+        if [[ ${seg} -eq 1 ]]; then
+            # Segment 2 uses segment 1's checkpoint
+            current_cpt="${base_name}.cpt"
         else
-            current_cpt="${base_name}.part$(printf '%04d' ${seg}).cpt"
+            # Later segments use previous part's checkpoint
+            prev_part=$((seg - 1))
+            current_cpt="${base_name}.part$(printf '%04d' ${prev_part}).cpt"
         fi
     fi
     
