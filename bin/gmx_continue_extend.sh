@@ -104,10 +104,14 @@ if [[ $# -eq 1 ]] && [[ "$1" =~ ^[0-9]+$ ]]; then
     
     # Get current end time from TPR
     tpr_info=$(gmx check -s "${found_tpr}" 2>&1)
-    current_end=$(echo "$tpr_info" | grep "Last frame" | awk '{print $NF}')
+    
+    # Try multiple patterns to find the end time
+    current_end=$(echo "$tpr_info" | grep -i "last.*frame\|run.*until\|t.*=" | head -1 | grep -o '[0-9]\+\.*[0-9]*' | tail -1)
     
     if [[ -z "${current_end}" ]]; then
         echo "Error: Could not determine current end time from TPR"
+        echo "Output from 'gmx check -s ${found_tpr}':"
+        echo "$tpr_info"
         exit 1
     fi
     
