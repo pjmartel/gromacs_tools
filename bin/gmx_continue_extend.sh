@@ -373,25 +373,9 @@ for ((seg=segment_num; seg<total_segments; seg++)); do
     gmx convert-tpr -s ${main_tpr} -o ${extended_tpr} -extend ${extend_by}
     
     # Determine checkpoint file for this segment
-    # In noappend mode: seg 1 uses md_0.cpt, seg 2 uses md_0.cpt, seg 3 uses md_0.part0001.cpt, etc.
-    # In append mode: always use md_0.cpt
-    if [[ "${append_mode}" == "yes" ]]; then
-        # Append mode: always use main checkpoint
-        current_cpt="${base_name}.cpt"
-    else
-        # Noappend mode checkpoint logic:
-        # Segment 2 (seg=1): uses md_0.cpt from segment 1
-        # Segment 3 (seg=2): uses md_0.part0001.cpt from segment 2
-        # Segment 4 (seg=3): uses md_0.part0002.cpt from segment 3
-        if [[ ${seg} -eq 1 ]]; then
-            # Segment 2 uses segment 1's checkpoint
-            current_cpt="${base_name}.cpt"
-        else
-            # Later segments use previous part's checkpoint
-            prev_part=$((seg - 1))
-            current_cpt="${base_name}.part$(printf '%04d' ${prev_part}).cpt"
-        fi
-    fi
+    # IMPORTANT: In both append and noappend modes, checkpoint is always ${base_name}.cpt
+    # The part000X suffix only applies to trajectory/energy/log files, NOT checkpoint!
+    current_cpt="${base_name}.cpt"
     
     # Run mdrun with checkpoint continuation
     echo "Running mdrun (segment $((seg + 1)))..."
