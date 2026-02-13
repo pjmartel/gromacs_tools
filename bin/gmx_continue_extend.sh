@@ -27,6 +27,7 @@
 #   --tpr <file>           Start from existing TPR instead of creating new one
 #   --cpt <file>           Checkpoint file to use with --tpr (optional)
 #   --topology <file>      Topology file (default: topol.top)
+#   --plumed <file>        PLUMED input file for enhanced sampling/analysis
 #
 # MODES:
 #   --append:   Extends same TPR, appends to same .xtc/.edr/.log files
@@ -139,9 +140,9 @@ if ([[ $# -eq 1 ]] && [[ "$1" =~ ^[0-9]+$ ]]) || \
     echo ""
     echo "Running mdrun in append mode..."
     if [[ -f "${found_cpt}" ]]; then
-        gmx mdrun -deffnm "${found_base}" -cpi "${found_cpt}" -append
+        gmx mdrun -deffnm "${found_base}" -cpi "${found_cpt}" -append ${plumed_flag}
     else
-        gmx mdrun -deffnm "${found_base}" -append
+        gmx mdrun -deffnm "${found_base}" -append ${plumed_flag}
     fi
     
     echo ""
@@ -177,6 +178,7 @@ elif [[ $# -lt 5 ]]; then
     echo "  --tpr <file>          Start from existing TPR"
     echo "  --cpt <file>          Checkpoint file for --tpr (optional)"
     echo "  --topology <file>     Topology file (default: topol.top)"
+    echo "  --plumed <file>       PLUMED input file for enhanced sampling/analysis"
     echo ""
     echo "Examples:"
     echo "  $0 5000                                          # Easy: extend by 5 ns"
@@ -216,6 +218,7 @@ else
     existing_cpt=""
     topology="topol.top"
     use_ps_units="no"  # Normal mode uses ns
+    plumed_file=""
 
     # Parse optional arguments
     while [[ $# -gt 0 ]]; do
@@ -256,6 +259,10 @@ else
                 topology="$2"
                 shift 2
                 ;;
+            --plumed)
+                plumed_file="$2"
+                shift 2
+                ;;
             *)
                 echo "Error: Unknown option '$1'"
                 exit 1
@@ -269,6 +276,18 @@ fi
 # =============================================================================
 
 base_name="${basename_arg}_${replica}"
+
+# Setup PLUMED flag if provided
+if [[ -n "${plumed_file}" ]]; then
+    if [[ ! -f "${plumed_file}" ]]; then
+        echo "Error: PLUMED file '${plumed_file}' not found"
+        exit 1
+    fi
+    plumed_flag="-plumed ${plumed_file}"
+    echo "Using PLUMED file: ${plumed_file}"
+else
+    plumed_flag=""
+fi
 
 # Validate numeric arguments
 if ! [[ "${tstart}" =~ ^[0-9]+$ ]] || ! [[ "${tend}" =~ ^[0-9]+$ ]] || ! [[ "${dt}" =~ ^[0-9]+$ ]]; then
@@ -503,10 +522,10 @@ elif [[ ${tstart} -eq 0 ]]; then
         echo "Running mdrun for segment 1..."
         if [[ -f ${base_name}.cpt ]]; then
             # Checkpoint exists, use it for crash recovery
-            gmx mdrun -deffnm ${base_name} -cpi ${base_name}.cpt
+            gmx mdrun -deffnm ${base_name} -cpi ${base_name}.cpt ${plumed_flag}
         else
             # No checkpoint yet, first run
-            gmx mdrun -deffnm ${base_name}
+            gmx mdrun -deffnm ${base_name} ${plumed_flag}
         fi
         
         segment_num=1
@@ -555,18 +574,18 @@ for ((seg=segment_num; seg<total_segments; seg++)); do
     if [[ "${append_mode}" == "yes" ]]; then
         # Append mode: continue to same files
         if [[ -f ${current_cpt} ]]; then
-            gmx mdrun -deffnm ${base_name} -cpi ${current_cpt} -s ${extended_tpr} -append
+            gmx mdrun -deffnm ${base_name} -cpi ${current_cpt} -s ${extended_tpr} -append ${plumed_flag}
         else
             echo "Warning: Checkpoint ${current_cpt} not found, starting from structure"
-            gmx mdrun -deffnm ${base_name} -s ${extended_tpr} -append
+            gmx mdrun -deffnm ${base_name} -s ${extended_tpr} -append ${plumed_flag}
         fi
     else
         # Noappend mode: creates part000X files
         if [[ -f ${current_cpt} ]]; then
-            gmx mdrun -deffnm ${base_name} -cpi ${current_cpt} -s ${extended_tpr} -noappend
+            gmx mdrun -deffnm ${base_name} -cpi ${current_cpt} -s ${extended_tpr} -noappend ${plumed_flag}
         else
             echo "Warning: Checkpoint ${current_cpt} not found, starting from structure"
-            gmx mdrun -deffnm ${base_name} -s ${extended_tpr} -noappend
+            gmx mdrun -deffnm ${base_name} -s ${extended_tpr} -noappend ${plumed_flag}
         fi
     fi
     

@@ -43,6 +43,7 @@ if [[ $# -lt 5 ]] || [[ $# -gt 9 ]]; then
     echo "  initial_basename: (Optional) Basename for initial equilibration files (default: 'npt')"
     echo "  timestep:         (Optional) Integration timestep in ps (default: 0.002)"
     echo "  title_suffix:     (Optional) System-specific title to append (e.g., 'TRP_cage_replica_1')"
+    echo "  --plumed <file>:  (Optional) PLUMED input file for enhanced sampling/analysis"
     echo ""
     echo "Example: $0 md 0 0 500 100 md_production.mdp npt 0.002 'TRP_cage'"
     echo "  Uses npt.gro/cpt/edr as starting point, md_production.mdp as template"
@@ -61,7 +62,35 @@ initial_basename="${7:-npt}"     # Default to "npt" if not provided
 timestep_ps="${8:-0.002}"        # Default to 0.002 ps (2 fs) if not provided
 title_suffix="${9:-}"            # Optional title suffix
 topology="topol.top"
+plumed_file=""
 base_name="${basename_arg}_${replica}"
+
+# Parse optional flags (--plumed)
+shift 9
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --plumed)
+            plumed_file="$2"
+            shift 2
+            ;;
+        *)
+            echo "Warning: Unknown option '$1' ignored"
+            shift
+            ;;
+    esac
+done
+
+# Setup PLUMED flag if provided
+if [[ -n "${plumed_file}" ]]; then
+    if [[ ! -f "${plumed_file}" ]]; then
+        echo "Error: PLUMED file '${plumed_file}' not found"
+        exit 1
+    fi
+    plumed_flag="-plumed ${plumed_file}"
+    echo "Using PLUMED file: ${plumed_file}"
+else
+    plumed_flag=""
+fi
 
 # Calculate nsteps per segment: (dt_ns * 1000 ps/ns) / timestep_ps
 nsteps_per_segment=$(awk -v dt="$dt" -v ts="$timestep_ps" 'BEGIN {printf "%.0f\n", (dt * 1000) / ts}')
@@ -176,7 +205,7 @@ if [[ ${actual_start} -eq ${tstart} ]] && [[ ${tstart} -eq 0 ]]; then
         if ! check_segment_complete "${initial_cur}"; then
             echo "Resuming interrupted initial segment..."
             echo "Note: Existing incomplete output files will be backed up with .bak extension"
-            gmx mdrun -deffnm ${initial_cur} -cpi ${initial_cur}.cpt
+            gmx mdrun -deffnm ${initial_cur} -cpi ${initial_cur}.cpt ${plumed_flag}
         else
             echo "Initial segment already completed successfully."
         fi
@@ -205,7 +234,7 @@ if [[ ${actual_start} -eq ${tstart} ]] && [[ ${tstart} -eq 0 ]]; then
         fi
 
         echo "Running mdrun for initial segment..."
-        gmx mdrun -deffnm ${initial_cur}
+        gmx mdrun -deffnm ${initial_cur} ${plumed_flag}
     fi
 
     if [[ -f ./STOP ]]; then
@@ -228,7 +257,7 @@ for ((time=${start_time} ; time<${tend} ; time+=${dt})) ; do
         if ! check_segment_complete "${cur}"; then
             echo "Resuming interrupted segment..."
             echo "Note: Existing incomplete output files will be backed up with .bak extension"
-            gmx mdrun -deffnm ${cur} -cpi ${cur}.cpt
+            gmx mdrun -deffnm ${cur} -cpi ${cur}.cpt ${plumed_flag}
         else
             echo "Segment already completed successfully. Skipping..."
             continue
@@ -270,7 +299,7 @@ for ((time=${start_time} ; time<${tend} ; time+=${dt})) ; do
         fi
         
         echo "Running mdrun..."
-        gmx mdrun -deffnm ${cur}
+        gmx mdrun -deffnm ${cur} ${plumed_flag}
     fi
     
     if [[ -f ./STOP ]]; then
