@@ -13,9 +13,9 @@
 # NORMAL MODE (5+ arguments):
 #   basename:         Base name for output files (e.g., "md")
 #   replica:          Replica number (e.g., 0, 1, 2)
-#   start_time:       Start time in ps (e.g., 0)
-#   end_time:         End time in ps (e.g., 500)
-#   dt:               Time step per segment in ps (e.g., 100)
+#   start_time:       Start time in ns (e.g., 0)
+#   end_time:         End time in ns (e.g., 500)
+#   dt:               Time step per segment in ns (e.g., 100)
 #
 # Optional arguments (order-independent after required args):
 #   --template <file>      MDP template for initial TPR creation (default: md.mdp)
@@ -28,6 +28,7 @@
 #   --cpt <file>           Checkpoint file to use with --tpr (optional)
 #   --topology <file>      Topology file (default: topol.top)
 #   --plumed <file>        PLUMED input file for enhanced sampling/analysis
+#   --ps                   Interpret times as picoseconds (default: nanoseconds)
 #
 # MODES:
 #   --append:   Extends same TPR, appends to same .xtc/.edr/.log files
@@ -179,6 +180,7 @@ elif [[ $# -lt 5 ]]; then
     echo "  --cpt <file>          Checkpoint file for --tpr (optional)"
     echo "  --topology <file>     Topology file (default: topol.top)"
     echo "  --plumed <file>       PLUMED input file for enhanced sampling/analysis"
+    echo "  --ps                  Interpret times as picoseconds (default: nanoseconds)"
     echo ""
     echo "Examples:"
     echo "  $0 5000                                          # Easy: extend by 5 ns"
@@ -217,7 +219,7 @@ else
     existing_tpr=""
     existing_cpt=""
     topology="topol.top"
-    use_ps_units="no"  # Normal mode uses ns
+    time_unit="ns"  # Default to nanoseconds
     plumed_file=""
 
     # Parse optional arguments
@@ -263,6 +265,10 @@ else
                 plumed_file="$2"
                 shift 2
                 ;;
+            --ps)
+                time_unit="ps"
+                shift
+                ;;
             *)
                 echo "Error: Unknown option '$1'"
                 exit 1
@@ -302,14 +308,12 @@ if ! [[ "${replica}" =~ ^[0-9]+$ ]]; then
 fi
 
 # Calculate nsteps per segment
-if [[ "${use_ps_units}" == "yes" ]]; then
-    # Easy mode: dt already in ps
+if [[ "${time_unit}" == "ps" ]]; then
+    # Times already in ps
     nsteps_per_segment=$(awk -v dt="$dt" -v ts="$timestep_ps" 'BEGIN {printf "%.0f\n", dt / ts}')
-    time_unit="ps"
 else
-    # Normal mode: dt in ns, convert to ps
+    # Times in ns, convert to ps
     nsteps_per_segment=$(awk -v dt="$dt" -v ts="$timestep_ps" 'BEGIN {printf "%.0f\n", (dt * 1000) / ts}')
-    time_unit="ns"
 fi
 
 echo "=== MD Extension Script ==="
@@ -550,12 +554,12 @@ for ((seg=segment_num; seg<total_segments; seg++)); do
     
     # Extend TPR by fixed increment
     # Note: -extend is INCREMENTAL, not absolute time
-    if [[ "${use_ps_units}" == "yes" ]]; then
-        # Easy mode: dt already in ps
+    if [[ "${time_unit}" == "ps" ]]; then
+        # Times already in ps
         extend_by=${dt}
         echo "Extending TPR by ${dt} ps..."
     else
-        # Normal mode: dt in ns, convert to ps
+        # Times in ns, convert to ps
         extend_by=$((dt * 1000))
         echo "Extending TPR by ${dt} ns (${extend_by} ps)..."
     fi

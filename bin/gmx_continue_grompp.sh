@@ -46,6 +46,7 @@ if [[ $# -lt 5 ]]; then
     echo "  --timestep <ps>        Integration timestep in ps (default: 0.002)"
     echo "  --title <suffix>       System-specific title to append (e.g., 'TRP_cage_replica_1')"
     echo "  --plumed <file>        PLUMED input file for enhanced sampling/analysis"
+    echo "  --ps                   Interpret times as picoseconds (default: nanoseconds)"
     echo ""
     echo "Example: $0 md 0 0 500 100 --template md_production.mdp --title 'TRP_cage'"
     echo "  Uses npt.gro/cpt/edr as starting point, md_production.mdp as template"
@@ -68,6 +69,7 @@ timestep_ps="0.002"
 title_suffix=""
 plumed_file=""
 topology="topol.top"
+time_unit="ns"  # Default to nanoseconds
 
 # Parse optional arguments
 while [[ $# -gt 0 ]]; do
@@ -91,6 +93,10 @@ while [[ $# -gt 0 ]]; do
         --plumed)
             plumed_file="$2"
             shift 2
+            ;;
+        --ps)
+            time_unit="ps"
+            shift
             ;;
         *)
             # Check if it's a positional argument (for backward compatibility)
@@ -138,14 +144,20 @@ else
     plumed_flag=""
 fi
 
-# Calculate nsteps per segment: (dt_ns * 1000 ps/ns) / timestep_ps
-nsteps_per_segment=$(awk -v dt="$dt" -v ts="$timestep_ps" 'BEGIN {printf "%.0f\n", (dt * 1000) / ts}')
+# Calculate nsteps per segment
+if [[ "${time_unit}" == "ps" ]]; then
+    # Times already in ps
+    nsteps_per_segment=$(awk -v dt="$dt" -v ts="$timestep_ps" 'BEGIN {printf "%.0f\n", dt / ts}')
+else
+    # Times in ns, convert to ps
+    nsteps_per_segment=$(awk -v dt="$dt" -v ts="$timestep_ps" 'BEGIN {printf "%.0f\n", (dt * 1000) / ts}')
+fi
 
 echo "=== MD Continuation Script ==="
 echo "Base name:       ${basename_arg}"
 echo "Replica:         ${replica}"
-echo "Time range:      ${tstart} -> ${tend} ns"
-echo "Segment dt:      ${dt} ns (${nsteps_per_segment} steps)"
+echo "Time range:      ${tstart} -> ${tend} ${time_unit}"
+echo "Segment dt:      ${dt} ${time_unit} (${nsteps_per_segment} steps)"
 echo "Timestep:        ${timestep_ps} ps"
 echo "Template MDP:    ${template_mdp}"
 echo "Initial files:   ${initial_basename}.gro/cpt/edr"
@@ -294,7 +306,12 @@ start_time=$(( actual_start > dt ? actual_start : dt ))
 for ((time=${start_time} ; time<${tend} ; time+=${dt})) ; do
     prev="${base_name}_$((time-dt))_${time}"
     cur="${base_name}_${time}_$((time+dt))"
-    timeps=$((time * 1000))  # Convert ns to ps for tinit parameter
+    # Convert to ps for tinit parameter if needed
+    if [[ "${time_unit}" == "ps" ]]; then
+        timeps=${time}  # Already in ps
+    else
+        timeps=$((time * 1000))  # Convert ns to ps
+    fi
     
     echo "Setting up segment: ${time} -> $((time+dt)) ns"
 
@@ -354,4 +371,4 @@ for ((time=${start_time} ; time<${tend} ; time+=${dt})) ; do
     fi
 done
 
-echo "All segments completed successfully (0 -> ${tend} ns)"
+echo "All segments completed successfully (0 -> ${tend} ${time_unit})"
