@@ -30,61 +30,101 @@
 #     ./md_continue_grompp.sh md 0 0 500 100 md_production.mdp npt
 #     (Same command - the script figures out where to continue)
 
-# Check arguments
-if [[ $# -lt 5 ]] || [[ $# -gt 9 ]]; then
-    echo "Error: Incorrect number of arguments"
-    echo "Usage: $0 <basename> <replica> <start_time> <end_time> <dt> [template_mdp] [initial_basename] [timestep] [title_suffix]"
+# Check minimum arguments
+if [[ $# -lt 5 ]]; then
+    echo "Error: Insufficient arguments"
+    echo "Usage: $0 <basename> <replica> <start_time> <end_time> <dt> [OPTIONS]"
     echo "  basename:         Base name for output files (e.g., 'md')"
     echo "  replica:          Replica number (e.g., 0)"
     echo "  start_time:       Start time in ns (e.g., 0)"
     echo "  end_time:         End time in ns (e.g., 500)"
     echo "  dt:               Time step per segment in ns (e.g., 100)"
-    echo "  template_mdp:     (Optional) MDP template for production runs (default: 'md.mdp')"
-    echo "  initial_basename: (Optional) Basename for initial equilibration files (default: 'npt')"
-    echo "  timestep:         (Optional) Integration timestep in ps (default: 0.002)"
-    echo "  title_suffix:     (Optional) System-specific title to append (e.g., 'TRP_cage_replica_1')"
-    echo "  --plumed <file>:  (Optional) PLUMED input file for enhanced sampling/analysis"
     echo ""
-    echo "Example: $0 md 0 0 500 100 md_production.mdp npt 0.002 'TRP_cage'"
+    echo "Optional arguments:"
+    echo "  --template <file>      MDP template for production runs (default: 'md.mdp')"
+    echo "  --initial <basename>   Basename for initial equilibration files (default: 'npt')"
+    echo "  --timestep <ps>        Integration timestep in ps (default: 0.002)"
+    echo "  --title <suffix>       System-specific title to append (e.g., 'TRP_cage_replica_1')"
+    echo "  --plumed <file>        PLUMED input file for enhanced sampling/analysis"
+    echo ""
+    echo "Example: $0 md 0 0 500 100 --template md_production.mdp --title 'TRP_cage'"
     echo "  Uses npt.gro/cpt/edr as starting point, md_production.mdp as template"
     echo "  Appends 'TRP_cage' to MDP title, then runs md_0_0_100, md_0_100_200, etc."
     exit 1
 fi
 
-# Parse arguments
+# Parse required positional arguments
 basename_arg="$1"
 replica="$2"
 tstart="$3"
 tend="$4"
 dt="$5"
-template_mdp="${6:-md.mdp}"      # Default to "md.mdp" if not provided
-initial_basename="${7:-npt}"     # Default to "npt" if not provided
-timestep_ps="${8:-0.002}"        # Default to 0.002 ps (2 fs) if not provided
-title_suffix="${9:-}"            # Optional title suffix
-topology="topol.top"
+shift 5
+
+# Set default values for optional arguments
+template_mdp="md.mdp"
+initial_basename="npt"
+timestep_ps="0.002"
+title_suffix=""
 plumed_file=""
-base_name="${basename_arg}_${replica}"
+topology="topol.top"
 
-# Parse optional flags (--plumed) - shift only by the number of args actually provided
-# Count how many positional arguments were provided (max 9)
-num_positional_args=$#
-if [[ $num_positional_args -gt 9 ]]; then
-    num_positional_args=9
-fi
-shift $num_positional_args
-
+# Parse optional arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --template)
+            template_mdp="$2"
+            shift 2
+            ;;
+        --initial)
+            initial_basename="$2"
+            shift 2
+            ;;
+        --timestep)
+            timestep_ps="$2"
+            shift 2
+            ;;
+        --title)
+            title_suffix="$2"
+            shift 2
+            ;;
         --plumed)
             plumed_file="$2"
             shift 2
             ;;
         *)
-            echo "Warning: Unknown option '$1' ignored"
-            shift
+            # Check if it's a positional argument (for backward compatibility)
+            # If we haven't seen any flags yet, treat remaining args as old-style positional
+            if [[ ! "$1" =~ ^-- ]]; then
+                echo "Warning: Treating '$1' as legacy positional argument"
+                if [[ -z "$template_mdp" ]] || [[ "$template_mdp" == "md.mdp" ]]; then
+                    template_mdp="$1"
+                    shift
+                    if [[ $# -gt 0 ]] && [[ ! "$1" =~ ^-- ]]; then
+                        initial_basename="$1"
+                        shift
+                        if [[ $# -gt 0 ]] && [[ ! "$1" =~ ^-- ]]; then
+                            timestep_ps="$1"
+                            shift
+                            if [[ $# -gt 0 ]] && [[ ! "$1" =~ ^-- ]]; then
+                                title_suffix="$1"
+                                shift
+                            fi
+                        fi
+                    fi
+                else
+                    echo "Error: Unknown option '$1'"
+                    exit 1
+                fi
+            else
+                echo "Error: Unknown option '$1'"
+                exit 1
+            fi
             ;;
     esac
 done
+
+base_name="${basename_arg}_${replica}"
 
 # Setup PLUMED flag if provided
 if [[ -n "${plumed_file}" ]]; then
