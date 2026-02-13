@@ -65,8 +65,14 @@ topology="topol.top"
 plumed_file=""
 base_name="${basename_arg}_${replica}"
 
-# Parse optional flags (--plumed)
-shift 9
+# Parse optional flags (--plumed) - shift only by the number of args actually provided
+# Count how many positional arguments were provided (max 9)
+num_positional_args=$#
+if [[ $num_positional_args -gt 9 ]]; then
+    num_positional_args=9
+fi
+shift $num_positional_args
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --plumed)
