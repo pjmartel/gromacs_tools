@@ -33,21 +33,34 @@ env/
 *.swo
 *~
 
-# GROMACS files (examples/tests)
-*.gro
-*.pdb
-*.top
-*.itp
-*.tpr
+# GROMACS files - exclude large output files but allow reference systems
+# Trajectories (large)
 *.trr
 *.xtc
+# Energy files (large)
 *.edr
-*.cpt
-*.ndx
-*.xvg
+# Logs (can be regenerated)
 *.log
 mdout.mdp
+# Backup files
 \#*\#
+*.bak
+
+# Allow essential files in systems/ directory
+!systems/**/*.gro
+!systems/**/*.pdb
+!systems/**/*.top
+!systems/**/*.itp
+!systems/**/*.tpr
+!systems/**/*.cpt
+!systems/**/*.mdp
+!systems/**/*.dat
+
+# But still exclude large files even in systems/
+systems/**/*.trr
+systems/**/*.xtc
+systems/**/*.edr
+systems/**/*.log
 
 # Test data directory (keep test files local only)
 tests/data/
