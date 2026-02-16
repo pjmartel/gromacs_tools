@@ -455,7 +455,22 @@ def automate_gromacs(args):
     commands_file = Path.cwd() / "commands.sh"
     set_command_script_path(commands_file)
     
-    # Validate inputs
+    # Determine if we're skipping pdb2gmx
+    skip_pdb2gmx = args.topology and args.structure
+    
+    # Initialize files based on mode
+    if skip_pdb2gmx:
+        topology_file = args.topology
+        gro_output = args.structure
+        stem = Path(args.structure).stem
+    else:
+        # Derive stem from input pdb file
+        input_pdb_path = Path(args.pdb_file)
+        stem = input_pdb_path.stem
+        topology_file = f"{stem}.top"
+        gro_output = f"{stem}.gro"
+    
+    # Display header
     logger.info("")
     logger.info("="*60)
     logger.info("GROMACS SYSTEM PREPARATION PIPELINE")
@@ -466,53 +481,62 @@ def automate_gromacs(args):
         logger.info("🔍 DRY RUN MODE: Commands will be logged but not executed")
         logger.info("")
         logger.info("📋 Configuration:")
-        logger.info(f"  Input PDB:      {args.pdb_file}")
-        logger.info(f"  Force field:    {args.forcefield}")
-        logger.info(f"  Water model:    {args.water_model}")
+        if skip_pdb2gmx:
+            logger.info(f"  Mode:           Skip pdb2gmx (using existing files)")
+            logger.info(f"  Topology:       {topology_file}")
+            logger.info(f"  Structure:      {gro_output}")
+        else:
+            logger.info(f"  Input PDB:      {args.pdb_file}")
+            logger.info(f"  Force field:    {args.forcefield}")
+            logger.info(f"  Water model:    {args.water_model}")
         logger.info(f"  Box type:       {args.box_type}")
         logger.info(f"  Box distance:   {args.box_distance} nm")
         logger.info(f"  Ions:           {args.cation}/{args.anion}")
         logger.info(f"  Neutralize:     {'No' if args.no_neutral else 'Yes'}")
     else:
-        logger.info(f"Input: {args.pdb_file}")
-        logger.info(f"Force field: {args.forcefield}, Water: {args.water_model}")
+        if skip_pdb2gmx:
+            logger.info(f"Mode: Using existing topology and structure")
+            logger.info(f"Topology: {topology_file}, Structure: {gro_output}")
+        else:
+            logger.info(f"Input: {args.pdb_file}")
+            logger.info(f"Force field: {args.forcefield}, Water: {args.water_model}")
     
     logger.info(f"")
     logger.info(f"All commands will be logged to: {commands_file}")
     
-    # Validate force field and water model compatibility
-    validate_forcefield_water_compatibility(args.forcefield, args.water_model)
-    
-    # Validate PDB file
-    try:
-        validate_pdb_file(args.pdb_file)
-    except ValueError as e:
-        logger.error(f"❌ PDB validation failed: {e}")
-        return False
+    # Validate force field and water model compatibility (only if using pdb2gmx)
+    if not skip_pdb2gmx:
+        validate_forcefield_water_compatibility(args.forcefield, args.water_model)
+        
+        # Validate PDB file
+        try:
+            validate_pdb_file(args.pdb_file)
+        except ValueError as e:
+            logger.error(f"❌ PDB validation failed: {e}")
+            return False
+    else:
+        logger.info(f"✓ Skipping pdb2gmx - pipeline starts at editconf (step 2)")
 
-    # Derive stem from input pdb file
-    input_pdb_path = Path(args.pdb_file)
-    stem = input_pdb_path.stem
-
-    # Total pipeline steps
-    total_steps = 5
+    # Total pipeline steps (4 if skipping pdb2gmx, 5 otherwise)
+    total_steps = 4 if skip_pdb2gmx else 5
+    current_step = 1
     
-    # Step 1: pdb2gmx
-    topology_file = f"{stem}.top"
-    gro_output = f"{stem}.gro"
-    pdb2gmx_log = f"{stem}_pdb2gmx.log"
-    
-    # Build pdb2gmx command with optional -ignh flag
-    ignh_flag = " -ignh" if getattr(args, "ignore_hydrogens", False) else ""
-    pdb2gmx_cmd = (
-        f"gmx pdb2gmx -f {args.pdb_file} -o {gro_output} -p {topology_file} "
-        f"-ff {args.forcefield} -water {args.water_model}{ignh_flag}"
-    )
-    if not run_gromacs_command(pdb2gmx_cmd, "Generate topology (pdb2gmx)", pdb2gmx_log, 
-                               dry_run=args.dry_run, step_info=f"[1/{total_steps}]"):
-        return False
+    # Step 1: pdb2gmx (conditionally executed)
+    if not skip_pdb2gmx:
+        pdb2gmx_log = f"{stem}_pdb2gmx.log"
+        
+        # Build pdb2gmx command with optional -ignh flag
+        ignh_flag = " -ignh" if getattr(args, "ignore_hydrogens", False) else ""
+        pdb2gmx_cmd = (
+            f"gmx pdb2gmx -f {args.pdb_file} -o {gro_output} -p {topology_file} "
+            f"-ff {args.forcefield} -water {args.water_model}{ignh_flag}"
+        )
+        if not run_gromacs_command(pdb2gmx_cmd, "Generate topology (pdb2gmx)", pdb2gmx_log, 
+                                   dry_run=args.dry_run, step_info=f"[{current_step}/{total_steps}]"):
+            return False
+        current_step += 1
 
-    # Step 2: editconf (define box)
+    # Step 2 (or 1 if skipping pdb2gmx): editconf (define box)
     box_output = f"{stem}_box.gro"
     editconf_log = f"{stem}_editconf.log"
     editconf_cmd = (
@@ -520,10 +544,11 @@ def automate_gromacs(args):
         f"-bt {args.box_type}"
     )
     if not run_gromacs_command(editconf_cmd, "Define simulation box (editconf)", editconf_log, 
-                               dry_run=args.dry_run, step_info=f"[2/{total_steps}]"):
+                               dry_run=args.dry_run, step_info=f"[{current_step}/{total_steps}]"):
         return False
+    current_step += 1
 
-    # Step 3: solvate
+    # Step 3 (or 2): solvate
     solvent_output = f"{stem}_solvent.gro"
     solvate_log = f"{stem}_solvate.log"
     solvate_cmd = (
@@ -531,10 +556,11 @@ def automate_gromacs(args):
         f"-p {topology_file}"
     )
     if not run_gromacs_command(solvate_cmd, "Add solvent molecules (solvate)", solvate_log, 
-                               dry_run=args.dry_run, step_info=f"[3/{total_steps}]"):
+                               dry_run=args.dry_run, step_info=f"[{current_step}/{total_steps}]"):
         return False
+    current_step += 1
 
-    # Step 4: prepare for ion addition (minimal mdp + grompp)
+    # Step 4 (or 3): prepare for ion addition (minimal mdp + grompp)
     create_minimal_mdp("minimal.mdp")
 
     grompp_log = f"{stem}_grompp.log"
@@ -543,10 +569,11 @@ def automate_gromacs(args):
         f"gmx grompp -f minimal.mdp -c {solvent_output} -p {topology_file} -o {tpr_file}"
     )
     if not run_gromacs_command(grompp_cmd, "Prepare for ion addition (grompp)", grompp_log, 
-                               dry_run=args.dry_run, step_info=f"[4/{total_steps}]"):
+                               dry_run=args.dry_run, step_info=f"[{current_step}/{total_steps}]"):
         return False
+    current_step += 1
 
-    # Step 5: genion (determine solvent group dynamically)
+    # Step 5 (or 4) (or 4): genion (determine solvent group dynamically)
     ions_output = f"{stem}_ions.gro"
     genion_log = f"{stem}_genion.log"
     
@@ -568,7 +595,7 @@ def automate_gromacs(args):
         f"-pname {args.cation} -nname {args.anion}{neutral_flag}"
     )
     if not run_gromacs_command(genion_cmd, "Add ions and neutralize (genion)", genion_log, 
-                               dry_run=args.dry_run, step_info=f"[5/{total_steps}]"):
+                               dry_run=args.dry_run, step_info=f"[{current_step}/{total_steps}]"):
         return False
 
     # Cleanup temporary files (skip in dry-run mode)
@@ -608,7 +635,10 @@ def automate_gromacs(args):
         logger.info(f"  Intermediates:      {box_output}, {solvent_output}")
         logger.info("")
         logger.info("📋 Log files:")
-        logger.info(f"  {pdb2gmx_log}, {editconf_log}, {solvate_log}")
+        if not skip_pdb2gmx:
+            logger.info(f"  {pdb2gmx_log}, {editconf_log}, {solvate_log}")
+        else:
+            logger.info(f"  {editconf_log}, {solvate_log}")
         logger.info(f"  {grompp_log}, {genion_log}")
         logger.info(f"")
         logger.info(f"📝 Reproducibility:  {commands_file}")
@@ -640,6 +670,9 @@ Examples:
   # Larger box with dodecahedral shape
   %(prog)s protein.pdb --box-distance 1.5 --box-type dodecahedron
   
+  # Skip pdb2gmx - use existing topology and structure
+  %(prog)s --topology protein.top --structure protein.gro
+  
   # Preview commands without executing (dry-run)
   %(prog)s protein.pdb --dry-run
   
@@ -647,7 +680,11 @@ Examples:
   %(prog)s protein.pdb --verbose
         """)
     
-    parser.add_argument("pdb_file", help="Input PDB file")
+    parser.add_argument("pdb_file", nargs='?', help="Input PDB file (or use --topology and --structure to skip pdb2gmx)")
+    parser.add_argument("-t", "--topology",
+                       help="Use existing topology file (with --structure, skips pdb2gmx)")
+    parser.add_argument("-s", "--structure",
+                       help="Use existing structure/GRO file (with --topology, skips pdb2gmx)")
     parser.add_argument("-ff", "--forcefield", default="charmm27", 
                        help="Force field (default: charmm27)")
     parser.add_argument("-d", "--box-distance", type=float, default=1.0, 
@@ -677,10 +714,28 @@ Examples:
     setup_logging(verbose=args.verbose)
     logger = logging.getLogger(__name__)
     
-    # Check PDB file exists
-    if not os.path.exists(args.pdb_file):
-        logger.error(f"❌ PDB file not found: {args.pdb_file}")
-        sys.exit(1)
+    # Validate input arguments
+    skip_pdb2gmx = args.topology and args.structure
+    
+    if skip_pdb2gmx:
+        # Using existing topology/structure
+        if not args.topology or not args.structure:
+            logger.error("❌ Both --topology and --structure must be provided together")
+            sys.exit(1)
+        if not os.path.exists(args.topology):
+            logger.error(f"❌ Topology file not found: {args.topology}")
+            sys.exit(1)
+        if not os.path.exists(args.structure):
+            logger.error(f"❌ Structure file not found: {args.structure}")
+            sys.exit(1)
+    else:
+        # Using PDB file
+        if not args.pdb_file:
+            logger.error("❌ Either provide pdb_file OR both --topology and --structure")
+            sys.exit(1)
+        if not os.path.exists(args.pdb_file):
+            logger.error(f"❌ PDB file not found: {args.pdb_file}")
+            sys.exit(1)
     
     # Run pipeline
     success = automate_gromacs(args)

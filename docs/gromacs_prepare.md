@@ -9,11 +9,12 @@ Automates the complete setup pipeline from initial PDB structure to a fully prep
 ## Features
 
 - ✅ Automatic topology generation (`pdb2gmx`)
+- ✅ **Skip pdb2gmx**: Use existing topology/structure files to start from step 2
 - ✅ Box definition (`editconf`)
 - ✅ System solvation (`solvate`)
 - ✅ Ion addition for neutralization (`genion`)
 - ✅ **Input validation**: PDB file structure and force field/water compatibility
-- ✅ **Progress indicators**: Clear [1/5], [2/5]... step tracking
+- ✅ **Progress indicators**: Clear [1/5], [2/5]... step tracking (or [1/4], [2/4]... when skipping pdb2gmx)
 - ✅ **Professional logging**: Python logging module with INFO/WARNING/ERROR levels
 - ✅ **System summary**: Post-pipeline statistics (atoms, box volume, composition)
 - ✅ **Enhanced error hints**: Step-specific troubleshooting guidance
@@ -96,6 +97,23 @@ python bin/gromacs_prepare.py protein.pdb --ignore-hydrogens
 python bin/gromacs_prepare.py protein.pdb --ignore-hydrogens --forcefield amber99sb-ildn
 ```
 
+### Skip pdb2gmx (Use Existing Topology/Structure)
+
+```bash
+# If you already have a topology and structure file, skip pdb2gmx
+python bin/gromacs_prepare.py --topology protein.top --structure protein.gro
+
+# This starts the pipeline from step 2 (editconf)
+# Useful when:
+#  - You've manually created/edited topology files
+#  - You want to re-process an existing system with different box/ion parameters
+#  - You're working with non-standard topologies
+
+# Combine with other options
+python bin/gromacs_prepare.py --topology protein.top --structure protein.gro \
+    --box-distance 1.5 --box-type dodecahedron
+```
+
 ### Dry-Run Mode
 
 ```bash
@@ -136,9 +154,11 @@ python bin/gromacs_prepare.py protein.pdb \
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `pdb_file` | Required | Input PDB structure file |
-| `-ff, --forcefield` | `charmm27` | Force field selection |
-| `-wm, --water-model` | `tip3p` | Water model selection |
+| `pdb_file` | Optional | Input PDB structure file (or use --topology/--structure) |
+| `-t, --topology` | None | Use existing topology file (with --structure, skips pdb2gmx) |
+| `-s, --structure` | None | Use existing structure/GRO file (with --topology, skips pdb2gmx) |
+| `-ff, --forcefield` | `charmm27` | Force field selection (only with pdb_file) |
+| `-wm, --water-model` | `tip3p` | Water model selection (only with pdb_file) |
 | `-bt, --box-type` | `cubic` | Simulation box type |
 | `-d, --box-distance` | `1.0` | Distance from protein to box edge (nm) |
 | `-cs, --solvent-file` | `spc216.gro` | Solvent model file |
