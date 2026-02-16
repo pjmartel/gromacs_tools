@@ -45,6 +45,7 @@ if [[ $# -lt 5 ]]; then
     echo "  --initial <basename>   Basename for initial equilibration files (default: 'npt')"
     echo "  --timestep <ps>        Integration timestep in ps (default: 0.002)"
     echo "  --title <suffix>       System-specific title to append (e.g., 'TRP_cage_replica_1')"
+    echo "  --topology <file>      Topology file (default: 'topol.top')"
     echo "  --plumed <file>        PLUMED input file for enhanced sampling/analysis"
     echo "  --ps                   Interpret times as picoseconds (default: nanoseconds)"
     echo ""
@@ -71,26 +72,71 @@ plumed_file=""
 topology="topol.top"
 time_unit="ns"  # Default to nanoseconds
 
+# Validate that first 5 arguments are not flags
+for i in 1 2 3 4 5; do
+    eval "arg=\${$i}"
+    if [[ "$arg" == --* ]]; then
+        echo "Error: Argument $i appears to be a flag ('$arg')"
+        echo "The first 5 arguments must be: <basename> <replica> <start_time> <end_time> <dt>"
+        echo ""
+        echo "Correct format:"
+        echo "  $0 md 0 0 500 100 [OPTIONS]"
+        echo ""
+        echo "Your command had a flag in position $i. Did you:"
+        echo "  - Forget a required positional argument?"
+        echo "  - Misspell a flag name?"
+        exit 1
+    fi
+done
+
 # Parse optional arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --template)
+            if [[ -z "$2" ]] || [[ "$2" == --* ]]; then
+                echo "Error: --template requires a value"
+                exit 1
+            fi
             template_mdp="$2"
             shift 2
             ;;
         --initial)
+            if [[ -z "$2" ]] || [[ "$2" == --* ]]; then
+                echo "Error: --initial requires a value"
+                exit 1
+            fi
             initial_basename="$2"
             shift 2
             ;;
         --timestep)
+            if [[ -z "$2" ]] || [[ "$2" == --* ]]; then
+                echo "Error: --timestep requires a value"
+                exit 1
+            fi
             timestep_ps="$2"
             shift 2
             ;;
         --title)
+            if [[ -z "$2" ]] || [[ "$2" == --* ]]; then
+                echo "Error: --title requires a value"
+                exit 1
+            fi
             title_suffix="$2"
             shift 2
             ;;
+        --topology)
+            if [[ -z "$2" ]] || [[ "$2" == --* ]]; then
+                echo "Error: --topology requires a value"
+                exit 1
+            fi
+            topology="$2"
+            shift 2
+            ;;
         --plumed)
+            if [[ -z "$2" ]] || [[ "$2" == --* ]]; then
+                echo "Error: --plumed requires a value"
+                exit 1
+            fi
             plumed_file="$2"
             shift 2
             ;;
@@ -98,34 +144,20 @@ while [[ $# -gt 0 ]]; do
             time_unit="ps"
             shift
             ;;
+        --*)
+            echo "Error: Unknown option '$1'"
+            echo ""
+            echo "Valid options: --template, --initial, --timestep, --title, --topology, --plumed, --ps"
+            echo ""
+            echo "Did you misspell an option? Common typos:"
+            echo "  --intitial  → should be --initial"
+            echo "  --templte   → should be --template"
+            exit 1
+            ;;
         *)
-            # Check if it's a positional argument (for backward compatibility)
-            # If we haven't seen any flags yet, treat remaining args as old-style positional
-            if [[ ! "$1" =~ ^-- ]]; then
-                echo "Warning: Treating '$1' as legacy positional argument"
-                if [[ -z "$template_mdp" ]] || [[ "$template_mdp" == "md.mdp" ]]; then
-                    template_mdp="$1"
-                    shift
-                    if [[ $# -gt 0 ]] && [[ ! "$1" =~ ^-- ]]; then
-                        initial_basename="$1"
-                        shift
-                        if [[ $# -gt 0 ]] && [[ ! "$1" =~ ^-- ]]; then
-                            timestep_ps="$1"
-                            shift
-                            if [[ $# -gt 0 ]] && [[ ! "$1" =~ ^-- ]]; then
-                                title_suffix="$1"
-                                shift
-                            fi
-                        fi
-                    fi
-                else
-                    echo "Error: Unknown option '$1'"
-                    exit 1
-                fi
-            else
-                echo "Error: Unknown option '$1'"
-                exit 1
-            fi
+            echo "Error: Unexpected argument '$1'"
+            echo "All optional arguments must start with --"
+            exit 1
             ;;
     esac
 done
@@ -176,6 +208,13 @@ fi
 # Check for topology file
 if [[ ! -f ${topology} ]]; then
     echo "Error: Topology file '${topology}' not found"
+    echo ""
+    echo "The topology file is required for gmx grompp to create new TPR files."
+    echo "Please either:"
+    echo "  1. Create/copy a topol.top file in this directory, or"
+    echo "  2. Use --topology <file> to specify a different topology file"
+    echo ""
+    echo "Example: $0 md 0 0 5000 1000 --topology /path/to/topol.top --initial npt_free"
     exit 1
 fi
 
