@@ -17,7 +17,7 @@ export PATH="$PATH:$(pwd)/bin"
 
 | Tool | Purpose | Documentation |
 |------|---------|---------------|
-| **gromacs_prepare.py** | Automate system preparation pipeline (pdb2gmx, solvate, ions) | [docs/gromacs_prepare.md](docs/gromacs_prepare.md) |
+| **gmx_prepare.py** | Automate system preparation pipeline (pdb2gmx, solvate, ions) | [docs/gmx_prepare.md](docs/gmx_prepare.md) |
 | **gromacs_pca.py** | Principal component analysis workflow with automatic plotting | [docs/gromacs_pca.md](docs/gromacs_pca.md) |
 | **gromacs_pca_movie.py** | Generate trajectory movies along principal components | [docs/gromacs_pca_movie.md](docs/gromacs_pca_movie.md) |
 | **plot_xvg.py** | Versatile XVG plotting tool with extensive customization | [docs/plot_xvg.md](docs/plot_xvg.md) |
@@ -28,10 +28,10 @@ export PATH="$PATH:$(pwd)/bin"
 ### System Preparation
 ```bash
 # Preview preparation workflow
-python bin/gromacs_prepare.py protein.pdb --forcefield amber14sb --dry-run
+python bin/gmx_prepare.py protein.pdb --forcefield amber14sb --dry-run
 
 # Execute preparation
-python bin/gromacs_prepare.py protein.pdb --forcefield charmm36
+python bin/gmx_prepare.py protein.pdb --forcefield charmm36
 ```
 
 ### PCA Analysis

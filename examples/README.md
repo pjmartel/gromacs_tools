@@ -11,7 +11,7 @@ This directory contains example scripts and workflows for common GROMACS analysi
 # complete_md_workflow.sh - Full simulation pipeline
 
 # Step 1: System preparation
-python bin/gromacs_prepare.py protein.pdb \
+python bin/gmx_prepare.py protein.pdb \
     --forcefield amber14sb \
     --water-model tip3p \
     --box-distance 1.2 \
@@ -120,7 +120,7 @@ SYSTEMS=("wildtype" "mutant_F6A" "mutant_L10A")
 # Run simulations for each system
 for sys in "${SYSTEMS[@]}"; do
     # Preparation
-    python bin/gromacs_prepare.py ${sys}.pdb \
+    python bin/gmx_prepare.py ${sys}.pdb \
         --forcefield amber14sb -o prep_${sys}
     
     cd prep_${sys}
@@ -363,10 +363,10 @@ echo "Backbone Protein" | gmx trjconv -s npt.tpr -f md_complete.xtc \
 ### System Preparation
 ```bash
 # Preview workflow
-python bin/gromacs_prepare.py protein.pdb --dry-run
+python bin/gmx_prepare.py protein.pdb --dry-run
 
 # Execute with CHARMM36
-python bin/gromacs_prepare.py protein.pdb --forcefield charmm36
+python bin/gmx_prepare.py protein.pdb --forcefield charmm36
 ```
 
 ### Plotting

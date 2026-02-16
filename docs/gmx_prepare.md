@@ -1,4 +1,4 @@
-# gromacs_prepare.py
+# gmx_prepare.py
 
 Comprehensive automation script for GROMACS system preparation workflow.
 
@@ -34,17 +34,17 @@ Automates the complete setup pipeline from initial PDB structure to a fully prep
 
 ```bash
 # Full preparation pipeline
-python bin/gromacs_prepare.py protein.pdb
+python bin/gmx_prepare.py protein.pdb
 ```
 
 ### Force Field Selection
 
 ```bash
 # AMBER14SB force field
-python bin/gromacs_prepare.py protein.pdb --forcefield amber14sb
+python bin/gmx_prepare.py protein.pdb --forcefield amber14sb
 
 # CHARMM36 force field
-python bin/gromacs_prepare.py protein.pdb --forcefield charmm36
+python bin/gmx_prepare.py protein.pdb --forcefield charmm36
 
 # List available force fields
 gmx pdb2gmx -h  # See force field options
@@ -54,36 +54,36 @@ gmx pdb2gmx -h  # See force field options
 
 ```bash
 # TIP3P water (default)
-python bin/gromacs_prepare.py protein.pdb --water-model tip3p
+python bin/gmx_prepare.py protein.pdb --water-model tip3p
 
 # TIP4P water
-python bin/gromacs_prepare.py protein.pdb --water-model tip4p
+python bin/gmx_prepare.py protein.pdb --water-model tip4p
 
 # SPC/E water
-python bin/gromacs_prepare.py protein.pdb --water-model spce
+python bin/gmx_prepare.py protein.pdb --water-model spce
 ```
 
 ### Box Configuration
 
 ```bash
 # Custom box distance (1.5 nm from protein)
-python bin/gromacs_prepare.py protein.pdb --box-distance 1.5
+python bin/gmx_prepare.py protein.pdb --box-distance 1.5
 
 # Dodecahedral box (fewer water molecules)
-python bin/gromacs_prepare.py protein.pdb --box-type dodecahedron
+python bin/gmx_prepare.py protein.pdb --box-type dodecahedron
 
 # Cubic box (default)
-python bin/gromacs_prepare.py protein.pdb --box-type cubic
+python bin/gmx_prepare.py protein.pdb --box-type cubic
 ```
 
 ### Ion Selection
 
 ```bash
 # Use potassium and chloride ions
-python bin/gromacs_prepare.py protein.pdb --cation K --anion CL
+python bin/gmx_prepare.py protein.pdb --cation K --anion CL
 
 # Use sodium and chloride (default)
-python bin/gromacs_prepare.py protein.pdb --cation NA --anion CL
+python bin/gmx_prepare.py protein.pdb --cation NA --anion CL
 ```
 
 ### Handling PDB Files with Hydrogens
@@ -91,17 +91,17 @@ python bin/gromacs_prepare.py protein.pdb --cation NA --anion CL
 ```bash
 # If PDB already contains hydrogen atoms, use --ignore-hydrogens
 # This prevents pdb2gmx from crashing when hydrogens are present
-python bin/gromacs_prepare.py protein.pdb --ignore-hydrogens
+python bin/gmx_prepare.py protein.pdb --ignore-hydrogens
 
 # Combine with other options
-python bin/gromacs_prepare.py protein.pdb --ignore-hydrogens --forcefield amber99sb-ildn
+python bin/gmx_prepare.py protein.pdb --ignore-hydrogens --forcefield amber99sb-ildn
 ```
 
 ### Skip pdb2gmx (Use Existing Topology/Structure)
 
 ```bash
 # If you already have a topology and structure file, skip pdb2gmx
-python bin/gromacs_prepare.py --topology protein.top --structure protein.gro
+python bin/gmx_prepare.py --topology protein.top --structure protein.gro
 
 # This starts the pipeline from step 2 (editconf)
 # Useful when:
@@ -110,7 +110,7 @@ python bin/gromacs_prepare.py --topology protein.top --structure protein.gro
 #  - You're working with non-standard topologies
 
 # Combine with other options
-python bin/gromacs_prepare.py --topology protein.top --structure protein.gro \
+python bin/gmx_prepare.py --topology protein.top --structure protein.gro \
     --box-distance 1.5 --box-type dodecahedron
 ```
 
@@ -118,7 +118,7 @@ python bin/gromacs_prepare.py --topology protein.top --structure protein.gro \
 
 ```bash
 # Generate commands.sh without executing
-python bin/gromacs_prepare.py protein.pdb --dry-run
+python bin/gmx_prepare.py protein.pdb --dry-run
 
 # Review the generated commands
 cat commands.sh
@@ -131,16 +131,16 @@ bash commands.sh
 
 ```bash
 # Enable detailed debug output
-python bin/gromacs_prepare.py protein.pdb --verbose
+python bin/gmx_prepare.py protein.pdb --verbose
 
 # Combine with dry-run for detailed preview
-python bin/gromacs_prepare.py protein.pdb --dry-run --verbose
+python bin/gmx_prepare.py protein.pdb --dry-run --verbose
 ```
 
 ### Complete Example
 
 ```bash
-python bin/gromacs_prepare.py protein.pdb \
+python bin/gmx_prepare.py protein.pdb \
     --forcefield amber14sb \
     --water-model tip3p \
     --box-distance 1.2 \
@@ -230,7 +230,7 @@ Molecule composition:
 
 ```bash
 # 1. Prepare system
-python bin/gromacs_prepare.py protein.pdb --forcefield amber14sb
+python bin/gmx_prepare.py protein.pdb --forcefield amber14sb
 
 # 2. Energy minimization
 gmx grompp -f mdp_templates/amber14sb/minimization/em_steep.mdp \

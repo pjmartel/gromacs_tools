@@ -226,7 +226,7 @@ Each segment produces:
 
 ```bash
 # 1. System preparation
-python bin/gromacs_prepare.py protein.pdb --forcefield amber14sb
+python bin/gmx_prepare.py protein.pdb --forcefield amber14sb
 
 # 2. Energy minimization
 gmx grompp -f mdp_templates/amber14sb/minimization/em_steep.mdp \
