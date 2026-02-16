@@ -22,7 +22,8 @@ ERROR_HINTS = {
         "- Check if PDB has missing atoms/residues",
         "- Verify force field supports all residues",
         "- Try different force field if current one fails",
-        "- Check for non-standard residues or HETATM entries"
+        "- Check for non-standard residues or HETATM entries",
+        "- If PDB contains hydrogens, use --ignore-hydrogens flag"
     ],
     'editconf': [
         "- Verify input structure file exists",
@@ -500,9 +501,12 @@ def automate_gromacs(args):
     topology_file = f"{stem}.top"
     gro_output = f"{stem}.gro"
     pdb2gmx_log = f"{stem}_pdb2gmx.log"
+    
+    # Build pdb2gmx command with optional -ignh flag
+    ignh_flag = " -ignh" if getattr(args, "ignore_hydrogens", False) else ""
     pdb2gmx_cmd = (
         f"gmx pdb2gmx -f {args.pdb_file} -o {gro_output} -p {topology_file} "
-        f"-ff {args.forcefield} -water {args.water_model}"
+        f"-ff {args.forcefield} -water {args.water_model}{ignh_flag}"
     )
     if not run_gromacs_command(pdb2gmx_cmd, "Generate topology (pdb2gmx)", pdb2gmx_log, 
                                dry_run=args.dry_run, step_info=f"[1/{total_steps}]"):
@@ -660,6 +664,8 @@ Examples:
                        help="Anion type (default: CL)")
     parser.add_argument("--no-neutral", action="store_true", 
                        help="Do not add neutralizing ions (omit -neutral in genion)")
+    parser.add_argument("--ignore-hydrogens", action="store_true",
+                       help="Ignore hydrogen atoms in input PDB (pass -ignh to pdb2gmx)")
     parser.add_argument("--dry-run", action="store_true", 
                        help="Generate commands.sh without executing (preview mode)")
     parser.add_argument("-v", "--verbose", action="store_true",

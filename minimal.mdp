@@ -1,0 +1,8 @@
+; Minimal MDP for pre-processing (genion)
+; This is NOT used for actual MD simulation
+; Only used to create TPR file for adding ions
+
+integrator  = steep      ; Steepest descent minimizer
+emtol       = 1000.0     ; Stop when max force < 1000 kJ/mol/nm
+emstep      = 0.01       ; Energy step size (nm)
+nsteps      = 1          ; Just need structure, not simulation

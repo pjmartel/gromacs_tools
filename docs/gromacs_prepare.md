@@ -85,6 +85,17 @@ python bin/gromacs_prepare.py protein.pdb --cation K --anion CL
 python bin/gromacs_prepare.py protein.pdb --cation NA --anion CL
 ```
 
+### Handling PDB Files with Hydrogens
+
+```bash
+# If PDB already contains hydrogen atoms, use --ignore-hydrogens
+# This prevents pdb2gmx from crashing when hydrogens are present
+python bin/gromacs_prepare.py protein.pdb --ignore-hydrogens
+
+# Combine with other options
+python bin/gromacs_prepare.py protein.pdb --ignore-hydrogens --forcefield amber99sb-ildn
+```
+
 ### Dry-Run Mode
 
 ```bash
@@ -134,6 +145,7 @@ python bin/gromacs_prepare.py protein.pdb \
 | `-pname, --cation` | `NA` | Cation type for neutralization |
 | `-nname, --anion` | `CL` | Anion type for neutralization |
 | `--no-neutral` | `False` | Do not add neutralizing ions |
+| `--ignore-hydrogens` | `False` | Ignore H atoms in PDB (pass -ignh to pdb2gmx) |
 | `--dry-run` | `False` | Generate commands without executing (preview mode) |
 | `-v, --verbose` | `False` | Verbose output (show detailed progress) |
 
@@ -230,6 +242,7 @@ The script performs validation before execution:
   - Checks file exists and is readable
   - Verifies file contains ATOM or HETATM records
   - Validates file size is reasonable (>0 bytes, <1GB)
+  - **Note**: If your PDB has hydrogen atoms, use `--ignore-hydrogens` to prevent pdb2gmx crashes
 
 - **Force Field / Water Model Compatibility**:
   - Validates 18+ common force fields
