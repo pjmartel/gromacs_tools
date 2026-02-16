@@ -270,18 +270,12 @@ def plot_xvg_multi(filename, show_moving_avg=False, window_size=10, ax=None,
     return ax
 
 
-def main():
-    """Main function for command-line interface."""
+def setup_argument_parser():
+    """Create and configure the argument parser.
     
-    # Special case: handle --plot-style available before full argument parsing
-    if '--plot-style' in sys.argv:
-        idx = sys.argv.index('--plot-style')
-        if idx + 1 < len(sys.argv) and sys.argv[idx + 1].lower() == 'available':
-            print("Available matplotlib styles:")
-            for style in sorted(plt.style.available):
-                print(f"  {style}")
-            return 0
-    
+    Returns:
+        argparse.ArgumentParser: Configured argument parser
+    """
     parser = argparse.ArgumentParser(
         description='Plot GROMACS XVG files with optional moving averages.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -480,9 +474,19 @@ Examples:
                              'plots only the 1st, 3rd, and 5th data columns. '
                              'Note: Column 0 is the x-axis, so data columns start at 1.')
     
-    args = parser.parse_args()
+    return parser
+
+
+def configure_matplotlib_style(args):
+    """Apply matplotlib style and font configuration.
     
-    # Apply plot style if specified (already handled 'available' case above)
+    Args:
+        args: Parsed command-line arguments
+        
+    Returns:
+        int: 0 on success, 1 on error
+    """
+    # Apply plot style if specified
     if args.plot_style:
         try:
             plt.style.use(args.plot_style)
@@ -502,73 +506,492 @@ Examples:
             'legend.fontsize': args.fontsize * 0.9,
         })
     
-    # Validate inputs
-    if args.window < 1:
-        parser.error("Window size must be at least 1")
+    return 0
+
+
+def validate_correlation_arguments(args, parser):
+    """Validate xy-correlation mode arguments and determine dimensionality.
     
-    if args.xy_correlation:
-        if args.histogram:
-            parser.error("--xy-correlation cannot be used with --histogram")
+    Args:
+        args: Parsed command-line arguments
+        parser: ArgumentParser instance for error reporting
         
-        # Check for conflicting dimension flags
-        if getattr(args, '2d', False) and getattr(args, '3d', False):
-            parser.error("Cannot use both --2d and --3d flags simultaneously")
-        
-        # Determine correlation dimensionality
-        if args.multi:
-            # Multi-correlation mode: files should be divisible by 2 or 3
-            num_files = len(args.files)
-            
-            # Use explicit dimension flags if provided
-            if getattr(args, '2d', False):
-                if num_files % 2 != 0:
-                    parser.error(f"--2d requires an even number of files (pairs). Got {num_files} files.")
-                corr_dim = 2
-                num_corr_sets = num_files // 2
-            elif getattr(args, '3d', False):
-                if num_files % 3 != 0:
-                    parser.error(f"--3d requires number of files divisible by 3 (triplets). Got {num_files} files.")
-                corr_dim = 3
-                num_corr_sets = num_files // 3
-            else:
-                # Auto-detect: prefer 3D if divisible by 3, otherwise 2D
-                if num_files % 3 == 0 and num_files >= 3:
-                    corr_dim = 3  # 3D correlations
-                    num_corr_sets = num_files // 3
-                elif num_files % 2 == 0 and num_files >= 2:
-                    corr_dim = 2  # 2D correlations
-                    num_corr_sets = num_files // 2
-                else:
-                    parser.error("--xy-correlation with --multi requires files in pairs (2D) or triplets (3D). "
-                               f"Got {num_files} files. Use --2d or --3d to specify dimensionality.")
-            
-            # Validate legends for multi-correlation mode
-            if args.legends and len(args.legends) != num_corr_sets:
-                parser.error(f"Number of legends ({len(args.legends)}) must match number of correlation sets ({num_corr_sets})")
-        else:
-            # Single correlation mode
-            if getattr(args, '2d', False):
-                if len(args.files) != 2:
-                    parser.error("--2d with --xy-correlation requires exactly 2 files")
-                corr_dim = 2
-            elif getattr(args, '3d', False):
-                if len(args.files) != 3:
-                    parser.error("--3d with --xy-correlation requires exactly 3 files")
-                corr_dim = 3
-            else:
-                # Auto-detect based on file count
-                if len(args.files) not in (2, 3):
-                    parser.error("--xy-correlation requires exactly 2 files (2D) or 3 files (3D)")
-                corr_dim = len(args.files)
-    else:
+    Returns:
+        tuple: (corr_dim, num_corr_sets) where corr_dim is 2 or 3,
+               and num_corr_sets is number of correlation sets (for multi mode).
+               Returns (None, None) if not in correlation mode.
+    """
+    if not args.xy_correlation:
         # Not using xy-correlation mode
         if getattr(args, '2d', False) or getattr(args, '3d', False):
             parser.error("--2d and --3d flags require --xy-correlation")
         
         # Validate legends: for multi-file mode, must match file count
-        # For single-file mode, validation happens later based on number of columns
         if args.multi and args.legends and len(args.legends) != len(args.files):
             parser.error(f"Number of legends ({len(args.legends)}) must match number of files ({len(args.files)})")
+        
+        return None, None
+    
+    # XY correlation mode validations
+    if args.histogram:
+        parser.error("--xy-correlation cannot be used with --histogram")
+    
+    # Check for conflicting dimension flags
+    if getattr(args, '2d', False) and getattr(args, '3d', False):
+        parser.error("Cannot use both --2d and --3d flags simultaneously")
+    
+    # Determine correlation dimensionality
+    if args.multi:
+        # Multi-correlation mode: files should be divisible by 2 or 3
+        num_files = len(args.files)
+        
+        # Use explicit dimension flags if provided
+        if getattr(args, '2d', False):
+            if num_files % 2 != 0:
+                parser.error(f"--2d requires an even number of files (pairs). Got {num_files} files.")
+            corr_dim = 2
+            num_corr_sets = num_files // 2
+        elif getattr(args, '3d', False):
+            if num_files % 3 != 0:
+                parser.error(f"--3d requires number of files divisible by 3 (triplets). Got {num_files} files.")
+            corr_dim = 3
+            num_corr_sets = num_files // 3
+        else:
+            # Auto-detect: prefer 3D if divisible by 3, otherwise 2D
+            if num_files % 3 == 0 and num_files >= 3:
+                corr_dim = 3  # 3D correlations
+                num_corr_sets = num_files // 3
+            elif num_files % 2 == 0 and num_files >= 2:
+                corr_dim = 2  # 2D correlations
+                num_corr_sets = num_files // 2
+            else:
+                parser.error("--xy-correlation with --multi requires files in pairs (2D) or triplets (3D). "
+                           f"Got {num_files} files. Use --2d or --3d to specify dimensionality.")
+        
+        # Validate legends for multi-correlation mode
+        if args.legends and len(args.legends) != num_corr_sets:
+            parser.error(f"Number of legends ({len(args.legends)}) must match number of correlation sets ({num_corr_sets})")
+    else:
+        # Single correlation mode
+        if getattr(args, '2d', False):
+            if len(args.files) != 2:
+                parser.error("--2d with --xy-correlation requires exactly 2 files")
+            corr_dim = 2
+        elif getattr(args, '3d', False):
+            if len(args.files) != 3:
+                parser.error("--3d with --xy-correlation requires exactly 3 files")
+            corr_dim = 3
+        else:
+            # Auto-detect based on file count
+            if len(args.files) not in (2, 3):
+                parser.error("--xy-correlation requires exactly 2 files (2D) or 3 files (3D)")
+            corr_dim = len(args.files)
+        num_corr_sets = 1
+    
+    return corr_dim, num_corr_sets
+
+
+def apply_plot_customization(ax, args, is_3d=False):
+    """Apply custom labels, aspect ratio, and axis limits to plot.
+    
+    Args:
+        ax: Matplotlib axes object
+        args: Parsed command-line arguments
+        is_3d: bool, whether this is a 3D plot
+    """
+    # Apply custom labels if provided
+    if args.title:
+        ax.set_title(args.title)
+    if args.xlabel:
+        ax.set_xlabel(args.xlabel)
+    if args.ylabel:
+        ax.set_ylabel(args.ylabel)
+    
+    # Set aspect ratio if specified
+    if args.aspect:
+        if args.aspect.lower() == 'equal':
+            if not is_3d:
+                ax.set_aspect('equal', adjustable='box')
+        elif args.aspect.lower() == 'auto':
+            if not is_3d:
+                ax.set_aspect('auto')
+        else:
+            if not is_3d:
+                try:
+                    ax.set_aspect(float(args.aspect), adjustable='box')
+                except ValueError:
+                    print(f"Warning: Invalid aspect ratio '{args.aspect}', using auto", file=sys.stderr)
+    
+    # Set axis limits if specified
+    if args.xlim:
+        ax.set_xlim(args.xlim[0], args.xlim[1])
+    if args.ylim:
+        ax.set_ylim(args.ylim[0], args.ylim[1])
+
+
+def plot_single_correlation_2d(args):
+    """Plot 2D correlation (y-values of file1 vs file2).
+    
+    Args:
+        args: Parsed command-line arguments
+        
+    Returns:
+        tuple: (fig, ax) matplotlib figure and axes objects
+    """
+    data1_columns, legends1, labels1 = parse_xvg(args.files[0])
+    data2_columns, legends2, labels2 = parse_xvg(args.files[1])
+    
+    # Apply row slicing
+    if args.start is not None or args.end is not None:
+        data1_columns = [list(col)[args.start:args.end] for col in data1_columns]
+        data2_columns = [list(col)[args.start:args.end] for col in data2_columns]
+    
+    # Validate that both files have the same number of data points
+    y1 = data1_columns[1]  # second column (y-values) from file 1
+    y2 = data2_columns[1]  # second column (y-values) from file 2
+    
+    if len(y1) != len(y2):
+        print(f"Error: Files have different number of data rows!", file=sys.stderr)
+        print(f"  {args.files[0]}: {len(y1)} rows", file=sys.stderr)
+        print(f"  {args.files[1]}: {len(y2)} rows", file=sys.stderr)
+        sys.exit(1)
+    
+    # Create the 2D correlation plot
+    fig, ax = plt.subplots(figsize=tuple(args.figsize))
+    
+    if args.scatter:
+        # Scatter mode with color by order
+        colors = np.arange(len(y1))
+        scatter = ax.scatter(y1, y2, c=colors, cmap=args.colormap, 
+                           s=args.markersize*7, alpha=0.7)
+        cbar = fig.colorbar(scatter, ax=ax)
+        cbar.set_label('Frame / Time order', rotation=270, labelpad=20)
+    else:
+        # Simple dots or specified style
+        if args.style == 'dots':
+            ax.plot(y1, y2, 'o', markersize=args.markersize)
+        elif args.style == 'lines':
+            ax.plot(y1, y2, '-')
+        elif args.style == 'lines+dots':
+            ax.plot(y1, y2, 'o-', markersize=args.markersize)
+        else:
+            ax.plot(y1, y2, args.style)
+    
+    # Set labels (use ylabel from each file as axis labels)
+    xlabel_default = labels1.get('ylabel', f'Values from {Path(args.files[0]).name}')
+    ylabel_default = labels2.get('ylabel', f'Values from {Path(args.files[1]).name}')
+    
+    if not args.xlabel:
+        ax.set_xlabel(xlabel_default)
+    if not args.ylabel:
+        ax.set_ylabel(ylabel_default)
+    if not args.title:
+        ax.set_title('XY Correlation')
+    
+    ax.grid(True)
+    fig.tight_layout()
+    
+    return fig, ax
+
+
+def plot_single_correlation_3d(args):
+    """Plot 3D correlation (y-values from 3 files as x, y, z).
+    
+    Args:
+        args: Parsed command-line arguments
+        
+    Returns:
+        tuple: (fig, ax) matplotlib figure and axes objects
+    """
+    data1_columns, legends1, labels1 = parse_xvg(args.files[0])
+    data2_columns, legends2, labels2 = parse_xvg(args.files[1])
+    data3_columns, legends3, labels3 = parse_xvg(args.files[2])
+    
+    # Apply row slicing
+    if args.start is not None or args.end is not None:
+        data1_columns = [list(col)[args.start:args.end] for col in data1_columns]
+        data2_columns = [list(col)[args.start:args.end] for col in data2_columns]
+        data3_columns = [list(col)[args.start:args.end] for col in data3_columns]
+    
+    # Extract second columns
+    y1 = data1_columns[1]
+    y2 = data2_columns[1]
+    y3 = data3_columns[1]
+    
+    # Validate that all files have the same number of data points
+    if not (len(y1) == len(y2) == len(y3)):
+        print(f"Error: Files have different number of data rows!", file=sys.stderr)
+        print(f"  {args.files[0]}: {len(y1)} rows", file=sys.stderr)
+        print(f"  {args.files[1]}: {len(y2)} rows", file=sys.stderr)
+        print(f"  {args.files[2]}: {len(y3)} rows", file=sys.stderr)
+        sys.exit(1)
+    
+    # Create 3D plot
+    fig = plt.figure(figsize=tuple(args.figsize))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    if args.scatter:
+        # Scatter mode with color by order
+        colors = np.arange(len(y1))
+        scatter = ax.scatter(y1, y2, y3, c=colors, cmap=args.colormap,
+                           s=args.markersize*7, alpha=0.7)
+        cbar = fig.colorbar(scatter, ax=ax, pad=0.1)
+        cbar.set_label('Frame / Time order', rotation=270, labelpad=20)
+    else:
+        # Line or marker plot in 3D
+        if args.style == 'dots':
+            ax.scatter(y1, y2, y3, s=args.markersize*7, alpha=0.7)
+        elif args.style == 'lines':
+            ax.plot(y1, y2, y3, '-', alpha=0.7)
+        elif args.style == 'lines+dots':
+            ax.plot(y1, y2, y3, 'o-', markersize=args.markersize, alpha=0.7)
+        else:
+            ax.plot(y1, y2, y3, args.style, alpha=0.7)
+    
+    # Set labels (use ylabel from each file)
+    xlabel_default = labels1.get('ylabel', f'Values from {Path(args.files[0]).name}')
+    ylabel_default = labels2.get('ylabel', f'Values from {Path(args.files[1]).name}')
+    zlabel_default = labels3.get('ylabel', f'Values from {Path(args.files[2]).name}')
+    
+    if not args.xlabel:
+        ax.set_xlabel(xlabel_default)
+    if not args.ylabel:
+        ax.set_ylabel(ylabel_default)
+    ax.set_zlabel(zlabel_default)
+    if not args.title:
+        ax.set_title('3D Correlation')
+    
+    # Set equal aspect ratio for 3D if requested
+    if args.aspect and args.aspect.lower() == 'equal':
+        # Get data ranges - convert to numpy arrays first
+        y1_arr = np.array(y1)
+        y2_arr = np.array(y2)
+        y3_arr = np.array(y3)
+        max_range = np.array([y1_arr.max()-y1_arr.min(), 
+                             y2_arr.max()-y2_arr.min(), 
+                             y3_arr.max()-y3_arr.min()]).max() / 2.0
+        mid_x = (y1_arr.max()+y1_arr.min()) * 0.5
+        mid_y = (y2_arr.max()+y2_arr.min()) * 0.5
+        mid_z = (y3_arr.max()+y3_arr.min()) * 0.5
+        ax.set_xlim(mid_x - max_range, mid_x + max_range)
+        ax.set_ylim(mid_y - max_range, mid_y + max_range)
+        ax.set_zlim(mid_z - max_range, mid_z + max_range)
+    
+    fig.tight_layout()
+    
+    return fig, ax
+
+
+def plot_multi_correlation_2d(args, num_corr_sets):
+    """Plot multiple 2D correlations on the same axes.
+    
+    Args:
+        args: Parsed command-line arguments
+        num_corr_sets: Number of correlation pairs to plot
+        
+    Returns:
+        tuple: (fig, ax) matplotlib figure and axes objects
+    """
+    fig, ax = plt.subplots(figsize=tuple(args.figsize))
+    
+    for i in range(num_corr_sets):
+        file1 = args.files[i*2]
+        file2 = args.files[i*2 + 1]
+        
+        data1_columns, legends1, labels1 = parse_xvg(file1)
+        data2_columns, legends2, labels2 = parse_xvg(file2)
+        
+        # Apply row slicing
+        if args.start is not None or args.end is not None:
+            data1_columns = [list(col)[args.start:args.end] for col in data1_columns]
+            data2_columns = [list(col)[args.start:args.end] for col in data2_columns]
+        
+        y1 = data1_columns[1]
+        y2 = data2_columns[1]
+        
+        if len(y1) != len(y2):
+            print(f"Error: Files have different number of data rows!", file=sys.stderr)
+            print(f"  {file1}: {len(y1)} rows", file=sys.stderr)
+            print(f"  {file2}: {len(y2)} rows", file=sys.stderr)
+            sys.exit(1)
+        
+        # Use legend if provided, otherwise use file names
+        if args.legends and i < len(args.legends):
+            label = args.legends[i]
+        else:
+            label = f'{Path(file1).stem} vs {Path(file2).stem}'
+        
+        # Plot with different color for each dataset
+        if args.style == 'dots':
+            ax.plot(y1, y2, 'o', markersize=args.markersize, label=label)
+        elif args.style == 'lines':
+            ax.plot(y1, y2, '-', label=label)
+        elif args.style == 'lines+dots':
+            ax.plot(y1, y2, 'o-', markersize=args.markersize, label=label)
+        else:
+            ax.plot(y1, y2, args.style, label=label)
+    
+    # Set labels from first pair if not overridden
+    if not args.xlabel:
+        data1_columns, _, labels1 = parse_xvg(args.files[0])
+        ax.set_xlabel(labels1.get('ylabel', 'X Values'))
+    if not args.ylabel:
+        data2_columns, _, labels2 = parse_xvg(args.files[1])
+        ax.set_ylabel(labels2.get('ylabel', 'Y Values'))
+    if not args.title:
+        ax.set_title('Multiple 2D Correlations')
+    
+    ax.legend()
+    ax.grid(True)
+    fig.tight_layout()
+    
+    return fig, ax
+
+
+def plot_multi_correlation_3d(args, num_corr_sets):
+    """Plot multiple 3D correlations on the same axes.
+    
+    Args:
+        args: Parsed command-line arguments
+        num_corr_sets: Number of correlation triplets to plot
+        
+    Returns:
+        tuple: (fig, ax) matplotlib figure and axes objects
+    """
+    fig = plt.figure(figsize=tuple(args.figsize))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    for i in range(num_corr_sets):
+        file1 = args.files[i*3]
+        file2 = args.files[i*3 + 1]
+        file3 = args.files[i*3 + 2]
+        
+        data1_columns, legends1, labels1 = parse_xvg(file1)
+        data2_columns, legends2, labels2 = parse_xvg(file2)
+        data3_columns, legends3, labels3 = parse_xvg(file3)
+        
+        # Apply row slicing
+        if args.start is not None or args.end is not None:
+            data1_columns = [list(col)[args.start:args.end] for col in data1_columns]
+            data2_columns = [list(col)[args.start:args.end] for col in data2_columns]
+            data3_columns = [list(col)[args.start:args.end] for col in data3_columns]
+        
+        y1 = data1_columns[1]
+        y2 = data2_columns[1]
+        y3 = data3_columns[1]
+        
+        if not (len(y1) == len(y2) == len(y3)):
+            print(f"Error: Files have different number of data rows!", file=sys.stderr)
+            print(f"  {file1}: {len(y1)} rows", file=sys.stderr)
+            print(f"  {file2}: {len(y2)} rows", file=sys.stderr)
+            print(f"  {file3}: {len(y3)} rows", file=sys.stderr)
+            sys.exit(1)
+        
+        # Use legend if provided, otherwise use file names
+        if args.legends and i < len(args.legends):
+            label = args.legends[i]
+        else:
+            label = f'{Path(file1).stem}/{Path(file2).stem}/{Path(file3).stem}'
+        
+        # Plot with different color for each dataset
+        if args.style == 'dots':
+            ax.scatter(y1, y2, y3, s=args.markersize*7, alpha=0.7, label=label)
+        elif args.style == 'lines':
+            ax.plot(y1, y2, y3, '-', alpha=0.7, label=label)
+        elif args.style == 'lines+dots':
+            ax.plot(y1, y2, y3, 'o-', markersize=args.markersize, alpha=0.7, label=label)
+        else:
+            ax.plot(y1, y2, y3, args.style, alpha=0.7, label=label)
+    
+    # Set labels from first triplet if not overridden
+    if not args.xlabel:
+        data1_columns, _, labels1 = parse_xvg(args.files[0])
+        ax.set_xlabel(labels1.get('ylabel', 'X Values'))
+    if not args.ylabel:
+        data2_columns, _, labels2 = parse_xvg(args.files[1])
+        ax.set_ylabel(labels2.get('ylabel', 'Y Values'))
+    
+    # Z label from third file
+    data3_columns, _, labels3 = parse_xvg(args.files[2])
+    ax.set_zlabel(labels3.get('ylabel', 'Z Values'))
+    
+    if not args.title:
+        ax.set_title('Multiple 3D Correlations')
+    
+    ax.legend()
+    
+    # Set equal aspect ratio for 3D if requested
+    if args.aspect and args.aspect.lower() == 'equal':
+        # Collect all data to determine global range
+        all_y1, all_y2, all_y3 = [], [], []
+        for i in range(num_corr_sets):
+            data1_columns, _, _ = parse_xvg(args.files[i*3])
+            data2_columns, _, _ = parse_xvg(args.files[i*3 + 1])
+            data3_columns, _, _ = parse_xvg(args.files[i*3 + 2])
+            all_y1.extend(data1_columns[1])
+            all_y2.extend(data2_columns[1])
+            all_y3.extend(data3_columns[1])
+        
+        y1_arr = np.array(all_y1)
+        y2_arr = np.array(all_y2)
+        y3_arr = np.array(all_y3)
+        max_range = np.array([y1_arr.max()-y1_arr.min(), 
+                             y2_arr.max()-y2_arr.min(), 
+                             y3_arr.max()-y3_arr.min()]).max() / 2.0
+        mid_x = (y1_arr.max()+y1_arr.min()) * 0.5
+        mid_y = (y2_arr.max()+y2_arr.min()) * 0.5
+        mid_z = (y3_arr.max()+y3_arr.min()) * 0.5
+        ax.set_xlim(mid_x - max_range, mid_x + max_range)
+        ax.set_ylim(mid_y - max_range, mid_y + max_range)
+        ax.set_zlim(mid_z - max_range, mid_z + max_range)
+    
+    fig.tight_layout()
+    
+    return fig, ax
+
+
+def handle_output(fig, args):
+    """Save plot to file or display interactively.
+    
+    Args:
+        fig: Matplotlib figure object
+        args: Parsed command-line arguments
+    """
+    if args.output:
+        fig.savefig(args.output, dpi=args.dpi, bbox_inches='tight')
+        print(f"Plot saved to: {args.output}")
+    else:
+        # Use the pyplot-level show which blocks and opens a window
+        # consistently across backends (Qt5Agg, TkAgg, etc.).
+        plt.show()
+
+
+def main():
+    """Main function for command-line interface."""
+    
+    # Special case: handle --plot-style available before full argument parsing
+    if '--plot-style' in sys.argv:
+        idx = sys.argv.index('--plot-style')
+        if idx + 1 < len(sys.argv) and sys.argv[idx + 1].lower() == 'available':
+            print("Available matplotlib styles:")
+            for style in sorted(plt.style.available):
+                print(f"  {style}")
+            return 0
+    
+    # Setup argument parser
+    parser = setup_argument_parser()
+    args = parser.parse_args()
+    
+    # Configure matplotlib style and fonts
+    if configure_matplotlib_style(args) != 0:
+        return 1
+    
+    # Validate inputs
+    if args.window < 1:
+        parser.error("Window size must be at least 1")
+    
+    # Validate correlation arguments and get dimensionality
+    corr_dim, num_corr_sets = validate_correlation_arguments(args, parser)
     
     # Check that all files exist
     for file in args.files:
@@ -581,333 +1004,22 @@ Examples:
             if args.multi:
                 # Multiple correlation plots on same axes
                 if corr_dim == 2:
-                    # 2D multi-correlation mode
-                    fig, ax = plt.subplots(figsize=tuple(args.figsize))
-                    
-                    for i in range(num_corr_sets):
-                        file1 = args.files[i*2]
-                        file2 = args.files[i*2 + 1]
-                        
-                        data1_columns, legends1, labels1 = parse_xvg(file1)
-                        data2_columns, legends2, labels2 = parse_xvg(file2)
-                        
-                        # Apply row slicing
-                        if args.start is not None or args.end is not None:
-                            data1_columns = [list(col)[args.start:args.end] for col in data1_columns]
-                            data2_columns = [list(col)[args.start:args.end] for col in data2_columns]
-                        
-                        y1 = data1_columns[1]
-                        y2 = data2_columns[1]
-                        
-                        if len(y1) != len(y2):
-                            print(f"Error: Files have different number of data rows!", file=sys.stderr)
-                            print(f"  {file1}: {len(y1)} rows", file=sys.stderr)
-                            print(f"  {file2}: {len(y2)} rows", file=sys.stderr)
-                            return 1
-                        
-                        # Use legend if provided, otherwise use file names
-                        if args.legends and i < len(args.legends):
-                            label = args.legends[i]
-                        else:
-                            label = f'{Path(file1).stem} vs {Path(file2).stem}'
-                        
-                        # Plot with different color for each dataset (no scatter colormap in multi mode)
-                        if args.style == 'dots':
-                            ax.plot(y1, y2, 'o', markersize=args.markersize, label=label)
-                        elif args.style == 'lines':
-                            ax.plot(y1, y2, '-', label=label)
-                        elif args.style == 'lines+dots':
-                            ax.plot(y1, y2, 'o-', markersize=args.markersize, label=label)
-                        else:
-                            ax.plot(y1, y2, args.style, label=label)
-                    
-                    # Set labels from first pair if not overridden
-                    if not args.xlabel:
-                        data1_columns, _, labels1 = parse_xvg(args.files[0])
-                        ax.set_xlabel(labels1.get('ylabel', 'X Values'))
-                    else:
-                        ax.set_xlabel(args.xlabel)
-                    
-                    if not args.ylabel:
-                        data2_columns, _, labels2 = parse_xvg(args.files[1])
-                        ax.set_ylabel(labels2.get('ylabel', 'Y Values'))
-                    else:
-                        ax.set_ylabel(args.ylabel)
-                    
-                    ax.set_title(args.title if args.title else 'Multiple 2D Correlations')
-                    ax.legend()
-                    ax.grid(True)
-                    
-                    # Set aspect ratio if specified
-                    if args.aspect:
-                        if args.aspect.lower() == 'equal':
-                            ax.set_aspect('equal', adjustable='box')
-                        elif args.aspect.lower() == 'auto':
-                            ax.set_aspect('auto')
-                        else:
-                            try:
-                                ax.set_aspect(float(args.aspect), adjustable='box')
-                            except ValueError:
-                                print(f"Warning: Invalid aspect ratio '{args.aspect}', using auto", file=sys.stderr)
-                    
-                    # Set axis limits if specified
-                    if args.xlim:
-                        ax.set_xlim(args.xlim[0], args.xlim[1])
-                    if args.ylim:
-                        ax.set_ylim(args.ylim[0], args.ylim[1])
-                    
-                    fig.tight_layout()
+                    fig, ax = plot_multi_correlation_2d(args, num_corr_sets)
+                    apply_plot_customization(ax, args, is_3d=False)
                 
                 else:  # corr_dim == 3
-                    # 3D multi-correlation mode
-                    fig = plt.figure(figsize=tuple(args.figsize))
-                    ax = fig.add_subplot(111, projection='3d')
-                    
-                    for i in range(num_corr_sets):
-                        file1 = args.files[i*3]
-                        file2 = args.files[i*3 + 1]
-                        file3 = args.files[i*3 + 2]
-                        
-                        data1_columns, legends1, labels1 = parse_xvg(file1)
-                        data2_columns, legends2, labels2 = parse_xvg(file2)
-                        data3_columns, legends3, labels3 = parse_xvg(file3)
-                        
-                        # Apply row slicing
-                        if args.start is not None or args.end is not None:
-                            data1_columns = [list(col)[args.start:args.end] for col in data1_columns]
-                            data2_columns = [list(col)[args.start:args.end] for col in data2_columns]
-                            data3_columns = [list(col)[args.start:args.end] for col in data3_columns]
-                        
-                        y1 = data1_columns[1]
-                        y2 = data2_columns[1]
-                        y3 = data3_columns[1]
-                        
-                        if not (len(y1) == len(y2) == len(y3)):
-                            print(f"Error: Files have different number of data rows!", file=sys.stderr)
-                            print(f"  {file1}: {len(y1)} rows", file=sys.stderr)
-                            print(f"  {file2}: {len(y2)} rows", file=sys.stderr)
-                            print(f"  {file3}: {len(y3)} rows", file=sys.stderr)
-                            return 1
-                        
-                        # Use legend if provided, otherwise use file names
-                        if args.legends and i < len(args.legends):
-                            label = args.legends[i]
-                        else:
-                            label = f'{Path(file1).stem}/{Path(file2).stem}/{Path(file3).stem}'
-                        
-                        # Plot with different color for each dataset
-                        if args.style == 'dots':
-                            ax.scatter(y1, y2, y3, s=args.markersize*7, alpha=0.7, label=label)
-                        elif args.style == 'lines':
-                            ax.plot(y1, y2, y3, '-', alpha=0.7, label=label)
-                        elif args.style == 'lines+dots':
-                            ax.plot(y1, y2, y3, 'o-', markersize=args.markersize, alpha=0.7, label=label)
-                        else:
-                            ax.plot(y1, y2, y3, args.style, alpha=0.7, label=label)
-                    
-                    # Set labels from first triplet if not overridden
-                    if not args.xlabel:
-                        data1_columns, _, labels1 = parse_xvg(args.files[0])
-                        ax.set_xlabel(labels1.get('ylabel', 'X Values'))
-                    else:
-                        ax.set_xlabel(args.xlabel)
-                    
-                    if not args.ylabel:
-                        data2_columns, _, labels2 = parse_xvg(args.files[1])
-                        ax.set_ylabel(labels2.get('ylabel', 'Y Values'))
-                    else:
-                        ax.set_ylabel(args.ylabel)
-                    
-                    # Z label from third file
-                    data3_columns, _, labels3 = parse_xvg(args.files[2])
-                    ax.set_zlabel(labels3.get('ylabel', 'Z Values'))
-                    
-                    ax.set_title(args.title if args.title else 'Multiple 3D Correlations')
-                    ax.legend()
-                    
-                    # Set equal aspect ratio for 3D if requested
-                    if args.aspect and args.aspect.lower() == 'equal':
-                        # Collect all data to determine global range
-                        all_y1, all_y2, all_y3 = [], [], []
-                        for i in range(num_corr_sets):
-                            data1_columns, _, _ = parse_xvg(args.files[i*3])
-                            data2_columns, _, _ = parse_xvg(args.files[i*3 + 1])
-                            data3_columns, _, _ = parse_xvg(args.files[i*3 + 2])
-                            all_y1.extend(data1_columns[1])
-                            all_y2.extend(data2_columns[1])
-                            all_y3.extend(data3_columns[1])
-                        
-                        y1_arr = np.array(all_y1)
-                        y2_arr = np.array(all_y2)
-                        y3_arr = np.array(all_y3)
-                        max_range = np.array([y1_arr.max()-y1_arr.min(), 
-                                             y2_arr.max()-y2_arr.min(), 
-                                             y3_arr.max()-y3_arr.min()]).max() / 2.0
-                        mid_x = (y1_arr.max()+y1_arr.min()) * 0.5
-                        mid_y = (y2_arr.max()+y2_arr.min()) * 0.5
-                        mid_z = (y3_arr.max()+y3_arr.min()) * 0.5
-                        ax.set_xlim(mid_x - max_range, mid_x + max_range)
-                        ax.set_ylim(mid_y - max_range, mid_y + max_range)
-                        ax.set_zlim(mid_z - max_range, mid_z + max_range)
-                    
-                    # Override with manual limits if specified (after equal aspect)
-                    if args.xlim:
-                        ax.set_xlim(args.xlim[0], args.xlim[1])
-                    if args.ylim:
-                        ax.set_ylim(args.ylim[0], args.ylim[1])
-                    
-                    fig.tight_layout()
+                    fig, ax = plot_multi_correlation_3d(args, num_corr_sets)
+                    apply_plot_customization(ax, args, is_3d=True)
             
             elif len(args.files) == 2:
-                # 2D correlation mode: plot y-values from file1 vs file2
-                data1_columns, legends1, labels1 = parse_xvg(args.files[0])
-                data2_columns, legends2, labels2 = parse_xvg(args.files[1])
-                
-                # Apply row slicing
-                if args.start is not None or args.end is not None:
-                    data1_columns = [list(col)[args.start:args.end] for col in data1_columns]
-                    data2_columns = [list(col)[args.start:args.end] for col in data2_columns]
-                
-                # Validate that both files have the same number of data points
-                y1 = data1_columns[1]  # second column (y-values) from file 1
-                y2 = data2_columns[1]  # second column (y-values) from file 2
-                
-                if len(y1) != len(y2):
-                    print(f"Error: Files have different number of data rows!", file=sys.stderr)
-                    print(f"  {args.files[0]}: {len(y1)} rows", file=sys.stderr)
-                    print(f"  {args.files[1]}: {len(y2)} rows", file=sys.stderr)
-                    return 1
-                
-                # Create the 2D correlation plot
-                fig, ax = plt.subplots(figsize=tuple(args.figsize))
-                
-                if args.scatter:
-                    # Scatter mode with color by order
-                    colors = np.arange(len(y1))
-                    scatter = ax.scatter(y1, y2, c=colors, cmap=args.colormap, 
-                                       s=args.markersize*7, alpha=0.7)
-                    cbar = fig.colorbar(scatter, ax=ax)
-                    cbar.set_label('Frame / Time order', rotation=270, labelpad=20)
-                else:
-                    # Simple dots or specified style
-                    if args.style == 'dots':
-                        ax.plot(y1, y2, 'o', markersize=args.markersize)
-                    elif args.style == 'lines':
-                        ax.plot(y1, y2, '-')
-                    elif args.style == 'lines+dots':
-                        ax.plot(y1, y2, 'o-', markersize=args.markersize)
-                    else:
-                        ax.plot(y1, y2, args.style)
-                
-                # Set labels (use ylabel from each file as axis labels)
-                xlabel_default = labels1.get('ylabel', f'Values from {Path(args.files[0]).name}')
-                ylabel_default = labels2.get('ylabel', f'Values from {Path(args.files[1]).name}')
-                
-                ax.set_xlabel(args.xlabel if args.xlabel else xlabel_default)
-                ax.set_ylabel(args.ylabel if args.ylabel else ylabel_default)
-                ax.set_title(args.title if args.title else 'XY Correlation')
-                ax.grid(True)
-                
-                # Set aspect ratio if specified
-                if args.aspect:
-                    if args.aspect.lower() == 'equal':
-                        ax.set_aspect('equal', adjustable='box')
-                    elif args.aspect.lower() == 'auto':
-                        ax.set_aspect('auto')
-                    else:
-                        try:
-                            ax.set_aspect(float(args.aspect), adjustable='box')
-                        except ValueError:
-                            print(f"Warning: Invalid aspect ratio '{args.aspect}', using auto", file=sys.stderr)
-                
-                # Set axis limits if specified
-                if args.xlim:
-                    ax.set_xlim(args.xlim[0], args.xlim[1])
-                if args.ylim:
-                    ax.set_ylim(args.ylim[0], args.ylim[1])
-                
-                fig.tight_layout()
+                # Single 2D correlation
+                fig, ax = plot_single_correlation_2d(args)
+                apply_plot_customization(ax, args, is_3d=False)
             
             else:  # len(args.files) == 3
-                # 3D correlation mode: plot y-values from file1, file2, file3 as x, y, z
-                data1_columns, legends1, labels1 = parse_xvg(args.files[0])
-                data2_columns, legends2, labels2 = parse_xvg(args.files[1])
-                data3_columns, legends3, labels3 = parse_xvg(args.files[2])
-                
-                # Apply row slicing
-                if args.start is not None or args.end is not None:
-                    data1_columns = [list(col)[args.start:args.end] for col in data1_columns]
-                    data2_columns = [list(col)[args.start:args.end] for col in data2_columns]
-                    data3_columns = [list(col)[args.start:args.end] for col in data3_columns]
-                
-                # Extract second columns
-                y1 = data1_columns[1]
-                y2 = data2_columns[1]
-                y3 = data3_columns[1]
-                
-                # Validate that all files have the same number of data points
-                if not (len(y1) == len(y2) == len(y3)):
-                    print(f"Error: Files have different number of data rows!", file=sys.stderr)
-                    print(f"  {args.files[0]}: {len(y1)} rows", file=sys.stderr)
-                    print(f"  {args.files[1]}: {len(y2)} rows", file=sys.stderr)
-                    print(f"  {args.files[2]}: {len(y3)} rows", file=sys.stderr)
-                    return 1
-                
-                # Create 3D plot
-                fig = plt.figure(figsize=tuple(args.figsize))
-                ax = fig.add_subplot(111, projection='3d')
-                
-                if args.scatter:
-                    # Scatter mode with color by order
-                    colors = np.arange(len(y1))
-                    scatter = ax.scatter(y1, y2, y3, c=colors, cmap=args.colormap,
-                                       s=args.markersize*7, alpha=0.7)
-                    cbar = fig.colorbar(scatter, ax=ax, pad=0.1)
-                    cbar.set_label('Frame / Time order', rotation=270, labelpad=20)
-                else:
-                    # Line or marker plot in 3D
-                    if args.style == 'dots':
-                        ax.scatter(y1, y2, y3, s=args.markersize*7, alpha=0.7)
-                    elif args.style == 'lines':
-                        ax.plot(y1, y2, y3, '-', alpha=0.7)
-                    elif args.style == 'lines+dots':
-                        ax.plot(y1, y2, y3, 'o-', markersize=args.markersize, alpha=0.7)
-                    else:
-                        ax.plot(y1, y2, y3, args.style, alpha=0.7)
-                
-                # Set labels (use ylabel from each file)
-                xlabel_default = labels1.get('ylabel', f'Values from {Path(args.files[0]).name}')
-                ylabel_default = labels2.get('ylabel', f'Values from {Path(args.files[1]).name}')
-                zlabel_default = labels3.get('ylabel', f'Values from {Path(args.files[2]).name}')
-                
-                ax.set_xlabel(args.xlabel if args.xlabel else xlabel_default)
-                ax.set_ylabel(args.ylabel if args.ylabel else ylabel_default)
-                ax.set_zlabel(zlabel_default)  # z-label doesn't have CLI override (could add if needed)
-                ax.set_title(args.title if args.title else '3D Correlation')
-                
-                # Set equal aspect ratio for 3D if requested
-                if args.aspect and args.aspect.lower() == 'equal':
-                    # Get data ranges - convert to numpy arrays first
-                    y1_arr = np.array(y1)
-                    y2_arr = np.array(y2)
-                    y3_arr = np.array(y3)
-                    max_range = np.array([y1_arr.max()-y1_arr.min(), 
-                                         y2_arr.max()-y2_arr.min(), 
-                                         y3_arr.max()-y3_arr.min()]).max() / 2.0
-                    mid_x = (y1_arr.max()+y1_arr.min()) * 0.5
-                    mid_y = (y2_arr.max()+y2_arr.min()) * 0.5
-                    mid_z = (y3_arr.max()+y3_arr.min()) * 0.5
-                    ax.set_xlim(mid_x - max_range, mid_x + max_range)
-                    ax.set_ylim(mid_y - max_range, mid_y + max_range)
-                    ax.set_zlim(mid_z - max_range, mid_z + max_range)
-                
-                # Override with manual limits if specified (after equal aspect)
-                if args.xlim:
-                    ax.set_xlim(args.xlim[0], args.xlim[1])
-                if args.ylim:
-                    ax.set_ylim(args.ylim[0], args.ylim[1])
-                
-                fig.tight_layout()
+                # Single 3D correlation
+                fig, ax = plot_single_correlation_3d(args)
+                apply_plot_customization(ax, args, is_3d=True)
             
         elif len(args.files) == 1 and not args.multi:
             # Single file mode (deferred display)
@@ -916,32 +1028,8 @@ Examples:
                                use_histogram=args.histogram, hist_bins=args.bins, markersize=args.markersize,
                                start_row=args.start, end_row=args.end, columns=args.columns,
                                custom_legends=args.legends)
-
-            # Apply custom labels if provided (override XVG metadata)
-            if args.title:
-                ax.set_title(args.title)
-            if args.xlabel:
-                ax.set_xlabel(args.xlabel)
-            if args.ylabel:
-                ax.set_ylabel(args.ylabel)
             
-            # Set aspect ratio if specified
-            if args.aspect:
-                if args.aspect.lower() == 'equal':
-                    ax.set_aspect('equal', adjustable='box')
-                elif args.aspect.lower() == 'auto':
-                    ax.set_aspect('auto')
-                else:
-                    try:
-                        ax.set_aspect(float(args.aspect), adjustable='box')
-                    except ValueError:
-                        print(f"Warning: Invalid aspect ratio '{args.aspect}', using auto", file=sys.stderr)
-            
-            # Set axis limits if specified
-            if args.xlim:
-                ax.set_xlim(args.xlim[0], args.xlim[1])
-            if args.ylim:
-                ax.set_ylim(args.ylim[0], args.ylim[1])
+            apply_plot_customization(ax, args, is_3d=False)
 
         else:
             # Multiple files mode
@@ -956,43 +1044,11 @@ Examples:
                              hist_bins=args.bins, markersize=args.markersize,
                              start_row=args.start, end_row=args.end, columns=args.columns)
             
-            # Apply custom labels if provided
-            if args.title:
-                ax.set_title(args.title)
-            if args.xlabel:
-                ax.set_xlabel(args.xlabel)
-            if args.ylabel:
-                ax.set_ylabel(args.ylabel)
-            
-            # Set aspect ratio if specified
-            if args.aspect:
-                if args.aspect.lower() == 'equal':
-                    ax.set_aspect('equal', adjustable='box')
-                elif args.aspect.lower() == 'auto':
-                    ax.set_aspect('auto')
-                else:
-                    try:
-                        ax.set_aspect(float(args.aspect), adjustable='box')
-                    except ValueError:
-                        print(f"Warning: Invalid aspect ratio '{args.aspect}', using auto", file=sys.stderr)
-            
-            # Set axis limits if specified
-            if args.xlim:
-                ax.set_xlim(args.xlim[0], args.xlim[1])
-            if args.ylim:
-                ax.set_ylim(args.ylim[0], args.ylim[1])
-            
+            apply_plot_customization(ax, args, is_3d=False)
             plt.tight_layout()
         
-        # Save or show the plot
-        if args.output:
-            fig.savefig(args.output, dpi=args.dpi, bbox_inches='tight')
-            print(f"Plot saved to: {args.output}")
-        else:
-            # Use the pyplot-level show which blocks and opens a window
-            # consistently across backends (Qt5Agg, TkAgg, etc.).
-            plt.show()
-        
+        # Handle output (save or display)
+        handle_output(fig, args)
         return 0
     
     except Exception as e:
