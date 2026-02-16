@@ -277,7 +277,9 @@ def setup_argument_parser():
         argparse.ArgumentParser: Configured argument parser
     """
     parser = argparse.ArgumentParser(
-        description='Plot GROMACS XVG files with optional moving averages.',
+        description='Plot GROMACS XVG files with optional moving averages.\n\n'
+                    'IMPORTANT: Specify file names BEFORE options that accept multiple values\n'
+                    '(--legends, --columns). Example: script.py file.xvg --legends "A" "B"',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -409,7 +411,8 @@ Examples:
     parser.add_argument('--legends', '-l', nargs='+', type=str,
                         help='Custom legend labels. For multiple files (--multi), must match number of files. '
                              'For single multi-column files, must match number of columns plotted. '
-                             'Useful for files without XVG headers.')
+                             'Useful for files without XVG headers. '
+                             'NOTE: Specify file names BEFORE this option to avoid parsing errors.')
     
     parser.add_argument('--output', '-o', type=str,
                         help='Output file for saving the plot (e.g., plot.png, plot.pdf). '
@@ -472,7 +475,8 @@ Examples:
                         help='Specific column numbers to plot (1-indexed, space-separated). '
                              'By default, all columns are plotted. Example: --columns 1 3 5 '
                              'plots only the 1st, 3rd, and 5th data columns. '
-                             'Note: Column 0 is the x-axis, so data columns start at 1.')
+                             'Note: Column 0 is the x-axis, so data columns start at 1. '
+                             'NOTE: Specify file names BEFORE this option to avoid parsing errors.')
     
     return parser
 
@@ -993,11 +997,21 @@ def main():
     # Validate correlation arguments and get dimensionality
     corr_dim, num_corr_sets = validate_correlation_arguments(args, parser)
     
-    # Check that all files exist
+    # Check that all files exist and provide helpful error for common mistakes
+    non_existent_files = []
     for file in args.files:
         if not Path(file).exists():
-            print(f"Error: File not found: {file}", file=sys.stderr)
-            return 1
+            non_existent_files.append(file)
+    
+    if non_existent_files:
+        print(f"Error: File(s) not found: {', '.join(non_existent_files)}", file=sys.stderr)
+        # Check if this might be due to argument order issue
+        if (args.legends or args.columns) and any(not f.endswith(('.xvg', '.dat', '.txt', '.csv')) for f in non_existent_files):
+            print("", file=sys.stderr)
+            print("Hint: If you used --legends or --columns, make sure to specify files BEFORE these options.", file=sys.stderr)
+            print("Correct:   script.py file.xvg --legends \"Label A\" \"Label B\"", file=sys.stderr)
+            print("Incorrect: script.py --legends \"Label A\" \"Label B\" file.xvg", file=sys.stderr)
+        return 1
     
     try:
         if args.xy_correlation:
