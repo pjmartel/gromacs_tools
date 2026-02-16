@@ -708,6 +708,11 @@ Examples:
     parser.add_argument("-v", "--verbose", action="store_true",
                        help="Verbose output (show detailed progress)")
     
+    # If no arguments provided, show help and exit
+    if len(sys.argv) == 1:
+        parser.print_help()
+        sys.exit(0)
+    
     args = parser.parse_args()
     
     # Setup logging
