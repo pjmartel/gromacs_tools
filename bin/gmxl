@@ -45,29 +45,32 @@ OUTPUT_LOG="${SUBCOMMAND}_${TIMESTAMP}.log"
 # Full command for logging
 FULL_COMMAND="gmx $*"
 
-# Log command to GMX_COMMANDS
-echo "[${DATE_HUMAN}] ${FULL_COMMAND}" >> "${COMMAND_LOG}"
+# Use temporary log file first
+TEMP_LOG="${OUTPUT_LOG}.tmp"
 
-# Run gmx command with tee to both display and log output
+# Run gmx command with tee to both display and capture output
 # Capture both stdout and stderr
-gmx "$@" 2>&1 | tee "${OUTPUT_LOG}"
+gmx "$@" 2>&1 | tee "${TEMP_LOG}"
 
 # Capture exit status
 EXIT_STATUS=${PIPESTATUS[0]}
 
-# Log result
+# Log result and handle output file
 if [ ${EXIT_STATUS} -eq 0 ]; then
+    # Success: keep the log file and record command
+    mv "${TEMP_LOG}" "${OUTPUT_LOG}"
+    echo "[${DATE_HUMAN}] ${FULL_COMMAND}" >> "${COMMAND_LOG}"
     echo "[${DATE_HUMAN}] ✓ Success - Output saved to: ${OUTPUT_LOG}" >> "${COMMAND_LOG}"
     echo ""
     echo "✓ Command completed successfully"
     echo "📝 Output saved to: ${OUTPUT_LOG}"
     echo "📋 Command logged to: ${COMMAND_LOG}"
 else
-    echo "[${DATE_HUMAN}] ✗ Failed with exit code ${EXIT_STATUS} - Output saved to: ${OUTPUT_LOG}" >> "${COMMAND_LOG}"
+    # Failure: delete the log file and don't record command
+    rm -f "${TEMP_LOG}"
     echo ""
     echo "✗ Command failed with exit code ${EXIT_STATUS}"
-    echo "📝 Output saved to: ${OUTPUT_LOG}"
-    echo "📋 Command logged to: ${COMMAND_LOG}"
+    echo "📝 Output NOT saved (only successful commands are logged)"
 fi
 
 exit ${EXIT_STATUS}
