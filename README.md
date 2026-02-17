@@ -18,6 +18,7 @@ export PATH="$PATH:$(pwd)/bin"
 | Tool | Purpose | Documentation |
 |------|---------|---------------|
 | **gmx_prepare.py** | Automate system preparation pipeline (pdb2gmx, solvate, ions) | [docs/gmx_prepare.md](docs/gmx_prepare.md) |
+| **gmx_equilibrate.py** | Automated equilibration pipeline (EM → NVT → NPT) with restraints | [docs/gmx_equilibrate.md](docs/gmx_equilibrate.md) |
 | **gromacs_pca.py** | Principal component analysis workflow with automatic plotting | [docs/gromacs_pca.md](docs/gromacs_pca.md) |
 | **gromacs_pca_movie.py** | Generate trajectory movies along principal components | [docs/gromacs_pca_movie.md](docs/gromacs_pca_movie.md) |
 | **plot_xvg.py** | Versatile XVG plotting tool with extensive customization | [docs/plot_xvg.md](docs/plot_xvg.md) |
@@ -32,6 +33,18 @@ python bin/gmx_prepare.py protein.pdb --forcefield amber14sb --dry-run
 
 # Execute preparation
 python bin/gmx_prepare.py protein.pdb --forcefield charmm36
+```
+
+### Equilibration
+```bash
+# Basic equilibration (EM → NVT → NPT with restraints)
+python bin/gmx_equilibrate.py protein_ions.gro protein.top
+
+# Custom temperature and longer equilibration
+python bin/gmx_equilibrate.py protein_ions.gro protein.top --temp 310 --time-npt2 1000
+
+# Preview equilibration pipeline
+python bin/gmx_equilibrate.py protein_ions.gro protein.top --dry-run
 ```
 
 ### PCA Analysis
