@@ -1,0 +1,73 @@
+#!/bin/bash
+
+# gmxl - GROMACS command wrapper with automatic logging
+# Usage: gmxl <subcommand> [args...]
+# Example: gmxl rms -s md.tpr -f md.xtc -o rmsd.xvg
+
+set -o pipefail
+
+# Log files
+COMMAND_LOG="GMX_COMMANDS"
+
+# Check if at least one argument provided
+if [ $# -eq 0 ]; then
+    echo "Usage: gmxl <subcommand> [args...]"
+    echo ""
+    echo "Wrapper for gmx that automatically logs commands and output."
+    echo ""
+    echo "Examples:"
+    echo "  gmxl rms -s md.tpr -f md.xtc -o rmsd.xvg"
+    echo "  gmxl gyrate -s md.tpr -f md.xtc -o gyrate.xvg"
+    echo "  gmxl energy -f md.edr -o energy.xvg"
+    echo ""
+    echo "Logging:"
+    echo "  - Commands logged to: GMX_COMMANDS"
+    echo "  - Output logged to: {subcommand}_{timestamp}.log"
+    exit 0
+fi
+
+# Check if gmx is available
+if ! command -v gmx &> /dev/null; then
+    echo "❌ Error: gmx command not found. Please ensure GROMACS is installed and in PATH." >&2
+    exit 1
+fi
+
+# Get subcommand (first argument)
+SUBCOMMAND="$1"
+
+# Generate timestamp
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+DATE_HUMAN=$(date +"%Y-%m-%d %H:%M:%S")
+
+# Create output log filename
+OUTPUT_LOG="${SUBCOMMAND}_${TIMESTAMP}.log"
+
+# Full command for logging
+FULL_COMMAND="gmx $*"
+
+# Log command to GMX_COMMANDS
+echo "[${DATE_HUMAN}] ${FULL_COMMAND}" >> "${COMMAND_LOG}"
+
+# Run gmx command with tee to both display and log output
+# Capture both stdout and stderr
+gmx "$@" 2>&1 | tee "${OUTPUT_LOG}"
+
+# Capture exit status
+EXIT_STATUS=${PIPESTATUS[0]}
+
+# Log result
+if [ ${EXIT_STATUS} -eq 0 ]; then
+    echo "[${DATE_HUMAN}] ✓ Success - Output saved to: ${OUTPUT_LOG}" >> "${COMMAND_LOG}"
+    echo ""
+    echo "✓ Command completed successfully"
+    echo "📝 Output saved to: ${OUTPUT_LOG}"
+    echo "📋 Command logged to: ${COMMAND_LOG}"
+else
+    echo "[${DATE_HUMAN}] ✗ Failed with exit code ${EXIT_STATUS} - Output saved to: ${OUTPUT_LOG}" >> "${COMMAND_LOG}"
+    echo ""
+    echo "✗ Command failed with exit code ${EXIT_STATUS}"
+    echo "📝 Output saved to: ${OUTPUT_LOG}"
+    echo "📋 Command logged to: ${COMMAND_LOG}"
+fi
+
+exit ${EXIT_STATUS}
