@@ -61,6 +61,23 @@ if [[ $# -lt 5 ]]; then
     exit 1
 fi
 
+# Validate that first 5 arguments are not flags (before shifting)
+for i in 1 2 3 4 5; do
+    eval "arg=\${$i}"
+    if [[ "$arg" == --* ]]; then
+        echo "Error: Argument $i appears to be a flag ('$arg')"
+        echo "The first 5 arguments must be: <basename> <replica> <start_time> <end_time> <dt>"
+        echo ""
+        echo "Correct format:"
+        echo "  $0 md 0 0 500 100 [OPTIONS]"
+        echo ""
+        echo "Your command had a flag in position $i. Did you:"
+        echo "  - Forget a required positional argument?"
+        echo "  - Misspell a flag name?"
+        exit 1
+    fi
+done
+
 # Parse required positional arguments
 basename_arg="$1"
 replica="$2"
@@ -78,23 +95,6 @@ title_suffix=""
 plumed_file=""
 topology="topol.top"
 time_unit="ns"  # Default to nanoseconds
-
-# Validate that first 5 arguments are not flags
-for i in 1 2 3 4 5; do
-    eval "arg=\${$i}"
-    if [[ "$arg" == --* ]]; then
-        echo "Error: Argument $i appears to be a flag ('$arg')"
-        echo "The first 5 arguments must be: <basename> <replica> <start_time> <end_time> <dt>"
-        echo ""
-        echo "Correct format:"
-        echo "  $0 md 0 0 500 100 [OPTIONS]"
-        echo ""
-        echo "Your command had a flag in position $i. Did you:"
-        echo "  - Forget a required positional argument?"
-        echo "  - Misspell a flag name?"
-        exit 1
-    fi
-done
 
 # Parse optional arguments
 while [[ $# -gt 0 ]]; do
