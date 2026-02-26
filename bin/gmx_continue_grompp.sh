@@ -251,9 +251,28 @@ check_segment_complete() {
 # Determine where to start based on existing files (crash recovery)
 actual_start=${tstart}
 
-# Check if we're restarting from a crash
+# Smart scan: Find the highest completed segment in the directory
+echo "Scanning directory for existing completed segments..."
+highest_completed=-1
+
 for ((time=${tstart} ; time<${tend} ; time+=${dt})) ; do
-    check_prev="${base_name}_$((time))_$((time+dt))"
+    check_seg="${base_name}_${time}_$((time+dt))"
+    
+    if check_segment_complete "${check_seg}"; then
+        echo "  Found completed: ${check_seg}"
+        highest_completed=$((time + dt))
+    fi
+done
+
+# If we found completed segments, start from the highest one
+if [[ ${highest_completed} -gt ${tstart} ]]; then
+    actual_start=${highest_completed}
+    echo "Latest completed segment ends at: ${actual_start} ns"
+fi
+
+# Now check for incomplete/interrupted segments at actual_start
+for ((time=${actual_start} ; time<${tend} ; time+=${dt})) ; do
+    check_prev="${base_name}_${time}_$((time+dt))"
     
     # If TPR exists but segment didn't complete, this segment was interrupted
     if [[ -f ${check_prev}.tpr ]]; then
@@ -265,11 +284,11 @@ for ((time=${tstart} ; time<${tend} ; time+=${dt})) ; do
         fi
     fi
     
-    # If segment completed successfully, move to next
+    # If this segment exists and is complete, move past it
     if check_segment_complete "${check_prev}"; then
         actual_start=$((time + dt))
     else
-        # Missing files or incomplete, start from here
+        # This segment doesn't exist, we'll start from here
         break
     fi
 done
