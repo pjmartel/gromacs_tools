@@ -1,47 +1,50 @@
 #!/bin/bash -e
-# Script for continuing a GROMACS molecular dynamics simulation
+# Script for continuing/extending GROMACS molecular dynamics simulations
 # It uses grompp to prepare the input files for continuation
-# Required files: topology (.top), structure (.gro), checkpoint (.cpt), and energy (.edr)
+# Required files: topology (.top), and either:
+#   - Initial run (start_time=0): initial equilibration files (.gro/.cpt/.edr/.mdp)
+#   - Continuation (start_time>0): previous segment files - MDP copied from previous segment
 #
-# Usage: ./md_continue_grompp.sh <basename> <replica> <start_time> <end_time> <dt> [template_mdp] [initial_basename] [timestep] [title_suffix]
-#   basename:         Base name for output files (e.g., "md")
+# Usage: ./gmx_continue_grompp.sh <basename> <replica> <start_time> <end_time> <dt> [OPTIONS]
+#   basename:         Base name for output files (e.g., "md" or "trp_fold")
 #   replica:          Replica number (e.g., 0, 1, 2)
-#   start_time:       Start time in ns (e.g., 0)
-#   end_time:         End time in ns (e.g., 500)
-#   dt:               Time step per segment in ns (e.g., 100)
-#   template_mdp:     (Optional) MDP template for production runs, default: "md.mdp"
-#   initial_basename: (Optional) Basename for initial equilibration files, default: "npt"
-#   timestep:         (Optional) Integration timestep in ps, default: 0.002 (2 fs)
-#   title_suffix:     (Optional) System-specific title to append (e.g., "TRP_cage_replica_1")
+#   start_time:       Start time in ns (e.g., 0 for new run, 10000 for continuation)
+#   end_time:         End time in ns (e.g., 500 or 20000)
+#   dt:               Time step per segment in ns (e.g., 100 or 500)
 #
-# Example: ./md_continue_grompp.sh md 0 0 500 100 md_production.mdp npt 0.002 "TRP_cage"
-#   Uses npt.gro/cpt/edr as starting point, md_production.mdp as template
-#   Appends "TRP_cage" to MDP title
-#   Then runs: md_0_0_100, md_0_100_200, md_0_200_300, etc.
+# CONTINUATION MODE (start_time > 0):
+#   The script automatically copies the MDP file from the previous segment.
+#   No template MDP needed! Simply specify the time range you want to extend.
+#
+#   Example - extend from 10000 to 20000 ns:
+#     ./gmx_continue_grompp.sh trp_fold 0 10000 20000 500
+#     Copies trp_fold_0_9500_10000.mdp (previous segment)
+#     Continues: trp_fold_0_10000_10500, trp_fold_0_10500_11000, etc.
+#
+# INITIAL RUN (start_time = 0):
+#   Starting a new production run from equilibration files.
+#   MDP copied from equilibration MDP, or uses template if provided.
+#
+#   Example - start new 500 ns run:
+#     ./gmx_continue_grompp.sh md 0 0 500 100 --initial npt_final
+#     Copies npt_final.mdp and uses npt_final.gro/cpt/edr as starting point
 #
 # CRASH RECOVERY:
-#   If a simulation crashes or is interrupted, simply re-run the script with 
-#   the EXACT SAME ARGUMENTS. The script will:
-#   - Automatically detect which segments completed successfully
-#   - Skip already-completed segments
-#   - Resume interrupted segments from their checkpoint files
-#   
-#   Example after crash:
-#     ./md_continue_grompp.sh md 0 0 500 100 md_production.mdp npt
-#     (Same command - the script figures out where to continue)
+#   If a simulation crashes, simply re-run with the EXACT SAME ARGUMENTS.
+#   The script will automatically detect and resume from the interruption point.
 
 # Check minimum arguments
 if [[ $# -lt 5 ]]; then
     echo "Error: Insufficient arguments"
     echo "Usage: $0 <basename> <replica> <start_time> <end_time> <dt> [OPTIONS]"
-    echo "  basename:         Base name for output files (e.g., 'md')"
+    echo "  basename:         Base name for output files (e.g., 'md' or 'trp_fold')"
     echo "  replica:          Replica number (e.g., 0)"
-    echo "  start_time:       Start time in ns (e.g., 0)"
-    echo "  end_time:         End time in ns (e.g., 500)"
-    echo "  dt:               Time step per segment in ns (e.g., 100)"
+    echo "  start_time:       Start time in ns (0 for new run, >0 for continuation)"
+    echo "  end_time:         End time in ns (e.g., 500 or 20000)"
+    echo "  dt:               Time step per segment in ns (e.g., 100 or 500)"
     echo ""
     echo "Optional arguments:"
-    echo "  --template <file>      MDP template for production runs (default: 'md.mdp')"
+    echo "  --template <file>      MDP template (only needed if no previous .mdp to copy from)"
     echo "  --initial <basename>   Basename for initial equilibration files (default: 'npt')"
     echo "  --timestep <ps>        Integration timestep in ps (default: 0.002)"
     echo "  --title <suffix>       System-specific title to append (e.g., 'TRP_cage_replica_1')"
@@ -49,9 +52,12 @@ if [[ $# -lt 5 ]]; then
     echo "  --plumed <file>        PLUMED input file for enhanced sampling/analysis"
     echo "  --ps                   Interpret times as picoseconds (default: nanoseconds)"
     echo ""
-    echo "Example: $0 md 0 0 500 100 --template md_production.mdp --title 'TRP_cage'"
-    echo "  Uses npt.gro/cpt/edr as starting point, md_production.mdp as template"
-    echo "  Appends 'TRP_cage' to MDP title, then runs md_0_0_100, md_0_100_200, etc."
+    echo "Examples:"
+    echo "  # Extend existing run from 10000 to 20000 ns (MDP auto-copied)"
+    echo "  $0 trp_fold 0 10000 20000 500"
+    echo ""
+    echo "  # Start new run from 0 to 500 ns (copies npt_final.mdp)"
+    echo "  $0 md 0 0 500 100 --initial npt_final"
     exit 1
 fi
 
@@ -65,6 +71,7 @@ shift 5
 
 # Set default values for optional arguments
 template_mdp="md.mdp"
+template_provided=false  # Track if --template was explicitly provided
 initial_basename="npt"
 timestep_ps="0.002"
 title_suffix=""
@@ -98,6 +105,7 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             template_mdp="$2"
+            template_provided=true
             shift 2
             ;;
         --initial)
@@ -191,8 +199,11 @@ echo "Replica:         ${replica}"
 echo "Time range:      ${tstart} -> ${tend} ${time_unit}"
 echo "Segment dt:      ${dt} ${time_unit} (${nsteps_per_segment} steps)"
 echo "Timestep:        ${timestep_ps} ps"
-echo "Template MDP:    ${template_mdp}"
-echo "Initial files:   ${initial_basename}.gro/cpt/edr"
+if [[ ${tstart} -eq 0 ]]; then
+    echo "Initial files:   ${initial_basename}.gro/cpt/edr/mdp"
+else
+    echo "Continuing from: ${tstart} ${time_unit} (MDP copied from previous segment)"
+fi
 echo "=============================="
 
 # Source GROMACS if not already available
@@ -218,10 +229,16 @@ if [[ ! -f ${topology} ]]; then
     exit 1
 fi
 
-# Check for template MDP file
-if [[ ! -f ${template_mdp} ]]; then
+# For first segment (start_time=0), template MDP is ALWAYS required
+if [[ ${tstart} -eq 0 ]] && [[ ! -f ${template_mdp} ]]; then
     echo "Error: Template MDP file '${template_mdp}' not found"
-    echo "This should be your production run MDP file (NOT the NPT/NVT equilibration MDP)."
+    echo ""
+    echo "For the first segment (starting from time 0), a template MDP is REQUIRED."
+    echo "Please either:"
+    echo "  1. Create/copy '${template_mdp}' in this directory, or"
+    echo "  2. Use --template <file> to specify a different MDP file"
+    echo ""
+    echo "Example: $0 ${basename_arg} ${replica} 0 ${tend} ${dt} --template md_production.mdp"
     exit 1
 fi
 
@@ -307,11 +324,27 @@ if [[ ${actual_start} -eq ${tstart} ]] && [[ ${tstart} -eq 0 ]]; then
             echo "Initial segment already completed successfully."
         fi
     else
-        echo "Running grompp for initial segment (using ${template_mdp})..."
-        # Create MDP with tinit=0 and nsteps for first segment
-        sed -e "s/\(tinit\s*=\s*\)[0-9]\+/\10/" \
-            -e "s/\(nsteps\s*=\s*\)[0-9]\+/\1${nsteps_per_segment}/" \
-            ${template_mdp} > ${initial_cur}.mdp
+        # Priority 1: If --template explicitly provided, use it
+        if [[ ${template_provided} == true ]]; then
+            echo "Using template MDP: ${template_mdp}"
+            sed -e "s/\(tinit\s*=\s*\)[0-9]\+/\10/" \
+                -e "s/\(nsteps\s*=\s*\)[0-9]\+/\1${nsteps_per_segment}/" \
+                ${template_mdp} > ${initial_cur}.mdp
+        # Priority 2: Try to copy MDP from initial equilibration
+        elif [[ -f ${initial_basename}.mdp ]]; then
+            echo "Copying MDP from ${initial_basename}.mdp"
+            cp "${initial_basename}.mdp" "${initial_cur}.mdp"
+            # Update tinit=0 and nsteps for first segment
+            sed -i -e "s/\(tinit\s*=\s*\)[0-9]\+/\10/" \
+                   -e "s/\(nsteps\s*=\s*\)[0-9]\+/\1${nsteps_per_segment}/" \
+                   ${initial_cur}.mdp
+        # Priority 3: Use default template (already checked to exist)
+        else
+            echo "Using template MDP: ${template_mdp}"
+            sed -e "s/\(tinit\s*=\s*\)[0-9]\+/\10/" \
+                -e "s/\(nsteps\s*=\s*\)[0-9]\+/\1${nsteps_per_segment}/" \
+                ${template_mdp} > ${initial_cur}.mdp
+        fi
         
         # Append title suffix if provided
         if [[ -n "${title_suffix}" ]]; then
@@ -376,17 +409,34 @@ for ((time=${start_time} ; time<${tend} ; time+=${dt})) ; do
             exit 1
         fi
 
-        # Update tinit and nsteps in template MDP file for current segment
-        sed -e "s/\(tinit\s*=\s*\)[0-9]\+/\1${timeps}/" \
-            -e "s/\(nsteps\s*=\s*\)[0-9]\+/\1${nsteps_per_segment}/" \
-            ${template_mdp} > ${cur}.mdp
+        # Priority 1: If --template explicitly provided, always use it
+        if [[ ${template_provided} == true ]]; then
+            echo "Using template MDP: ${template_mdp}"
+            sed -e "s/\(tinit\s*=\s*\)[0-9]\+/\1${timeps}/" \
+                -e "s/\(nsteps\s*=\s*\)[0-9]\+/\1${nsteps_per_segment}/" \
+                ${template_mdp} > ${cur}.mdp
+        # Priority 2: Copy MDP from previous segment
+        elif [[ -f ${prev}.mdp ]]; then
+            echo "Copying MDP from previous segment: ${prev}.mdp"
+            cp "${prev}.mdp" "${cur}.mdp"
+            # Update tinit and nsteps for current segment
+            sed -i -e "s/\(tinit\s*=\s*\)[0-9]\+/\1${timeps}/" \
+                   -e "s/\(nsteps\s*=\s*\)[0-9]\+/\1${nsteps_per_segment}/" \
+                   ${cur}.mdp
+        # Priority 3: No previous MDP and no explicit template
+        else
+            echo "Error: Previous MDP file '${prev}.mdp' not found and no --template provided"
+            echo "Either the previous segment is missing, or you need to specify --template"
+            echo "Example: $0 ${basename_arg} ${replica} ${tstart} ${tend} ${dt} --template md_production.mdp"
+            exit 1
+        fi
         
         # Append title suffix if provided
         if [[ -n "${title_suffix}" ]]; then
             sed -i "s/\(title\s*=\s*.*\)/\1,${title_suffix}/" ${cur}.mdp
         fi
 
-        echo "Running grompp (using ${template_mdp} with tinit=${timeps} ps, nsteps=${nsteps_per_segment})..."
+        echo "Running grompp (tinit=${timeps} ps, nsteps=${nsteps_per_segment})..."
         
         # Check if checkpoint exists (optional for continuation)
         if [[ -f ${prev}.cpt ]]; then
