@@ -229,19 +229,6 @@ if [[ ! -f ${topology} ]]; then
     exit 1
 fi
 
-# For first segment (start_time=0), template MDP is ALWAYS required
-if [[ ${tstart} -eq 0 ]] && [[ ! -f ${template_mdp} ]]; then
-    echo "Error: Template MDP file '${template_mdp}' not found"
-    echo ""
-    echo "For the first segment (starting from time 0), a template MDP is REQUIRED."
-    echo "Please either:"
-    echo "  1. Create/copy '${template_mdp}' in this directory, or"
-    echo "  2. Use --template <file> to specify a different MDP file"
-    echo ""
-    echo "Example: $0 ${basename_arg} ${replica} 0 ${tend} ${dt} --template md_production.mdp"
-    exit 1
-fi
-
 # Function to check if a segment completed successfully
 # Returns 0 (success) if segment is complete, 1 (failure) otherwise
 check_segment_complete() {
@@ -294,6 +281,19 @@ fi
 
 if [[ ${actual_start} -gt ${tstart} ]]; then
     echo "Resuming from ${actual_start} ns (previous segments already completed)"
+fi
+
+# Check if we actually need to start from segment 0 (template required)
+if [[ ${actual_start} -eq 0 ]] && [[ ! -f ${template_mdp} ]]; then
+    echo "Error: Template MDP file '${template_mdp}' not found"
+    echo ""
+    echo "Starting from time 0 requires a template MDP file."
+    echo "Please either:"
+    echo "  1. Create/copy '${template_mdp}' in this directory, or"
+    echo "  2. Use --template <file> to specify a different MDP file"
+    echo ""
+    echo "Example: $0 ${basename_arg} ${replica} 0 ${tend} ${dt} --template md_production.mdp"
+    exit 1
 fi
 
 # Initial segment (time 0 to dt) - only if starting from beginning
