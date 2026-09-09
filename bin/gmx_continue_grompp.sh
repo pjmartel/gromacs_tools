@@ -48,7 +48,7 @@ if [[ $# -lt 5 ]]; then
     echo "  --template <file>      MDP template (only needed if no previous .mdp to copy from)"
     echo "  --initial <basename>   Basename for initial equilibration files (default: 'npt')"
     echo "  --timestep <ps>        Integration timestep in ps (default: 0.002)"
-    echo "  --title <suffix>       System-specific title to append (e.g., 'TRP_cage_replica_1')"
+    echo "  --title <value>        System-specific title to set, replacing the template's (e.g., 'TRP_cage_replica_1')"
     echo "  --topology <file>      Topology file (default: 'topol.top')"
     echo "  --plumed <file>        PLUMED input file for enhanced sampling/analysis"
     echo "  --ps                   Interpret times as picoseconds (default: nanoseconds)"
@@ -376,9 +376,9 @@ if [[ ${actual_start} -eq ${tstart} ]] && [[ ${tstart} -eq 0 ]]; then
                 ${template_mdp} > ${initial_cur}.mdp
         fi
         
-        # Append title suffix if provided
+        # Replace title field if provided
         if [[ -n "${title_suffix}" ]]; then
-            sed -i "s/\(title\s*=\s*.*\)/\1,${title_suffix}/" ${initial_cur}.mdp
+            sed -i "s/\(title\s*=\s*\).*/\1${title_suffix}/" ${initial_cur}.mdp
         fi
         
         # Setup -e flag unless the initial .edr is being ignored (e.g. barostat type change)
@@ -469,9 +469,9 @@ for ((time=${start_time} ; time<${tend} ; time+=${dt})) ; do
             exit 1
         fi
         
-        # Append title suffix if provided
+        # Replace title field if provided
         if [[ -n "${title_suffix}" ]]; then
-            sed -i "s/\(title\s*=\s*.*\)/\1,${title_suffix}/" ${cur}.mdp
+            sed -i "s/\(title\s*=\s*\).*/\1${title_suffix}/" ${cur}.mdp
         fi
 
         echo "Running grompp (tinit=${timeps} ps, nsteps=${nsteps_per_segment})..."
