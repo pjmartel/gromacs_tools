@@ -51,6 +51,8 @@ if [[ $# -lt 5 ]]; then
     echo "  --topology <file>      Topology file (default: 'topol.top')"
     echo "  --plumed <file>        PLUMED input file for enhanced sampling/analysis"
     echo "  --ps                   Interpret times as picoseconds (default: nanoseconds)"
+    echo "  --ignore-initial-edr   Skip reading the initial .edr file in grompp (useful when"
+    echo "                         the barostat type changes, e.g. Berendsen -> Parrinello-Rahman)"
     echo ""
     echo "Examples:"
     echo "  # Extend existing run from 10000 to 20000 ns (MDP auto-copied)"
@@ -95,6 +97,7 @@ title_suffix=""
 plumed_file=""
 topology="topol.top"
 time_unit="ns"  # Default to nanoseconds
+ignore_initial_edr=false
 
 # Parse optional arguments
 while [[ $# -gt 0 ]]; do
@@ -152,10 +155,14 @@ while [[ $# -gt 0 ]]; do
             time_unit="ps"
             shift
             ;;
+        --ignore-initial-edr)
+            ignore_initial_edr=true
+            shift
+            ;;
         --*)
             echo "Error: Unknown option '$1'"
             echo ""
-            echo "Valid options: --template, --initial, --timestep, --title, --topology, --plumed, --ps"
+            echo "Valid options: --template, --initial, --timestep, --title, --topology, --plumed, --ps, --ignore-initial-edr"
             echo ""
             echo "Did you misspell an option? Common typos:"
             echo "  --intitial  → should be --initial"
@@ -327,9 +334,10 @@ if [[ ${actual_start} -eq ${tstart} ]] && [[ ${tstart} -eq 0 ]]; then
         exit 1
     fi
     
-    if [[ ! -f ${initial_basename}.edr ]]; then
+    if [[ ${ignore_initial_edr} == false ]] && [[ ! -f ${initial_basename}.edr ]]; then
         echo "Error: Missing initial energy file (${initial_basename}.edr)"
         echo "This file should come from your NPT/NVT equilibration step."
+        echo "Use --ignore-initial-edr to skip this check and continue without it."
         exit 1
     fi
 
@@ -370,16 +378,24 @@ if [[ ${actual_start} -eq ${tstart} ]] && [[ ${tstart} -eq 0 ]]; then
             sed -i "s/\(title\s*=\s*.*\)/\1,${title_suffix}/" ${initial_cur}.mdp
         fi
         
+        # Setup -e flag unless the initial .edr is being ignored (e.g. barostat type change)
+        if [[ ${ignore_initial_edr} == true ]]; then
+            echo "Ignoring initial .edr file (${initial_basename}.edr) as requested"
+            edr_flag=""
+        else
+            edr_flag="-e ${initial_basename}.edr"
+        fi
+
         # Use checkpoint if available, otherwise continue without it
         if [[ -f ${initial_basename}.cpt ]]; then
             echo "Using checkpoint from ${initial_basename}"
             gmx grompp -f ${initial_cur}.mdp -c ${initial_basename}.gro -t ${initial_basename}.cpt \
-                       -e ${initial_basename}.edr -p ${topology} -o ${initial_cur}.tpr
+                       ${edr_flag} -p ${topology} -o ${initial_cur}.tpr
         else
             echo "Warning: No checkpoint file found (${initial_basename}.cpt)"
             echo "Continuing without checkpoint. Velocities will be regenerated."
             gmx grompp -f ${initial_cur}.mdp -c ${initial_basename}.gro \
-                       -e ${initial_basename}.edr -p ${topology} -o ${initial_cur}.tpr
+                       ${edr_flag} -p ${topology} -o ${initial_cur}.tpr
         fi
 
         echo "Running mdrun for initial segment..."
