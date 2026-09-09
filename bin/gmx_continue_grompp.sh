@@ -1,4 +1,5 @@
 #!/bin/bash -e
+set -o pipefail  # preserve gmx exit status when piping through tee
 # Script for continuing/extending GROMACS molecular dynamics simulations
 # It uses grompp to prepare the input files for continuation
 # Required files: topology (.top), and either:
@@ -178,6 +179,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 base_name="${basename_arg}_${replica}"
+# Shared across segments/invocations - grompp and mdrun output is appended here
+log_file="${base_name}.log"
 
 # Setup PLUMED flag if provided
 if [[ -n "${plumed_file}" ]]; then
@@ -346,7 +349,7 @@ if [[ ${actual_start} -eq ${tstart} ]] && [[ ${tstart} -eq 0 ]]; then
         if ! check_segment_complete "${initial_cur}"; then
             echo "Resuming interrupted initial segment..."
             echo "Note: Existing incomplete output files will be backed up with .bak extension"
-            gmx mdrun -deffnm ${initial_cur} -cpi ${initial_cur}.cpt ${plumed_flag}
+            gmx mdrun -deffnm ${initial_cur} -cpi ${initial_cur}.cpt ${plumed_flag} 2>&1 | tee -a "${log_file}"
         else
             echo "Initial segment already completed successfully."
         fi
@@ -390,16 +393,16 @@ if [[ ${actual_start} -eq ${tstart} ]] && [[ ${tstart} -eq 0 ]]; then
         if [[ -f ${initial_basename}.cpt ]]; then
             echo "Using checkpoint from ${initial_basename}"
             gmx grompp -f ${initial_cur}.mdp -c ${initial_basename}.gro -t ${initial_basename}.cpt \
-                       ${edr_flag} -p ${topology} -o ${initial_cur}.tpr
+                       ${edr_flag} -p ${topology} -o ${initial_cur}.tpr 2>&1 | tee -a "${log_file}"
         else
             echo "Warning: No checkpoint file found (${initial_basename}.cpt)"
             echo "Continuing without checkpoint. Velocities will be regenerated."
             gmx grompp -f ${initial_cur}.mdp -c ${initial_basename}.gro \
-                       ${edr_flag} -p ${topology} -o ${initial_cur}.tpr
+                       ${edr_flag} -p ${topology} -o ${initial_cur}.tpr 2>&1 | tee -a "${log_file}"
         fi
 
         echo "Running mdrun for initial segment..."
-        gmx mdrun -deffnm ${initial_cur} ${plumed_flag}
+        gmx mdrun -deffnm ${initial_cur} ${plumed_flag} 2>&1 | tee -a "${log_file}"
     fi
 
     if [[ -f ./STOP ]]; then
@@ -427,7 +430,7 @@ for ((time=${start_time} ; time<${tend} ; time+=${dt})) ; do
         if ! check_segment_complete "${cur}"; then
             echo "Resuming interrupted segment..."
             echo "Note: Existing incomplete output files will be backed up with .bak extension"
-            gmx mdrun -deffnm ${cur} -cpi ${cur}.cpt ${plumed_flag}
+            gmx mdrun -deffnm ${cur} -cpi ${cur}.cpt ${plumed_flag} 2>&1 | tee -a "${log_file}"
         else
             echo "Segment already completed successfully. Skipping..."
             continue
@@ -477,16 +480,16 @@ for ((time=${start_time} ; time<${tend} ; time+=${dt})) ; do
         if [[ -f ${prev}.cpt ]]; then
             echo "Using checkpoint from previous segment"
             gmx grompp -f ${cur}.mdp -c ${prev}.gro -t ${prev}.cpt \
-                       -e ${prev}.edr -p ${topology} -o ${cur}.tpr
+                       -e ${prev}.edr -p ${topology} -o ${cur}.tpr 2>&1 | tee -a "${log_file}"
         else
             echo "Warning: No checkpoint file found (${prev}.cpt), continuing without it"
             echo "Velocities will be regenerated. This is fine but less seamless."
             gmx grompp -f ${cur}.mdp -c ${prev}.gro \
-                       -e ${prev}.edr -p ${topology} -o ${cur}.tpr
+                       -e ${prev}.edr -p ${topology} -o ${cur}.tpr 2>&1 | tee -a "${log_file}"
         fi
         
         echo "Running mdrun..."
-        gmx mdrun -deffnm ${cur} ${plumed_flag}
+        gmx mdrun -deffnm ${cur} ${plumed_flag} 2>&1 | tee -a "${log_file}"
     fi
     
     if [[ -f ./STOP ]]; then
