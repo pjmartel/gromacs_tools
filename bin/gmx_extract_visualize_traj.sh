@@ -41,8 +41,12 @@ set -o pipefail
 #                             trjconv/tpr atom indices no longer match once a non-contiguous
 #                             group has been extracted into its own .xtc. Off by default,
 #                             since contiguous selections (e.g. plain "Protein") don't need it.
-#                             --center-group/--fit-group still use the original group names
-#                             (e.g. "C-alpha"), which remain valid in the reduced .tpr.
+#                             --center-group/--fit-group default to the extract group, or to
+#                             "System" once --subset-tpr swaps in the reduced .tpr (since the
+#                             extract group itself, e.g. "non-Water", may no longer exist as a
+#                             named group there). Pass --center-group/--fit-group explicitly
+#                             (e.g. "C-alpha") to use a group that still exists in the reduced
+#                             .tpr instead.
 #
 # Output:
 #   -o, --output-basename <n> Basename for output files (default: derived from --xtc)
@@ -202,9 +206,6 @@ if [[ -n "${index_file}" ]] && [[ ! -f "${index_file}" ]]; then
     exit 1
 fi
 
-center_group="${center_group:-${group}}"
-fit_group="${fit_group:-${group}}"
-
 # Validate and expand requested steps against the canonical pipeline order
 IFS=',' read -ra requested_steps <<< "${steps_arg}"
 canonical_steps=(extract pbc center fit pdb)
@@ -273,8 +274,8 @@ echo "=== Trajectory Extraction/Visualization Prep ==="
 echo "TPR:             ${tpr_file}"
 echo "XTC:             ${xtc_file}"
 echo "Extract group:   ${group}"
-echo "Center group:    ${center_group}"
-echo "Fit group:       ${fit_group}"
+echo "Center group:    ${center_group:-<default: extract group, or System after --subset-tpr>}"
+echo "Fit group:       ${fit_group:-<default: extract group, or System after --subset-tpr>}"
 echo "Steps:           ${steps_arg}"
 [[ -n "${start_time}" ]] && echo "Start:           ${start_time} ps"
 [[ -n "${end_time}" ]]   && echo "End:             ${end_time} ps"
@@ -388,14 +389,14 @@ fi
 # 3. center - center group in box, keep molecules whole
 if [[ "${step_requested[center]}" == true ]]; then
     out_file="${outdir}/${output_basename}${slice_suffix}_center.xtc"
-    run_trjconv "${out_file}" "${center_group},${active_group}" -pbc mol -center -ur "${ur_mode}"
+    run_trjconv "${out_file}" "${center_group:-${active_group}},${active_group}" -pbc mol -center -ur "${ur_mode}"
     current_tag="center"
 fi
 
 # 4. fit - least-squares fit onto the reference structure
 if [[ "${step_requested[fit]}" == true ]]; then
     out_file="${outdir}/${output_basename}${slice_suffix}_fit.xtc"
-    run_trjconv "${out_file}" "${fit_group},${active_group}" -fit "${fit_mode}"
+    run_trjconv "${out_file}" "${fit_group:-${active_group}},${active_group}" -fit "${fit_mode}"
     current_tag="fit"
 fi
 
