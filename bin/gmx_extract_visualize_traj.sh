@@ -34,6 +34,16 @@ set -o pipefail
 #   --fit-mode <mode>         gmx trjconv -fit value (default: progressive)
 #   --ur <rect|tric|compact>  gmx trjconv -ur value for the center step (default: compact)
 #
+# Non-contiguous atom groups (e.g. Protein + Ion):
+#   --subset-tpr              After extraction, build a reduced .tpr (via "gmx convert-tpr")
+#                             containing only the extracted atoms, and use it (with output
+#                             group "System") for the center/fit/pdb steps. Needed because
+#                             trjconv/tpr atom indices no longer match once a non-contiguous
+#                             group has been extracted into its own .xtc. Off by default,
+#                             since contiguous selections (e.g. plain "Protein") don't need it.
+#                             --center-group/--fit-group still use the original group names
+#                             (e.g. "C-alpha"), which remain valid in the reduced .tpr.
+#
 # Output:
 #   -o, --output-basename <n> Basename for output files (default: derived from --xtc)
 #   --outdir <dir>            Output directory (default: current directory)
@@ -65,6 +75,10 @@ set -o pipefail
 #
 #   # Dry run of the full pipeline, saving the commands to a script
 #   ./gmx_extract_visualize_traj.sh -s md.tpr -f md.xtc --dry-run --save-script run_viz.sh
+#
+#   # Non-contiguous group (protein + ion): build a reduced .tpr to keep indices consistent
+#   ./gmx_extract_visualize_traj.sh -s md.tpr -f md.xtc -g Protein_Ion --fit-group C-alpha \
+#       --index index.ndx --subset-tpr
 
 print_usage() {
     sed -n '2,60p' "$0" | sed -e 's/^# \{0,1\}//'
@@ -94,6 +108,7 @@ index_file=""
 gmx_bin="gmx"
 dry_run=false
 save_script=""
+subset_tpr=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -150,6 +165,8 @@ while [[ $# -gt 0 ]]; do
         --save-script)
             [[ -z "$2" || "$2" == --* ]] && { echo "Error: $1 requires a value"; exit 1; }
             save_script="$2"; shift 2 ;;
+        --subset-tpr)
+            subset_tpr=true; shift ;;
         -h|--help)
             print_usage; exit 0 ;;
         --*)
@@ -269,6 +286,10 @@ echo "=================================================="
 current_input="${xtc_file}"
 current_tag=""
 raw_input_consumed=false
+# active_tpr/active_group switch to the reduced subset .tpr/"System" once
+# run_convert_tpr fires (only relevant for center/fit/pdb, and only if --subset-tpr)
+active_tpr="${tpr_file}"
+active_group="${group}"
 
 # Runs one gmx trjconv call, feeding the given group selections via stdin.
 # Args: out_file, group1 [group2], extra gmx trjconv flags...
@@ -277,7 +298,7 @@ run_trjconv() {
     local groups_csv="$1"; shift
     local extra_flags=("$@")
 
-    local cmd=("${gmx_bin}" trjconv -s "${tpr_file}" -f "${current_input}" -o "${out_file}")
+    local cmd=("${gmx_bin}" trjconv -s "${active_tpr}" -f "${current_input}" -o "${out_file}")
     [[ -n "${index_flag}" ]] && cmd+=(${index_flag})
     cmd+=("${extra_flags[@]}")
 
@@ -317,6 +338,34 @@ run_trjconv() {
     current_input="${out_file}"
 }
 
+# Builds a reduced .tpr (via "gmx convert-tpr") containing only the extracted atoms,
+# so tpr/xtc indices stay aligned for non-contiguous groups. Switches active_tpr and
+# active_group so subsequent steps read it with output group "System".
+run_convert_tpr() {
+    local subset_tpr_out="${outdir}/${output_basename}${slice_suffix}_subset.tpr"
+    local cmd=("${gmx_bin}" convert-tpr -s "${tpr_file}" -o "${subset_tpr_out}")
+    [[ -n "${index_flag}" ]] && cmd+=(${index_flag})
+
+    echo ""
+    echo "--- Command: ${cmd[*]}"
+    echo "--- Group selection(s): ${group}   (builds a reduced .tpr matching the extracted atoms)"
+
+    if [[ -n "${save_script}" ]]; then
+        echo "" >> "${save_script}"
+        echo "printf '%s\n' '${group}' | ${cmd[*]}" >> "${save_script}"
+    fi
+
+    if [[ "${dry_run}" == true ]]; then
+        echo "(dry run: not executed)"
+    else
+        printf '%s\n' "${group}" | "${cmd[@]}"
+    fi
+
+    active_tpr="${subset_tpr_out}"
+    active_group="System"
+    echo "Using reduced TPR for subsequent steps: ${active_tpr} (output group now: ${active_group})"
+}
+
 # 1. extract - plain group extraction, no PBC treatment
 if [[ "${step_requested[extract]}" == true ]]; then
     current_tag="extract${slice_suffix}"
@@ -331,17 +380,22 @@ if [[ "${step_requested[pbc]}" == true ]]; then
     current_tag="whole"
 fi
 
+# Build the reduced .tpr before center/fit/pdb, if requested and needed
+if [[ "${subset_tpr}" == true ]] && { [[ "${step_requested[center]}" == true ]] || [[ "${step_requested[fit]}" == true ]] || [[ "${step_requested[pdb]}" == true ]]; }; then
+    run_convert_tpr
+fi
+
 # 3. center - center group in box, keep molecules whole
 if [[ "${step_requested[center]}" == true ]]; then
     out_file="${outdir}/${output_basename}${slice_suffix}_center.xtc"
-    run_trjconv "${out_file}" "${center_group},${group}" -pbc mol -center -ur "${ur_mode}"
+    run_trjconv "${out_file}" "${center_group},${active_group}" -pbc mol -center -ur "${ur_mode}"
     current_tag="center"
 fi
 
 # 4. fit - least-squares fit onto the reference structure
 if [[ "${step_requested[fit]}" == true ]]; then
     out_file="${outdir}/${output_basename}${slice_suffix}_fit.xtc"
-    run_trjconv "${out_file}" "${fit_group},${group}" -fit "${fit_mode}"
+    run_trjconv "${out_file}" "${fit_group},${active_group}" -fit "${fit_mode}"
     current_tag="fit"
 fi
 
@@ -354,7 +408,7 @@ if [[ "${step_requested[pdb]}" == true ]]; then
         extract*) out_file="${outdir}/${output_basename}${slice_suffix}_extract.pdb" ;;
         *)        out_file="${outdir}/${output_basename}${slice_suffix}_${current_tag}.pdb" ;;
     esac
-    run_trjconv "${out_file}" "${group}"
+    run_trjconv "${out_file}" "${active_group}"
 fi
 
 echo ""
