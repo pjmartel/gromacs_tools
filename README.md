@@ -23,6 +23,7 @@ export PATH="$PATH:$(pwd)/bin"
 | **gromacs_pca_movie.py** | Generate trajectory movies along principal components | [docs/gromacs_pca_movie.md](docs/gromacs_pca_movie.md) |
 | **plot_xvg.py** | Versatile XVG plotting tool with extensive customization | [docs/plot_xvg.md](docs/plot_xvg.md) |
 | **gmx_continue_grompp.sh** | Intelligent MD simulation continuation with crash recovery | [docs/md_continuation.md](docs/md_continuation.md) |
+| **gmx_extract.sh** | Extract, clean up (PBC/center/fit) and convert a trajectory for visualization | — |
 
 ## 💡 Quick Usage Examples
 
@@ -80,6 +81,28 @@ bash bin/gmx_continue_grompp.sh md 0 0 500 100 production.mdp npt
 bash bin/gmx_continue_grompp.sh md 0 0 500 100 production.mdp npt 0.002 "TRP_cage"
 
 # Automatic crash recovery: just re-run the same command
+```
+
+### Trajectory Extraction & Visualization Prep
+```bash
+# Full default pipeline (pbc -> center -> fit -> pdb) on the Protein group
+bash bin/gmx_extract.sh -s md.tpr -f md.xtc
+
+# Only extract a 0-100 ns slice of the Protein group, no PBC/center/fit/pdb
+bash bin/gmx_extract.sh -s md.tpr -f md.xtc --steps extract -b 0 -e 100000
+
+# Extract + remove PBC only (no centering/fit/pdb)
+bash bin/gmx_extract.sh -s md.tpr -f md.xtc --steps pbc -b 0 -e 100000
+
+# Resample the whole system every 100 ps, no PBC treatment
+bash bin/gmx_extract.sh -s md.tpr -f md.xtc -g System --steps extract --dt 100
+
+# Dry run of the full pipeline, saving the commands to a script
+bash bin/gmx_extract.sh -s md.tpr -f md.xtc --dry-run --save-script run_viz.sh
+
+# Non-contiguous group (protein + ion): build a reduced .tpr to keep indices consistent
+bash bin/gmx_extract.sh -s md.tpr -f md.xtc -g Protein_Ion --fit-group C-alpha \
+    --index index.ndx --subset-tpr
 ```
 
 ## 📋 Requirements
