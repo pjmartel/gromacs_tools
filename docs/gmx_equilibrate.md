@@ -163,6 +163,14 @@ python bin/gmx_equilibrate.py protein_ions.gro protein.top \
     --posres-nvt none --posres-npt1 none
 ```
 
+### Reproducible Replicas
+
+```bash
+# Fixed velocity-generation seed for a reproducible replica
+python bin/gmx_equilibrate.py protein_ions.gro protein.top --prefix equil_rep1 --gen-seed 12345
+python bin/gmx_equilibrate.py protein_ions.gro protein.top --prefix equil_rep2 --gen-seed 67890
+```
+
 ## Command-Line Options
 
 ### Positional Arguments
@@ -184,10 +192,11 @@ python bin/gmx_equilibrate.py protein_ions.gro protein.top \
 | `--time-npt1` | `200` | NPT restrained equilibration time (ps) |
 | `--time-npt2` | `500` | NPT unrestrained equilibration time (ps) |
 | `--tcoupl` | `V-rescale` | Temperature coupling: V-rescale, berendsen, nose-hoover |
-| `--pcoupl` | `Berendsen` | Pressure coupling: Berendsen, Parrinello-Rahman, C-rescale |
+| `--pcoupl` | `C-rescale` | Pressure coupling: Berendsen, Parrinello-Rahman, C-rescale (used for both restrained and unrestrained NPT stages) |
 | `--dry-run` | `False` | Generate commands without executing (preview mode) |
 | `-v, --verbose` | `False` | Verbose output (detailed progress) |
 | `--commands-file` | `equilibrate_commands.sh` | Command log output file |
+| `--gen-seed` | `-1` | Random seed for NVT velocity generation (-1 = random; use a fixed integer for reproducible replicas) |
 
 ### Advanced Options (Fine-Tuning)
 
@@ -195,7 +204,7 @@ python bin/gmx_equilibrate.py protein_ions.gro protein.top \
 |--------|---------|-------------|
 | `--dt` | `0.002` | Timestep in ps (2 fs) |
 | `--tau-t` | `0.1` | Temperature coupling time constant (ps) |
-| `--tau-p` | `2.0` | Pressure coupling time constant (ps) |
+| `--tau-p` | `5.0` | Pressure coupling time constant (ps) |
 | `--rcoulomb` | `1.0` | Coulomb cutoff in nm |
 | `--rvdw` | `1.0` | Van der Waals cutoff in nm |
 | `--lincs-order` | `4` | LINCS constraint order |
@@ -261,7 +270,7 @@ group/force settings, so different stages can use different restraint groups saf
 - Integrator: md
 - Timestep: 2 fs
 - Temperature coupling: V-rescale (τ = 0.1 ps)
-- Pressure coupling: Berendsen (τ = 2.0 ps, isotropic)
+- Pressure coupling: C-rescale by default (τ = 5.0 ps, isotropic), or `--pcoupl`
 - Reference pressure: 1.0 bar
 - Constraints: h-bonds (LINCS)
 - Position restraints: `-DPOSRES` unless `--posres-npt1 none`
@@ -278,7 +287,7 @@ group/force settings, so different stages can use different restraint groups saf
 - Integrator: md
 - Timestep: 2 fs
 - Temperature coupling: V-rescale (τ = 0.1 ps)
-- Pressure coupling: User-specified (default Berendsen, can use Parrinello-Rahman)
+- Pressure coupling: C-rescale by default (τ = 5.0 ps), or `--pcoupl` (e.g. Parrinello-Rahman)
 - Reference pressure: 1.0 bar
 - Constraints: h-bonds (LINCS)
 - Position restraints: None

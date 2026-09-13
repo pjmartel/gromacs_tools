@@ -432,7 +432,7 @@ def run_equilibration_pipeline(args):
     # Get advanced parameters (use defaults if not specified)
     dt = args.dt if args.dt else 0.002
     tau_t = args.tau_t if args.tau_t else 0.1
-    tau_p = args.tau_p if args.tau_p else 2.0
+    tau_p = args.tau_p if args.tau_p else 5.0
     rcoulomb = args.rcoulomb if args.rcoulomb else 1.0
     rvdw = args.rvdw if args.rvdw else 1.0
     lincs_order = args.lincs_order if args.lincs_order else 4
@@ -481,7 +481,7 @@ def run_equilibration_pipeline(args):
     
     create_nvt_mdp(nvt_mdp, dt=dt, time_ps=args.time_nvt, ref_t=args.temp,
                    tcoupl=args.tcoupl, tau_t=tau_t,
-                   gen_vel='yes', gen_temp=args.temp, gen_seed=-1,
+                   gen_vel='yes', gen_temp=args.temp, gen_seed=args.gen_seed,
                    continuation='no', constraints=constraints,
                    lincs_order=lincs_order, rcoulomb=rcoulomb, rvdw=rvdw,
                    define=posre_define)
@@ -512,7 +512,7 @@ def run_equilibration_pipeline(args):
     
     create_npt_mdp(npt1_mdp, dt=dt, time_ps=args.time_npt1, ref_t=args.temp, ref_p=args.pressure,
                    tcoupl=args.tcoupl, tau_t=tau_t,
-                   pcoupl='Berendsen', tau_p=tau_p,  # Use Berendsen for equilibration
+                   pcoupl=args.pcoupl, tau_p=tau_p,
                    gen_vel='no', continuation='yes',
                    constraints=constraints, lincs_order=lincs_order,
                    rcoulomb=rcoulomb, rvdw=rvdw,
@@ -627,6 +627,9 @@ Examples:
   
   # Keep light restraints through the final NPT stage too
   gmx_equilibrate.py protein_ions.gro protein.top --posres-npt2 Backbone --posres-force 200
+  
+  # Fixed velocity-generation seed for a reproducible replica
+  gmx_equilibrate.py protein_ions.gro protein.top --prefix equil_rep1 --gen-seed 12345
         """)
     
     # Positional arguments
@@ -648,9 +651,10 @@ Examples:
     parser.add_argument('--tcoupl', default='V-rescale',
                        choices=['V-rescale', 'berendsen', 'nose-hoover'],
                        help='Temperature coupling algorithm (default: V-rescale)')
-    parser.add_argument('--pcoupl', default='Berendsen',
+    parser.add_argument('--pcoupl', default='C-rescale',
                        choices=['Berendsen', 'Parrinello-Rahman', 'C-rescale'],
-                       help='Pressure coupling algorithm (default: Berendsen)')
+                       help='Pressure coupling algorithm, used for both restrained and '
+                            'unrestrained NPT stages (default: C-rescale)')
     
     # Output control
     parser.add_argument('--dry-run', action='store_true',
@@ -659,12 +663,15 @@ Examples:
                        help='Verbose output (show detailed progress)')
     parser.add_argument('--commands-file', default='equilibrate_commands.sh',
                        help='Output file for command logging (default: equilibrate_commands.sh)')
+    parser.add_argument('--gen-seed', type=int, default=-1,
+                       help='Random seed for NVT velocity generation. Use -1 for a random '
+                            'seed, or a fixed integer for reproducible replicas (default: -1)')
     
     # Advanced parameters (optional)
     advanced = parser.add_argument_group('Advanced options (fine-tuning)')
     advanced.add_argument('--dt', type=float, help='Timestep in ps (default: 0.002)')
     advanced.add_argument('--tau-t', type=float, help='Temperature coupling time in ps (default: 0.1)')
-    advanced.add_argument('--tau-p', type=float, help='Pressure coupling time in ps (default: 2.0)')
+    advanced.add_argument('--tau-p', type=float, help='Pressure coupling time in ps (default: 5.0)')
     advanced.add_argument('--rcoulomb', type=float, help='Coulomb cutoff in nm (default: 1.0)')
     advanced.add_argument('--rvdw', type=float, help='VDW cutoff in nm (default: 1.0)')
     advanced.add_argument('--lincs-order', type=int, help='LINCS order (default: 4)')
