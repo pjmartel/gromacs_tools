@@ -339,25 +339,15 @@ continuation    = {continuation}
     with open(filename, 'w') as f:
         f.write(content)
 
-def generate_position_restraints(structure_file, output_file, selection='heavy',
-                                force_constant=1000, dry_run=False):
-    """Generate position restraint file using gmx genrestr."""
+def generate_position_restraints(structure_file, output_file, group='Protein-H',
+                                force_constant=1000.0, dry_run=False):
+    """Generate a position restraint file using gmx genrestr for the given GROMACS group name."""
     logger = logging.getLogger(__name__)
-    
-    # Determine selection string
-    select_map = {
-        'heavy': '3',      # Heavy atoms (non-hydrogen)
-        'backbone': '4',   # Backbone atoms
-        'protein': '1',    # Entire protein
-        'ca': '3'          # C-alpha atoms (user would need custom index)
-    }
-    
-    selection_input = select_map.get(selection, '3')
-    
-    cmd = f"echo {selection_input} | gmx genrestr -f {structure_file} -o {output_file} -fc {force_constant} {force_constant} {force_constant}"
-    
-    logger.info(f"Generating position restraints ({selection}) with fc={force_constant}")
-    log_command_to_script(cmd, f"Generate position restraints ({selection})")
+
+    cmd = f"echo '{group}' | gmx genrestr -f {structure_file} -o {output_file} -fc {force_constant} {force_constant} {force_constant}"
+
+    logger.info(f"Generating position restraints (group={group}) with fc={force_constant}")
+    log_command_to_script(cmd, f"Generate position restraints (group={group})")
     
     if dry_run:
         logger.info("[DRY RUN] Position restraint generation skipped")
@@ -375,6 +365,23 @@ def generate_position_restraints(structure_file, output_file, selection='heavy',
             for hint in ERROR_HINTS['genrestr']:
                 logger.error(f"   {hint}")
         return False
+
+def apply_position_restraints(structure_file, group, force_constant, dry_run,
+                             posre_file="posre.itp"):
+    """Regenerate posre.itp (fixed name, matches the topology's #include "posre.itp")
+    for the given stage. Returns the grompp define ('-DPOSRES' or '') for that stage."""
+    logger = logging.getLogger(__name__)
+
+    if group.lower() == 'none':
+        return ''
+
+    if not generate_position_restraints(structure_file, posre_file, group=group,
+                                       force_constant=force_constant, dry_run=dry_run):
+        logger.warning("⚠️  Position restraint generation failed, continuing without restraints")
+        return ''
+
+    logger.info(f"Restraints: {group} (fc={force_constant} kJ/mol/nm²)")
+    return '-DPOSRES'
 
 def run_equilibration_pipeline(args):
     """Run the complete equilibration pipeline."""
@@ -414,9 +421,10 @@ def run_equilibration_pipeline(args):
     logger.info("")
     logger.info("📊 Pipeline stages:")
     logger.info(f"  [1/4] Energy minimization:    {args.time_em} steps")
-    logger.info(f"  [2/4] NVT (restrained):       {args.time_nvt} ps")
-    logger.info(f"  [3/4] NPT (restrained):       {args.time_npt1} ps")
-    logger.info(f"  [4/4] NPT (unrestrained):     {args.time_npt2} ps")
+    logger.info(f"  [2/4] NVT (restraints={args.posres_nvt}):       {args.time_nvt} ps")
+    logger.info(f"  [3/4] NPT (restraints={args.posres_npt1}):       {args.time_npt1} ps")
+    logger.info(f"  [4/4] NPT (restraints={args.posres_npt2}):     {args.time_npt2} ps")
+    logger.info(f"  Position restraint force constant: {args.posres_force} kJ/mol/nm²")
     logger.info("")
     logger.info(f"All commands logged to: {commands_file}")
     logger.info("")
@@ -463,15 +471,9 @@ def run_equilibration_pipeline(args):
     logger.info("[2/4] NVT Equilibration (restrained)")
     logger.info("-" * 60)
     
-    # Generate position restraints
-    posre_file = "posre_heavy.itp"
-    if not generate_position_restraints(em_gro if not args.dry_run else args.structure,
-                                       posre_file, selection='heavy',
-                                       force_constant=1000, dry_run=args.dry_run):
-        logger.warning("⚠️  Position restraint generation failed, continuing without restraints")
-        posre_define = ''
-    else:
-        posre_define = '-DPOSRES'
+    posre_define = apply_position_restraints(
+        em_gro if not args.dry_run else args.structure,
+        args.posres_nvt, args.posres_force, args.dry_run)
     
     nvt_mdp = f"{prefix}_nvt.mdp"
     nvt_tpr = f"{prefix}_nvt.tpr"
@@ -500,6 +502,10 @@ def run_equilibration_pipeline(args):
     logger.info("[3/4] NPT Equilibration (restrained)")
     logger.info("-" * 60)
     
+    posre_define = apply_position_restraints(
+        nvt_gro if not args.dry_run else args.structure,
+        args.posres_npt1, args.posres_force, args.dry_run)
+    
     npt1_mdp = f"{prefix}_npt1.mdp"
     npt1_tpr = f"{prefix}_npt1.tpr"
     npt1_gro = f"{prefix}_npt1.gro"
@@ -523,10 +529,14 @@ def run_equilibration_pipeline(args):
                                dry_run=args.dry_run, step_info="[3/4]"):
         return False
     
-    # Stage 4: NPT without restraints
+    # Stage 4: NPT (unrestrained by default)
     logger.info("")
     logger.info("[4/4] NPT Equilibration (unrestrained)")
     logger.info("-" * 60)
+    
+    posre_define = apply_position_restraints(
+        npt1_gro if not args.dry_run else args.structure,
+        args.posres_npt2, args.posres_force, args.dry_run)
     
     npt2_mdp = f"{prefix}_npt2.mdp"
     npt2_tpr = f"{prefix}_npt2.tpr"
@@ -539,7 +549,7 @@ def run_equilibration_pipeline(args):
                    gen_vel='no', continuation='yes',
                    constraints=constraints, lincs_order=lincs_order,
                    rcoulomb=rcoulomb, rvdw=rvdw,
-                   define='')  # No restraints
+                   define=posre_define)
     logger.info(f"✓ Created {npt2_mdp}")
     
     grompp_cmd = f"gmx grompp -f {npt2_mdp} -c {npt1_gro} -t {prefix}_npt1.cpt -p {args.topology} -o {npt2_tpr} -maxwarn 1"
@@ -611,6 +621,12 @@ Examples:
   
   # Use Parrinello-Rahman barostat for final NPT
   gmx_equilibrate.py protein_ions.gro protein.top --pcoupl Parrinello-Rahman
+  
+  # Restrain the whole protein (not just heavy atoms) with a stronger force
+  gmx_equilibrate.py protein_ions.gro protein.top --posres-nvt Protein --posres-npt1 Protein --posres-force 2000
+  
+  # Keep light restraints through the final NPT stage too
+  gmx_equilibrate.py protein_ions.gro protein.top --posres-npt2 Backbone --posres-force 200
         """)
     
     # Positional arguments
@@ -655,6 +671,22 @@ Examples:
     advanced.add_argument('--constraints', choices=['h-bonds', 'all-bonds', 'none'],
                          help='Constraint type (default: h-bonds)')
     advanced.add_argument('--emtol', type=float, help='EM tolerance in kJ/mol/nm (default: 1000)')
+
+    # Position restraints (per-stage)
+    posres = parser.add_argument_group('Position restraints (per-stage)')
+    posres.add_argument('--posres-nvt', default='Protein-H',
+                       help='Restraint group for NVT stage: a GROMACS group name '
+                            '(e.g. System, Protein, Protein-H, Backbone) or "none" to disable '
+                            '(default: Protein-H)')
+    posres.add_argument('--posres-npt1', default='Protein-H',
+                       help='Restraint group for restrained NPT stage, or "none" to disable '
+                            '(default: Protein-H)')
+    posres.add_argument('--posres-npt2', default='none',
+                       help='Restraint group for final NPT stage, or "none" to disable '
+                            '(default: none)')
+    posres.add_argument('--posres-force', type=float, default=1000.0,
+                       help='Position restraint force constant in kJ/mol/nm^2, applied '
+                            'equally to x/y/z (default: 1000)')
     
     # Show help if no arguments
     if len(sys.argv) == 1:

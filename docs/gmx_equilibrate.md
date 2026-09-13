@@ -10,7 +10,7 @@ Automates the complete equilibration workflow from energy minimization through N
 
 - ✅ **4-stage pipeline**: Energy minimization → NVT → NPT (restrained) → NPT (unrestrained)
 - ✅ **Built-in MDP templates**: Sensible defaults for all simulation parameters
-- ✅ **Automatic position restraints**: Generate restraints for heavy atoms with `gmx genrestr`
+- ✅ **Per-stage position restraints**: Select a GROMACS group name (e.g. `Protein-H`, `Protein`, `Backbone`) or `none` independently for NVT/NPT1/NPT2, with a configurable force constant, via `gmx genrestr`
 - ✅ **Proper continuation**: Handles velocity generation and checkpoint files correctly
 - ✅ **Easy mode**: Simple CLI flags for common parameters (temperature, pressure, time)
 - ✅ **Advanced mode**: Fine-tune coupling parameters, cutoffs, constraints, timestep
@@ -147,6 +147,22 @@ python bin/gmx_equilibrate.py protein_ions.gro protein.top \
     --dry-run
 ```
 
+### Custom Position Restraints
+
+```bash
+# Restrain the whole protein (not just heavy atoms), stronger force
+python bin/gmx_equilibrate.py protein_ions.gro protein.top \
+    --posres-nvt Protein --posres-npt1 Protein --posres-force 2000
+
+# Keep light backbone restraints through the final NPT stage too
+python bin/gmx_equilibrate.py protein_ions.gro protein.top \
+    --posres-npt2 Backbone --posres-force 200
+
+# Fully unrestrained equilibration
+python bin/gmx_equilibrate.py protein_ions.gro protein.top \
+    --posres-nvt none --posres-npt1 none
+```
+
 ## Command-Line Options
 
 ### Positional Arguments
@@ -186,6 +202,23 @@ python bin/gmx_equilibrate.py protein_ions.gro protein.top \
 | `--constraints` | `h-bonds` | Constraint type: h-bonds, all-bonds, none |
 | `--emtol` | `1000` | Energy minimization tolerance (kJ/mol/nm) |
 
+### Position Restraints (Per-Stage)
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--posres-nvt` | `Protein-H` | Restraint group for the NVT stage (GROMACS group name, e.g. `System`, `Protein`, `Protein-H`, `Backbone`), or `none` to disable |
+| `--posres-npt1` | `Protein-H` | Restraint group for the restrained NPT stage, or `none` to disable |
+| `--posres-npt2` | `none` | Restraint group for the final NPT stage, or `none` to disable |
+| `--posres-force` | `1000` | Restraint force constant in kJ/mol/nm², applied equally to x/y/z |
+
+Group names are passed straight to `gmx genrestr` (as with `gmx trjconv`, GROMACS matches
+them against the index groups by name), so selection no longer depends on the numeric
+position of a group in the index — it works regardless of index group ordering.
+
+Since the topology's `#ifdef POSRES` block always includes a fixed `posre.itp`, the file is
+regenerated (overwritten) immediately before each stage's `grompp` call using that stage's
+group/force settings, so different stages can use different restraint groups safely.
+
 ## Pipeline Stages
 
 ### Stage 1: Energy Minimization
@@ -203,7 +236,7 @@ python bin/gmx_equilibrate.py protein_ions.gro protein.top \
 ### Stage 2: NVT Equilibration (Restrained)
 - **Ensemble**: Canonical (constant N, V, T)
 - **Purpose**: Stabilize temperature with position restraints
-- **Restraints**: Heavy atoms (1000 kJ/mol/nm²)
+- **Restraints**: `--posres-nvt` group, default `Protein-H` (heavy atoms), 1000 kJ/mol/nm² by default
 - **Velocity generation**: Yes (random at target temperature)
 - **Output**: `{prefix}_nvt.gro`, `{prefix}_nvt.cpt`
 - **Default duration**: 100 ps
@@ -214,12 +247,12 @@ python bin/gmx_equilibrate.py protein_ions.gro protein.top \
 - Temperature coupling: V-rescale (τ = 0.1 ps)
 - Pressure coupling: None
 - Constraints: h-bonds (LINCS)
-- Position restraints: `-DPOSRES` (heavy atoms)
+- Position restraints: `-DPOSRES` unless `--posres-nvt none`
 
 ### Stage 3: NPT Equilibration (Restrained)
 - **Ensemble**: Isothermal-isobaric (constant N, P, T)
 - **Purpose**: Stabilize pressure and density with restraints
-- **Restraints**: Heavy atoms (1000 kJ/mol/nm²)
+- **Restraints**: `--posres-npt1` group, default `Protein-H` (heavy atoms), 1000 kJ/mol/nm² by default
 - **Velocity generation**: No (continuation from NVT)
 - **Output**: `{prefix}_npt1.gro`, `{prefix}_npt1.cpt`
 - **Default duration**: 200 ps
@@ -231,12 +264,12 @@ python bin/gmx_equilibrate.py protein_ions.gro protein.top \
 - Pressure coupling: Berendsen (τ = 2.0 ps, isotropic)
 - Reference pressure: 1.0 bar
 - Constraints: h-bonds (LINCS)
-- Position restraints: `-DPOSRES` (heavy atoms)
+- Position restraints: `-DPOSRES` unless `--posres-npt1 none`
 
 ### Stage 4: NPT Equilibration (Unrestrained)
 - **Ensemble**: Isothermal-isobaric (constant N, P, T)
-- **Purpose**: Final equilibration without restraints
-- **Restraints**: None
+- **Purpose**: Final equilibration, unrestrained by default
+- **Restraints**: `--posres-npt2` group, default `none`
 - **Velocity generation**: No (continuation from NPT1)
 - **Output**: `{prefix}_npt2.gro`, `{prefix}_npt2.cpt` ⭐
 - **Default duration**: 500 ps
@@ -277,7 +310,8 @@ All files use the specified prefix (default: `equil`):
 - `{prefix}_*_mdrun.log` - Simulation run logs
 
 ### Additional Files
-- `posre_heavy.itp` - Position restraint topology
+- `posre.itp` - Position restraint topology (regenerated per stage; name is fixed to match the
+  topology's `#include "posre.itp"`)
 - `equilibrate_commands.sh` - Reproducibility script
 
 ## Pipeline Output
@@ -315,7 +349,7 @@ All commands logged to: equilibrate_commands.sh
 
 [2/4] NVT Equilibration (restrained)
 ------------------------------------------------------------
-✓ Created posre_heavy.itp
+✓ Created posre.itp
 ✓ Created equil_nvt.mdp
 ✓ Success! (grompp and mdrun)
 
