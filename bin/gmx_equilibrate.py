@@ -573,7 +573,7 @@ def run_equilibration_pipeline(args):
                    define=posre_define)
     logger.info(f"✓ Created {npt2_mdp}")
     
-    grompp_cmd = f"gmx grompp -f {npt2_mdp} -c {npt1_gro} -t {prefix}_npt1.cpt -p {args.topology} -o {npt2_tpr} -maxwarn 1"
+    grompp_cmd = f"gmx grompp -f {npt2_mdp} -c {npt1_gro} -r {em_gro} -t {prefix}_npt1.cpt -p {args.topology} -o {npt2_tpr} -maxwarn 1"
     if not run_gromacs_command(grompp_cmd, "Prepare NPT2 (grompp)", f"{prefix}_npt2_grompp.log",
                                dry_run=args.dry_run, step_info="[4/4]"):
         return False
