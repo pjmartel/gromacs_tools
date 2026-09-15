@@ -719,16 +719,18 @@ Examples:
                             'as comma-separated preprocessor symbols (default "POSRES") already '
                             'guarding #include statements for itp files already present on disk, '
                             'and the script only toggles those defines on/off per stage')
-    posres.add_argument('--posres-nvt', default='Protein-H',
+    posres.add_argument('--posres-nvt', default=None,
                        help='NVT stage restraints. In --posres-mode generate: a GROMACS group '
                             'name (e.g. System, Protein, Protein-H, Backbone). In --posres-mode '
                             'existing: a comma-separated list of preprocessor symbols to define '
                             '(e.g. POSRES or POSRES,POSRES_LIG,POSRES_IONS). "none" disables '
-                            'restraints for this stage in either mode (default: Protein-H)')
-    posres.add_argument('--posres-npt1', default='Protein-H',
+                            'restraints for this stage in either mode (default: Protein-H for '
+                            'generate mode, POSRES for existing mode)')
+    posres.add_argument('--posres-npt1', default=None,
                        help='Restrained NPT stage restraints, same semantics as --posres-nvt, '
-                            'or "none" to disable (default: Protein-H)')
-    posres.add_argument('--posres-npt2', default='none',
+                            'or "none" to disable (default: Protein-H for generate mode, '
+                            'POSRES for existing mode)')
+    posres.add_argument('--posres-npt2', default=None,
                        help='Final NPT stage restraints, same semantics as --posres-nvt, '
                             'or "none" to disable (default: none)')
     posres.add_argument('--posres-force', type=float, default=1000.0,
@@ -742,6 +744,17 @@ Examples:
         sys.exit(0)
     
     args = parser.parse_args()
+    
+    # Resolve mode-dependent defaults: group names for 'generate', preprocessor
+    # symbols (e.g. POSRES) for 'existing' -- a plain group name like Protein-H
+    # would be meaningless as a define symbol
+    restrained_default = 'Protein-H' if args.posres_mode == 'generate' else 'POSRES'
+    if args.posres_nvt is None:
+        args.posres_nvt = restrained_default
+    if args.posres_npt1 is None:
+        args.posres_npt1 = restrained_default
+    if args.posres_npt2 is None:
+        args.posres_npt2 = 'none'
     
     # Setup logging
     setup_logging(verbose=args.verbose)
