@@ -11,6 +11,7 @@ Automates the complete equilibration workflow from energy minimization through N
 - ✅ **4-stage pipeline**: Energy minimization → NVT → NPT (restrained) → NPT (unrestrained)
 - ✅ **Built-in MDP templates**: Sensible defaults for all simulation parameters
 - ✅ **Per-stage position restraints**: Select a GROMACS group name (e.g. `Protein-H`, `Protein`, `Backbone`) or `none` independently for NVT/NPT1/NPT2, with a configurable force constant, via `gmx genrestr`
+- ✅ **Multi-component topologies**: `--posres-mode existing` reuses posre_*.itp files already present on disk (e.g. from pdb2gmx multi-chain systems, ligands, ions) instead of overwriting a single `posre.itp`, toggling only the relevant preprocessor defines per stage
 - ✅ **Proper continuation**: Handles velocity generation and checkpoint files correctly
 - ✅ **Easy mode**: Simple CLI flags for common parameters (temperature, pressure, time)
 - ✅ **Advanced mode**: Fine-tune coupling parameters, cutoffs, constraints, timestep
@@ -163,6 +164,26 @@ python bin/gmx_equilibrate.py protein_ions.gro protein.top \
     --posres-nvt none --posres-npt1 none
 ```
 
+### Multi-Chain, Ligand, or Ion Systems (Existing Restraint Files)
+
+For systems with multiple chains, ligands, or ions, `pdb2gmx` and ligand parameterization
+tools typically create several separate `posre_*.itp` files (e.g. `posre_Protein_chain_A.itp`,
+`posre_Protein_chain_B.itp`, `posre_LIG.itp`), each guarded by its own `#ifdef` block in the
+topology. In that case writing a single `posre.itp` has no effect, because none of those
+blocks includes a file literally named `posre.itp`. Use `--posres-mode existing` to skip file
+generation entirely and just toggle the preprocessor symbols that are already guarding the
+existing itp files, independently for each stage:
+
+```bash
+# Reuse posre_*.itp files already produced during system prep; enable/disable
+# per stage by listing the preprocessor symbols that guard them
+python bin/gmx_equilibrate.py complex_ions.gro complex.top \
+    --posres-mode existing \
+    --posres-nvt POSRES,POSRES_LIG \
+    --posres-npt1 POSRES,POSRES_LIG \
+    --posres-npt2 none
+```
+
 ### Reproducible Replicas
 
 ```bash
@@ -215,18 +236,26 @@ python bin/gmx_equilibrate.py protein_ions.gro protein.top --prefix equil_rep2 -
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--posres-nvt` | `Protein-H` | Restraint group for the NVT stage (GROMACS group name, e.g. `System`, `Protein`, `Protein-H`, `Backbone`), or `none` to disable |
-| `--posres-npt1` | `Protein-H` | Restraint group for the restrained NPT stage, or `none` to disable |
-| `--posres-npt2` | `none` | Restraint group for the final NPT stage, or `none` to disable |
-| `--posres-force` | `1000` | Restraint force constant in kJ/mol/nm², applied equally to x/y/z |
+| `--posres-mode` | `generate` | `generate`: (re)create `posre.itp` via `gmx genrestr` for the given group. `existing`: reuse itp files already on disk; `--posres-nvt/npt1/npt2` are treated as comma-separated preprocessor symbols to define instead of group names |
+| `--posres-nvt` | `Protein-H` | NVT stage: a GROMACS group name in `generate` mode, or comma-separated preprocessor symbols (e.g. `POSRES,POSRES_LIG`) in `existing` mode, or `none` to disable |
+| `--posres-npt1` | `Protein-H` | Restrained NPT stage, same semantics as `--posres-nvt`, or `none` to disable |
+| `--posres-npt2` | `none` | Final NPT stage, same semantics as `--posres-nvt`, or `none` to disable |
+| `--posres-force` | `1000` | Restraint force constant in kJ/mol/nm², applied equally to x/y/z. Only used with `--posres-mode generate` |
 
-Group names are passed straight to `gmx genrestr` (as with `gmx trjconv`, GROMACS matches
-them against the index groups by name), so selection no longer depends on the numeric
-position of a group in the index — it works regardless of index group ordering.
+In `generate` mode (default), group names are passed straight to `gmx genrestr` (as with
+`gmx trjconv`, GROMACS matches them against the index groups by name), so selection no
+longer depends on the numeric position of a group in the index. Since the topology's
+`#ifdef POSRES` block includes a fixed `posre.itp`, that file is regenerated (overwritten)
+immediately before each stage's `grompp` call using that stage's group/force settings, so
+different stages can use different restraint groups safely. This only works when the
+topology's restraint block includes a file literally named `posre.itp`.
 
-Since the topology's `#ifdef POSRES` block always includes a fixed `posre.itp`, the file is
-regenerated (overwritten) immediately before each stage's `grompp` call using that stage's
-group/force settings, so different stages can use different restraint groups safely.
+In `existing` mode, no itp files are generated or overwritten. This is required for systems
+with multiple chains, ligands, or ions, where GROMACS/pdb2gmx (or ligand parameterization
+tools) create several separate `posre_*.itp` files, each guarded by its own `#ifdef` symbol.
+The script only adds the matching `-D<SYMBOL>` defines to each stage's `.mdp` file, so
+restraints already baked into the topology at those force constants are turned on or off
+per stage without regenerating anything. `--posres-force` has no effect in this mode.
 
 ## Pipeline Stages
 
@@ -319,8 +348,9 @@ All files use the specified prefix (default: `equil`):
 - `{prefix}_*_mdrun.log` - Simulation run logs
 
 ### Additional Files
-- `posre.itp` - Position restraint topology (regenerated per stage; name is fixed to match the
-  topology's `#include "posre.itp"`)
+- `posre.itp` - Position restraint topology (only in `--posres-mode generate`, the default;
+  regenerated per stage; name is fixed to match the topology's `#include "posre.itp"`). Not
+  created in `--posres-mode existing`, which reuses itp files already on disk.
 - `equilibrate_commands.sh` - Reproducibility script
 
 ## Pipeline Output

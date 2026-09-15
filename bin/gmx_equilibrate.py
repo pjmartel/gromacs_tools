@@ -367,13 +367,32 @@ def generate_position_restraints(structure_file, output_file, group='Protein-H',
         return False
 
 def apply_position_restraints(structure_file, group, force_constant, dry_run,
-                             posre_file="posre.itp"):
-    """Regenerate posre.itp (fixed name, matches the topology's #include "posre.itp")
-    for the given stage. Returns the grompp define ('-DPOSRES' or '') for that stage."""
+                             posre_file="posre.itp", mode='generate'):
+    """Enable position restraints for the given stage.
+
+    mode='generate' (default): `group` is a GROMACS index group name (e.g. Protein-H).
+    posre.itp is (re)generated with gmx genrestr and '-DPOSRES' is returned. This only
+    works if the topology's restraint block includes a file literally named "posre.itp".
+
+    mode='existing': `group` is treated as a comma-separated list of preprocessor
+    symbols (e.g. "POSRES" or "POSRES,POSRES_LIG,POSRES_IONS") that are already guarding
+    #include statements for itp files that exist on disk (e.g. produced by pdb2gmx for
+    multiple chains, or by ligand parameterization tools). No files are generated or
+    overwritten; only the matching '-D<SYMBOL>' defines are returned.
+
+    Returns the grompp `define` string for that stage (possibly multiple space-separated
+    -D flags), or '' if restraints are disabled ('none') for this stage.
+    """
     logger = logging.getLogger(__name__)
 
     if group.lower() == 'none':
         return ''
+
+    if mode == 'existing':
+        symbols = [s.strip() for s in group.split(',') if s.strip()]
+        define_str = ' '.join(f'-D{s}' for s in symbols)
+        logger.info(f"Restraints: using existing itp file(s) (defines={', '.join(symbols)})")
+        return define_str
 
     if not generate_position_restraints(structure_file, posre_file, group=group,
                                        force_constant=force_constant, dry_run=dry_run):
@@ -424,7 +443,9 @@ def run_equilibration_pipeline(args):
     logger.info(f"  [2/4] NVT (restraints={args.posres_nvt}):       {args.time_nvt} ps")
     logger.info(f"  [3/4] NPT (restraints={args.posres_npt1}):       {args.time_npt1} ps")
     logger.info(f"  [4/4] NPT (restraints={args.posres_npt2}):     {args.time_npt2} ps")
-    logger.info(f"  Position restraint force constant: {args.posres_force} kJ/mol/nm²")
+    logger.info(f"  Position restraint mode: {args.posres_mode}")
+    if args.posres_mode == 'generate':
+        logger.info(f"  Position restraint force constant: {args.posres_force} kJ/mol/nm²")
     logger.info("")
     logger.info(f"All commands logged to: {commands_file}")
     logger.info("")
@@ -473,7 +494,7 @@ def run_equilibration_pipeline(args):
     
     posre_define = apply_position_restraints(
         em_gro if not args.dry_run else args.structure,
-        args.posres_nvt, args.posres_force, args.dry_run)
+        args.posres_nvt, args.posres_force, args.dry_run, mode=args.posres_mode)
     
     nvt_mdp = f"{prefix}_nvt.mdp"
     nvt_tpr = f"{prefix}_nvt.tpr"
@@ -504,7 +525,7 @@ def run_equilibration_pipeline(args):
     
     posre_define = apply_position_restraints(
         nvt_gro if not args.dry_run else args.structure,
-        args.posres_npt1, args.posres_force, args.dry_run)
+        args.posres_npt1, args.posres_force, args.dry_run, mode=args.posres_mode)
     
     npt1_mdp = f"{prefix}_npt1.mdp"
     npt1_tpr = f"{prefix}_npt1.tpr"
@@ -536,7 +557,7 @@ def run_equilibration_pipeline(args):
     
     posre_define = apply_position_restraints(
         npt1_gro if not args.dry_run else args.structure,
-        args.posres_npt2, args.posres_force, args.dry_run)
+        args.posres_npt2, args.posres_force, args.dry_run, mode=args.posres_mode)
     
     npt2_mdp = f"{prefix}_npt2.mdp"
     npt2_tpr = f"{prefix}_npt2.tpr"
@@ -628,6 +649,11 @@ Examples:
   # Keep light restraints through the final NPT stage too
   gmx_equilibrate.py protein_ions.gro protein.top --posres-npt2 Backbone --posres-force 200
   
+  # Multi-chain/ligand/ion systems: reuse the posre_*.itp files already produced during
+  # system prep (e.g. by pdb2gmx/ligand parameterization) instead of overwriting posre.itp
+  gmx_equilibrate.py complex_ions.gro complex.top --posres-mode existing \\
+      --posres-nvt POSRES,POSRES_LIG --posres-npt1 POSRES,POSRES_LIG --posres-npt2 none
+  
   # Fixed velocity-generation seed for a reproducible replica
   gmx_equilibrate.py protein_ions.gro protein.top --prefix equil_rep1 --gen-seed 12345
         """)
@@ -681,19 +707,34 @@ Examples:
 
     # Position restraints (per-stage)
     posres = parser.add_argument_group('Position restraints (per-stage)')
+    posres.add_argument('--posres-mode', choices=['generate', 'existing'], default='generate',
+                       help='How position restraints are sourced. "generate" (default): the '
+                            'script (re)creates posre.itp via gmx genrestr for the group given '
+                            'by --posres-nvt/npt1/npt2. This only works if the topology\'s '
+                            'restraint block includes a file literally named "posre.itp", which '
+                            'is not the case for systems with multiple chains, ligands, or ions, '
+                            'where GROMACS/pdb2gmx creates several separate itp files (e.g. '
+                            'posre_Protein_chain_B.itp, posre_LIG.itp). "existing": no files are '
+                            'generated or overwritten; --posres-nvt/npt1/npt2 are instead treated '
+                            'as comma-separated preprocessor symbols (default "POSRES") already '
+                            'guarding #include statements for itp files already present on disk, '
+                            'and the script only toggles those defines on/off per stage')
     posres.add_argument('--posres-nvt', default='Protein-H',
-                       help='Restraint group for NVT stage: a GROMACS group name '
-                            '(e.g. System, Protein, Protein-H, Backbone) or "none" to disable '
-                            '(default: Protein-H)')
+                       help='NVT stage restraints. In --posres-mode generate: a GROMACS group '
+                            'name (e.g. System, Protein, Protein-H, Backbone). In --posres-mode '
+                            'existing: a comma-separated list of preprocessor symbols to define '
+                            '(e.g. POSRES or POSRES,POSRES_LIG,POSRES_IONS). "none" disables '
+                            'restraints for this stage in either mode (default: Protein-H)')
     posres.add_argument('--posres-npt1', default='Protein-H',
-                       help='Restraint group for restrained NPT stage, or "none" to disable '
-                            '(default: Protein-H)')
+                       help='Restrained NPT stage restraints, same semantics as --posres-nvt, '
+                            'or "none" to disable (default: Protein-H)')
     posres.add_argument('--posres-npt2', default='none',
-                       help='Restraint group for final NPT stage, or "none" to disable '
-                            '(default: none)')
+                       help='Final NPT stage restraints, same semantics as --posres-nvt, '
+                            'or "none" to disable (default: none)')
     posres.add_argument('--posres-force', type=float, default=1000.0,
                        help='Position restraint force constant in kJ/mol/nm^2, applied '
-                            'equally to x/y/z (default: 1000)')
+                            'equally to x/y/z. Only used with --posres-mode generate '
+                            '(default: 1000)')
     
     # Show help if no arguments
     if len(sys.argv) == 1:
