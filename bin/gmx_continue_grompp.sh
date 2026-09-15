@@ -51,6 +51,9 @@ if [[ $# -lt 5 ]]; then
     echo "  --title <value>        System-specific title to set, replacing the template's (e.g., 'TRP_cage_replica_1')"
     echo "  --topology <file>      Topology file (default: 'topol.top')"
     echo "  --plumed <file>        PLUMED input file for enhanced sampling/analysis"
+    echo "  --posres-ref <file>    Reference structure for position restraints, passed to grompp"
+    echo "                         as -r <file> (required by grompp whenever the topology/mdp"
+    echo "                         define position restraints, e.g. -DPOSRES)"
     echo "  --ps                   Interpret times as picoseconds (default: nanoseconds)"
     echo "  --ignore-initial-edr   Skip reading the initial .edr file in grompp (useful when"
     echo "                         the barostat type changes, e.g. Berendsen -> Parrinello-Rahman)"
@@ -99,6 +102,7 @@ plumed_file=""
 topology="topol.top"
 time_unit="ns"  # Default to nanoseconds
 ignore_initial_edr=false
+posres_ref=""
 
 # Parse optional arguments
 while [[ $# -gt 0 ]]; do
@@ -152,6 +156,14 @@ while [[ $# -gt 0 ]]; do
             plumed_file="$2"
             shift 2
             ;;
+        --posres-ref)
+            if [[ -z "$2" ]] || [[ "$2" == --* ]]; then
+                echo "Error: --posres-ref requires a value"
+                exit 1
+            fi
+            posres_ref="$2"
+            shift 2
+            ;;
         --ps)
             time_unit="ps"
             shift
@@ -163,7 +175,7 @@ while [[ $# -gt 0 ]]; do
         --*)
             echo "Error: Unknown option '$1'"
             echo ""
-            echo "Valid options: --template, --initial, --timestep, --title, --topology, --plumed, --ps, --ignore-initial-edr"
+            echo "Valid options: --template, --initial, --timestep, --title, --topology, --plumed, --posres-ref, --ps, --ignore-initial-edr"
             echo ""
             echo "Did you misspell an option? Common typos:"
             echo "  --intitial  → should be --initial"
@@ -192,6 +204,18 @@ if [[ -n "${plumed_file}" ]]; then
     echo "Using PLUMED file: ${plumed_file}"
 else
     plumed_flag=""
+fi
+
+# Setup position restraint reference flag if provided
+if [[ -n "${posres_ref}" ]]; then
+    if [[ ! -f "${posres_ref}" ]]; then
+        echo "Error: Position restraint reference file '${posres_ref}' not found"
+        exit 1
+    fi
+    posres_flag="-r ${posres_ref}"
+    echo "Using position restraint reference: ${posres_ref}"
+else
+    posres_flag=""
 fi
 
 # Calculate nsteps per segment
@@ -393,12 +417,12 @@ if [[ ${actual_start} -eq ${tstart} ]] && [[ ${tstart} -eq 0 ]]; then
         if [[ -f ${initial_basename}.cpt ]]; then
             echo "Using checkpoint from ${initial_basename}"
             gmx grompp -f ${initial_cur}.mdp -c ${initial_basename}.gro -t ${initial_basename}.cpt \
-                       ${edr_flag} -p ${topology} -o ${initial_cur}.tpr 2>&1 | tee -a "${log_file}"
+                       ${edr_flag} ${posres_flag} -p ${topology} -o ${initial_cur}.tpr 2>&1 | tee -a "${log_file}"
         else
             echo "Warning: No checkpoint file found (${initial_basename}.cpt)"
             echo "Continuing without checkpoint. Velocities will be regenerated."
             gmx grompp -f ${initial_cur}.mdp -c ${initial_basename}.gro \
-                       ${edr_flag} -p ${topology} -o ${initial_cur}.tpr 2>&1 | tee -a "${log_file}"
+                       ${edr_flag} ${posres_flag} -p ${topology} -o ${initial_cur}.tpr 2>&1 | tee -a "${log_file}"
         fi
 
         echo "Running mdrun for initial segment..."
@@ -480,12 +504,12 @@ for ((time=${start_time} ; time<${tend} ; time+=${dt})) ; do
         if [[ -f ${prev}.cpt ]]; then
             echo "Using checkpoint from previous segment"
             gmx grompp -f ${cur}.mdp -c ${prev}.gro -t ${prev}.cpt \
-                       -e ${prev}.edr -p ${topology} -o ${cur}.tpr 2>&1 | tee -a "${log_file}"
+                       -e ${prev}.edr ${posres_flag} -p ${topology} -o ${cur}.tpr 2>&1 | tee -a "${log_file}"
         else
             echo "Warning: No checkpoint file found (${prev}.cpt), continuing without it"
             echo "Velocities will be regenerated. This is fine but less seamless."
             gmx grompp -f ${cur}.mdp -c ${prev}.gro \
-                       -e ${prev}.edr -p ${topology} -o ${cur}.tpr 2>&1 | tee -a "${log_file}"
+                       -e ${prev}.edr ${posres_flag} -p ${topology} -o ${cur}.tpr 2>&1 | tee -a "${log_file}"
         fi
         
         echo "Running mdrun..."
