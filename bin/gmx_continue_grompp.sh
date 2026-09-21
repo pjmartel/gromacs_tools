@@ -399,7 +399,8 @@ if [[ ${actual_start} -eq ${tstart} ]] && [[ ${tstart} -eq 0 ]]; then
                 -e "s/\(nsteps\s*=\s*\)[0-9]\+/\1${nsteps_per_segment}/" \
                 ${template_mdp} > ${initial_cur}.mdp
         fi
-        
+            
+            
         # Replace title field if provided
         if [[ -n "${title_suffix}" ]]; then
             sed -i "s/\(title\s*=\s*\).*/\1${title_suffix}/" ${initial_cur}.mdp
