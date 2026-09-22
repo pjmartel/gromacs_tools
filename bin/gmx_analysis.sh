@@ -34,6 +34,10 @@ set -o pipefail
 #   --tu <ps|ns|us|fs>          Unit for --begin/--end (default: ps). Values are
 #                              converted to ps internally before being passed to any tool,
 #                              so results stay consistent across every analysis.
+#   --plot-tu <ps|ns|us|fs>     Time unit for the x-axis of every generated .xvg plot
+#                              (passed as -tu to each gmx tool). Independent of --tu,
+#                              which only controls how --begin/--end are interpreted
+#                              (default: ns)
 #
 # Group/selection:
 #   -n, --index <file>         Optional index (.ndx) file passed to every tool that accepts one
@@ -73,6 +77,12 @@ set -o pipefail
 #
 #   # Only the last 500 ns, sampled every 100 ps
 #   ./gmx_analysis.sh MnMT4_apo 0 --begin 500 --end 1000 --tu ns --dt 100
+#
+#   # Full 1 us trajectory, plots in ns (the default) instead of ps
+#   ./gmx_analysis.sh MnMT4_apo 0 --plot-tu ns
+#
+#   # Keep the old ps-based plots instead of the new ns default
+#   ./gmx_analysis.sh MnMT4_apo 0 --plot-tu ps
 #
 #   # RMSD/RMSF/gyration relative to the equilibrated structure, backbone-only RMSD
 #   ./gmx_analysis.sh MnMT4_apo 0 --structure equil_npt2.gro --group Backbone
@@ -122,6 +132,7 @@ begin_time=""
 end_time=""
 dt_time=""
 time_unit="ps"
+plot_time_unit="ns"
 skip_list=""
 only_list=""
 energy_terms="Temperature,Pressure,Potential,Total-Energy"
@@ -166,6 +177,9 @@ while [[ $# -gt 0 ]]; do
         --tu)
             [[ -z "$2" || "$2" == --* ]] && { echo "Error: $1 requires a value"; exit 1; }
             time_unit="$2"; shift 2 ;;
+        --plot-tu)
+            [[ -z "$2" || "$2" == --* ]] && { echo "Error: $1 requires a value"; exit 1; }
+            plot_time_unit="$2"; shift 2 ;;
         --skip)
             [[ -z "$2" || "$2" == --* ]] && { echo "Error: $1 requires a value"; exit 1; }
             skip_list="$2"; shift 2 ;;
@@ -314,10 +328,29 @@ begin_ps=""; end_ps=""; dt_ps=""
 [[ -n "${end_time}" ]]   && end_ps="$(convert_to_ps "${end_time}" "${time_unit}")"
 # --dt is always in ps, regardless of --tu (which only affects --begin/--end)
 [[ -n "${dt_time}" ]]    && dt_ps="$(convert_to_ps "${dt_time}" "ps")"
-time_flags=()
-[[ -n "${begin_ps}" ]] && time_flags+=(-b "${begin_ps}")
-[[ -n "${end_ps}" ]]   && time_flags+=(-e "${end_ps}")
-[[ -n "${dt_ps}" ]]    && time_flags+=(-dt "${dt_ps}")
+
+# Convert back from ps to --plot-tu units, since gmx tools interpret -b/-e/-dt
+# according to whatever unit is passed via -tu
+convert_from_ps() {
+    local value_ps="$1" unit="$2"
+    case "${unit}" in
+        ps) echo "${value_ps}" ;;
+        ns) awk -v v="${value_ps}" 'BEGIN{printf "%.6f", v/1000}' ;;
+        us) awk -v v="${value_ps}" 'BEGIN{printf "%.6f", v/1000000}' ;;
+        fs) awk -v v="${value_ps}" 'BEGIN{printf "%.6f", v*1000}' ;;
+        *)
+            echo "Error: Unsupported --plot-tu unit '${unit}' (use ps, ns, us, or fs)" >&2
+            exit 1 ;;
+    esac
+}
+begin_plot=""; end_plot=""; dt_plot=""
+[[ -n "${begin_ps}" ]] && begin_plot="$(convert_from_ps "${begin_ps}" "${plot_time_unit}")"
+[[ -n "${end_ps}" ]]   && end_plot="$(convert_from_ps "${end_ps}" "${plot_time_unit}")"
+[[ -n "${dt_ps}" ]]    && dt_plot="$(convert_from_ps "${dt_ps}" "${plot_time_unit}")"
+time_flags=(-tu "${plot_time_unit}")
+[[ -n "${begin_plot}" ]] && time_flags+=(-b "${begin_plot}")
+[[ -n "${end_plot}" ]]   && time_flags+=(-e "${end_plot}")
+[[ -n "${dt_plot}" ]]    && time_flags+=(-dt "${dt_plot}")
 
 mkdir -p "${output_dir}"
 log_file="${output_dir}/${base_name}_analysis.log"
@@ -348,6 +381,7 @@ echo "Group:           ${group} (fit group for RMSD: ${fit_group})"
 [[ -n "${begin_ps}" ]] && echo "Begin:           ${begin_ps} ps"
 [[ -n "${end_ps}" ]]   && echo "End:             ${end_ps} ps"
 [[ -n "${dt_ps}" ]]    && echo "dt:              ${dt_ps} ps"
+echo "Plot time unit:  ${plot_time_unit}"
 echo "Energy terms:    ${energy_terms}"
 echo "Output dir:      ${output_dir}"
 echo "===================================="
