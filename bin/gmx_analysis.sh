@@ -26,11 +26,12 @@ set -o pipefail
 #   --skip-concat              Reuse an existing "<output-dir>/<basename>_<replica>_concat.{xtc,edr}"
 #                              instead of rebuilding it from the segments
 #
-# Time range / sampling (all values are taken in the unit given by --tu, default ps):
-#   --begin <time>             First frame to analyze (-b)
-#   --end <time>                Last frame to analyze (-e)
-#   --dt <time>                 Only use frames spaced by this interval (-dt)
-#   --tu <ps|ns|us|fs>          Unit for --begin/--end/--dt (default: ps). Values are
+# Time range / sampling:
+#   --begin <time>             First frame to analyze (-b), in the unit given by --tu
+#   --end <time>                Last frame to analyze (-e), in the unit given by --tu
+#   --dt <time>                 Only use frames spaced by this interval (-dt), always in ps
+#                              regardless of --tu
+#   --tu <ps|ns|us|fs>          Unit for --begin/--end (default: ps). Values are
 #                              converted to ps internally before being passed to any tool,
 #                              so results stay consistent across every analysis.
 #
@@ -311,7 +312,8 @@ convert_to_ps() {
 begin_ps=""; end_ps=""; dt_ps=""
 [[ -n "${begin_time}" ]] && begin_ps="$(convert_to_ps "${begin_time}" "${time_unit}")"
 [[ -n "${end_time}" ]]   && end_ps="$(convert_to_ps "${end_time}" "${time_unit}")"
-[[ -n "${dt_time}" ]]    && dt_ps="$(convert_to_ps "${dt_time}" "${time_unit}")"
+# --dt is always in ps, regardless of --tu (which only affects --begin/--end)
+[[ -n "${dt_time}" ]]    && dt_ps="$(convert_to_ps "${dt_time}" "ps")"
 time_flags=()
 [[ -n "${begin_ps}" ]] && time_flags+=(-b "${begin_ps}")
 [[ -n "${end_ps}" ]]   && time_flags+=(-e "${end_ps}")
