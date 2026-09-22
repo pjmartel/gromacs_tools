@@ -352,6 +352,13 @@ time_flags=(-tu "${plot_time_unit}")
 [[ -n "${end_plot}" ]]   && time_flags+=(-e "${end_plot}")
 [[ -n "${dt_plot}" ]]    && time_flags+=(-dt "${dt_plot}")
 
+# rmsf's x-axis is residue/atom index, not time, so it has no -tu flag;
+# it still needs -b/-e/-dt (in ps) to select the trajectory range to average over.
+traj_range_flags=()
+[[ -n "${begin_ps}" ]] && traj_range_flags+=(-b "${begin_ps}")
+[[ -n "${end_ps}" ]]   && traj_range_flags+=(-e "${end_ps}")
+[[ -n "${dt_ps}" ]]    && traj_range_flags+=(-dt "${dt_ps}")
+
 mkdir -p "${output_dir}"
 log_file="${output_dir}/${base_name}_analysis.log"
 {
@@ -532,7 +539,7 @@ fi
 # --- 7. RMS fluctuations ------------------------------------------------------
 if should_run rmsf; then
     out="${output_dir}/rmsf.xvg"
-    cmd=("${gmx_bin}" rmsf -s "${structure_file}" -f "${concat_xtc}" -o "${out}" -xvg "${xvg_format}" "${index_flag[@]}" "${time_flags[@]}")
+    cmd=("${gmx_bin}" rmsf -s "${structure_file}" -f "${concat_xtc}" -o "${out}" -xvg "${xvg_format}" "${index_flag[@]}" "${traj_range_flags[@]}")
     [[ "${per_residue}" == true ]] && cmd+=(-res)
     run_piped_cmd "RMS fluctuations (${group})" "${group}" "${cmd[@]}" || true
 fi
