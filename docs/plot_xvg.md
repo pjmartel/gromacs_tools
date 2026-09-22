@@ -267,6 +267,7 @@ python bin/plot_xvg.py raw_multicolumn.dat \
 | `--multi` | Plot multiple files on same axes |
 | `--start` / `--end` | Trajectory slicing (row indices) |
 | `--title` / `--xlabel` / `--ylabel` | Custom labels |
+| `--no-subtitle` | Hide XVG "@ subtitle" text shown under the title |
 | `--figsize` | Figure size (width height) |
 | `--aspect` | Aspect ratio (equal, auto, or number) |
 | `--xlim` / `--ylim` | Axis limits |

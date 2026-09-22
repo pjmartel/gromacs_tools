@@ -41,6 +41,15 @@ def moving_average(data, window_size):
   return np.convolve(data, np.ones(window_size) / window_size, mode='valid')
 
 
+def build_title(labels, default='', show_subtitle=True):
+    """Combine the XVG '@ title' with '@ subtitle' (as a second line) unless disabled."""
+    title = labels.get('title', default)
+    subtitle = labels.get('subtitle')
+    if show_subtitle and subtitle:
+        title = f"{title}\n{subtitle}" if title else subtitle
+    return title
+
+
 def parse_xvg(filename):
     legends = {}
     labels = {}
@@ -56,6 +65,8 @@ def parse_xvg(filename):
                 parts = line.split()
                 if parts[1] == 'title':
                     labels['title'] = ' '.join(parts[2:]).strip('"')
+                elif parts[1] == 'subtitle':
+                    labels['subtitle'] = ' '.join(parts[2:]).strip('"')
                 elif parts[1] == 'xaxis' and parts[2] == 'label':
                     labels['xlabel'] = ' '.join(parts[3:]).strip('"')
                 elif parts[1] == 'yaxis' and parts[2] == 'label':
@@ -75,7 +86,7 @@ def parse_xvg(filename):
 def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots', 
              scatter_colormap='viridis', use_scatter=False, use_histogram=False, 
              hist_bins=50, markersize=3, start_row=None, end_row=None, columns=None,
-             custom_legends=None):
+             custom_legends=None, show_subtitle=True):
     """Plot a single XVG file and return (fig, ax) without displaying.
 
     The previous implementation called plt.show() internally which prevented
@@ -99,6 +110,8 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
         Example: [1, 3, 5] plots only columns 1, 3, and 5.
     custom_legends : list of str or None
         Custom legend labels for each column. If provided, overrides XVG legend metadata.
+    show_subtitle : bool
+        If True (default), append the XVG '@ subtitle' text as a second title line.
     """
     data_columns, legends, labels = parse_xvg(filename)
     
@@ -142,7 +155,7 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
         
         ax.set_xlabel(labels.get('ylabel', 'Value'))  # histogram x-axis is the y-values
         ax.set_ylabel('Frequency')
-        ax.set_title(labels.get('title', 'Distribution'))
+        ax.set_title(build_title(labels, 'Distribution', show_subtitle))
         if num_datasets > 1 or legends:
             ax.legend()
     else:
@@ -176,7 +189,7 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
 
         ax.set_xlabel(labels.get('xlabel', 'X-axis'))
         ax.set_ylabel(labels.get('ylabel', 'Y-axis'))
-        ax.set_title(labels.get('title', ''))
+        ax.set_title(build_title(labels, '', show_subtitle))
         if num_datasets > 1 or legends:
             ax.legend()
     
@@ -189,7 +202,7 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
 def plot_xvg_multi(filename, show_moving_avg=False, window_size=10, ax=None, 
                    custom_legend=None, style='dots', scatter_colormap='viridis', 
                    use_scatter=False, use_histogram=False, hist_bins=50, markersize=3,
-                   start_row=None, end_row=None, columns=None):
+                   start_row=None, end_row=None, columns=None, show_subtitle=True):
 
     data_columns, legends, labels = parse_xvg(filename)
     
@@ -229,7 +242,7 @@ def plot_xvg_multi(filename, show_moving_avg=False, window_size=10, ax=None,
         
         ax.set_xlabel(labels.get('ylabel', 'Value'))
         ax.set_ylabel('Frequency')
-        ax.set_title(labels.get('title', 'Distribution'))
+        ax.set_title(build_title(labels, 'Distribution', show_subtitle))
     else:
         # Standard xy plot mode
         for i in range(num_datasets):
@@ -261,7 +274,7 @@ def plot_xvg_multi(filename, show_moving_avg=False, window_size=10, ax=None,
 
         ax.set_xlabel(labels.get('xlabel', 'X-axis'))
         ax.set_ylabel(labels.get('ylabel', 'Y-axis'))
-        ax.set_title(labels.get('title', ''))
+        ax.set_title(build_title(labels, '', show_subtitle))
 
     if num_datasets > 1 or legends or custom_legend:
         ax.legend()
@@ -420,6 +433,9 @@ Examples:
     
     parser.add_argument('--title', '-t', type=str,
                         help='Custom title for the plot (overrides XVG title)')
+
+    parser.add_argument('--no-subtitle', action='store_true',
+                        help='Do not display the XVG "@ subtitle" text as a second title line.')
     
     parser.add_argument('--xlabel', type=str,
                         help='Custom x-axis label (overrides XVG label)')
@@ -1041,7 +1057,7 @@ def main():
                                style=args.style, scatter_colormap=args.colormap, use_scatter=args.scatter,
                                use_histogram=args.histogram, hist_bins=args.bins, markersize=args.markersize,
                                start_row=args.start, end_row=args.end, columns=args.columns,
-                               custom_legends=args.legends)
+                               custom_legends=args.legends, show_subtitle=not args.no_subtitle)
             
             apply_plot_customization(ax, args, is_3d=False)
 
@@ -1056,7 +1072,8 @@ def main():
                              style=args.style, scatter_colormap=args.colormap, 
                              use_scatter=args.scatter, use_histogram=args.histogram,
                              hist_bins=args.bins, markersize=args.markersize,
-                             start_row=args.start, end_row=args.end, columns=args.columns)
+                             start_row=args.start, end_row=args.end, columns=args.columns,
+                             show_subtitle=not args.no_subtitle)
             
             apply_plot_customization(ax, args, is_3d=False)
             plt.tight_layout()
