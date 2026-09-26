@@ -1,5 +1,6 @@
 #!/bin/bash -e
 set -o pipefail  # preserve gmx exit status when piping through tee
+original_invocation="$0 $*"
 # Script for continuing/extending GROMACS molecular dynamics simulations
 # It uses grompp to prepare the input files for continuation
 # Required files: topology (.top), and either:
@@ -57,6 +58,8 @@ if [[ $# -lt 5 ]]; then
     echo "  --ps                   Interpret times as picoseconds (default: nanoseconds)"
     echo "  --ignore-initial-edr   Skip reading the initial .edr file in grompp (useful when"
     echo "                         the barostat type changes, e.g. Berendsen -> Parrinello-Rahman)"
+    echo "  --commands-file <file> Reproducibility script recording every gmx command run"
+    echo "                         (default: gmx_continue_grompp_commands.sh)"
     echo ""
     echo "Examples:"
     echo "  # Extend existing run from 10000 to 20000 ns (MDP auto-copied)"
@@ -103,6 +106,7 @@ topology="topol.top"
 time_unit="ns"  # Default to nanoseconds
 ignore_initial_edr=false
 posres_ref=""
+commands_file="gmx_continue_grompp_commands.sh"
 
 # Parse optional arguments
 while [[ $# -gt 0 ]]; do
@@ -172,10 +176,18 @@ while [[ $# -gt 0 ]]; do
             ignore_initial_edr=true
             shift
             ;;
+        --commands-file)
+            if [[ -z "$2" ]] || [[ "$2" == --* ]]; then
+                echo "Error: --commands-file requires a value"
+                exit 1
+            fi
+            commands_file="$2"
+            shift 2
+            ;;
         --*)
             echo "Error: Unknown option '$1'"
             echo ""
-            echo "Valid options: --template, --initial, --timestep, --title, --topology, --plumed, --posres-ref, --ps, --ignore-initial-edr"
+            echo "Valid options: --template, --initial, --timestep, --title, --topology, --plumed, --posres-ref, --ps, --ignore-initial-edr, --commands-file"
             echo ""
             echo "Did you misspell an option? Common typos:"
             echo "  --intitial  → should be --initial"
@@ -193,6 +205,26 @@ done
 base_name="${basename_arg}_${replica}"
 # Shared across segments/invocations - grompp and mdrun output is appended here
 log_file="${base_name}.log"
+
+# Reproducibility script: records every gmx command this run executes, plus the
+# exact command line used to invoke this script
+{
+    echo "#!/bin/bash -e"
+    echo "# Commands executed by gmx_continue_grompp.sh"
+    echo "# Invocation: ${original_invocation}"
+    echo "# Generated: $(date)"
+    echo "#"
+    echo "# This script reproduces the gmx grompp/mdrun commands run by gmx_continue_grompp.sh."
+    echo "# You can run it independently to redo the same operations."
+    echo ""
+    echo "set -e"
+    echo ""
+} > "${commands_file}"
+chmod +x "${commands_file}"
+
+log_cmd() {
+    echo "$1" >> "${commands_file}"
+}
 
 # Setup PLUMED flag if provided
 if [[ -n "${plumed_file}" ]]; then
@@ -373,6 +405,7 @@ if [[ ${actual_start} -eq ${tstart} ]] && [[ ${tstart} -eq 0 ]]; then
         if ! check_segment_complete "${initial_cur}"; then
             echo "Resuming interrupted initial segment..."
             echo "Note: Existing incomplete output files will be backed up with .bak extension"
+            log_cmd "gmx mdrun -deffnm ${initial_cur} -cpi ${initial_cur}.cpt ${plumed_flag}"
             gmx mdrun -deffnm ${initial_cur} -cpi ${initial_cur}.cpt ${plumed_flag} 2>&1 | tee -a "${log_file}"
         else
             echo "Initial segment already completed successfully."
@@ -417,16 +450,19 @@ if [[ ${actual_start} -eq ${tstart} ]] && [[ ${tstart} -eq 0 ]]; then
         # Use checkpoint if available, otherwise continue without it
         if [[ -f ${initial_basename}.cpt ]]; then
             echo "Using checkpoint from ${initial_basename}"
+            log_cmd "gmx grompp -f ${initial_cur}.mdp -c ${initial_basename}.gro -t ${initial_basename}.cpt ${edr_flag} ${posres_flag} -p ${topology} -o ${initial_cur}.tpr"
             gmx grompp -f ${initial_cur}.mdp -c ${initial_basename}.gro -t ${initial_basename}.cpt \
                        ${edr_flag} ${posres_flag} -p ${topology} -o ${initial_cur}.tpr 2>&1 | tee -a "${log_file}"
         else
             echo "Warning: No checkpoint file found (${initial_basename}.cpt)"
             echo "Continuing without checkpoint. Velocities will be regenerated."
+            log_cmd "gmx grompp -f ${initial_cur}.mdp -c ${initial_basename}.gro ${edr_flag} ${posres_flag} -p ${topology} -o ${initial_cur}.tpr"
             gmx grompp -f ${initial_cur}.mdp -c ${initial_basename}.gro \
                        ${edr_flag} ${posres_flag} -p ${topology} -o ${initial_cur}.tpr 2>&1 | tee -a "${log_file}"
         fi
 
         echo "Running mdrun for initial segment..."
+        log_cmd "gmx mdrun -deffnm ${initial_cur} ${plumed_flag}"
         gmx mdrun -deffnm ${initial_cur} ${plumed_flag} 2>&1 | tee -a "${log_file}"
     fi
 
@@ -455,6 +491,7 @@ for ((time=${start_time} ; time<${tend} ; time+=${dt})) ; do
         if ! check_segment_complete "${cur}"; then
             echo "Resuming interrupted segment..."
             echo "Note: Existing incomplete output files will be backed up with .bak extension"
+            log_cmd "gmx mdrun -deffnm ${cur} -cpi ${cur}.cpt ${plumed_flag}"
             gmx mdrun -deffnm ${cur} -cpi ${cur}.cpt ${plumed_flag} 2>&1 | tee -a "${log_file}"
         else
             echo "Segment already completed successfully. Skipping..."
@@ -504,16 +541,19 @@ for ((time=${start_time} ; time<${tend} ; time+=${dt})) ; do
         # Check if checkpoint exists (optional for continuation)
         if [[ -f ${prev}.cpt ]]; then
             echo "Using checkpoint from previous segment"
+            log_cmd "gmx grompp -f ${cur}.mdp -c ${prev}.gro -t ${prev}.cpt -e ${prev}.edr ${posres_flag} -p ${topology} -o ${cur}.tpr"
             gmx grompp -f ${cur}.mdp -c ${prev}.gro -t ${prev}.cpt \
                        -e ${prev}.edr ${posres_flag} -p ${topology} -o ${cur}.tpr 2>&1 | tee -a "${log_file}"
         else
             echo "Warning: No checkpoint file found (${prev}.cpt), continuing without it"
             echo "Velocities will be regenerated. This is fine but less seamless."
+            log_cmd "gmx grompp -f ${cur}.mdp -c ${prev}.gro -e ${prev}.edr ${posres_flag} -p ${topology} -o ${cur}.tpr"
             gmx grompp -f ${cur}.mdp -c ${prev}.gro \
                        -e ${prev}.edr ${posres_flag} -p ${topology} -o ${cur}.tpr 2>&1 | tee -a "${log_file}"
         fi
         
         echo "Running mdrun..."
+        log_cmd "gmx mdrun -deffnm ${cur} ${plumed_flag}"
         gmx mdrun -deffnm ${cur} ${plumed_flag} 2>&1 | tee -a "${log_file}"
     fi
     

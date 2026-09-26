@@ -17,7 +17,8 @@ optionally written out as a multi-model PDB.
 - ✅ **Independent group selection** for extraction, centering, and fitting
 - ✅ **Non-contiguous group support** (e.g. Protein + Ion) via `--subset-tpr`
 - ✅ **Dry-run mode** to preview commands without running them
-- ✅ **Script export** (`--save-script`) to save the generated commands as a runnable script
+- ✅ **Command logging** (on by default): every command run, plus the exact invocation used, is
+  saved to `<outdir>/gmx_extract_commands.sh` (override with `--save-script`), written even with `--dry-run`
 
 ## Pipeline Stages
 
@@ -63,7 +64,7 @@ gmx_extract.sh -s <tpr> -f <xtc> [OPTIONS]
 | `-n, --index <file>` | - | Optional index (.ndx) file passed to every trjconv call |
 | `--gmx <path>` | `gmx` | gmx binary/command to use |
 | `--dry-run` | off | Print commands (and group selections) without running them |
-| `--save-script <file>` | - | Also write the commands to a runnable bash script |
+| `--save-script <file>` | `<outdir>/gmx_extract_commands.sh` | Reproducibility script recording every command run (and the exact invocation of this tool); written even with `--dry-run` |
 | `-h, --help` | - | Show help and exit |
 
 ### Available Default Groups

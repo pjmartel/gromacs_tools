@@ -127,7 +127,8 @@ gromacs_tools/
 ## 🎯 Key Features
 
 - **Automation**: Reduce manual GROMACS command execution
-- **Reproducibility**: Automatic command logging to `commands.sh`
+- **Reproducibility**: Every tool logs every command it runs (plus its own exact invocation) to a
+  `<tool_name>_commands.sh` script by default, even in dry-run mode
 - **Safety**: Dry-run modes, crash recovery, validation checks
 - **Flexibility**: Extensive customization options
 - **Documentation**: Comprehensive guides and examples

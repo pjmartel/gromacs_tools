@@ -58,6 +58,31 @@
 #   ./gmx_continue_extend.sh md 0 0 500 100 --template production.mdp \
 #       --initial npt --timestep 0.002 --title "MyProtein" --noappend
 
+original_invocation="$0 $*"
+commands_file="gmx_continue_extend_commands.sh"
+
+# Reproducibility script: records every gmx command this run executes, plus the
+# exact command line used to invoke this script
+init_commands_file() {
+    {
+        echo "#!/bin/bash -e"
+        echo "# Commands executed by gmx_continue_extend.sh"
+        echo "# Invocation: ${original_invocation}"
+        echo "# Generated: $(date)"
+        echo "#"
+        echo "# This script reproduces the gmx commands run by gmx_continue_extend.sh."
+        echo "# You can run it independently to redo the same operations."
+        echo ""
+        echo "set -e"
+        echo ""
+    } > "${commands_file}"
+    chmod +x "${commands_file}"
+}
+
+log_cmd() {
+    echo "$1" >> "${commands_file}"
+}
+
 # =============================================================================
 # EASY MODE: One or two arguments
 #   1 arg:  extend_time (auto-detect TPR)
@@ -71,6 +96,8 @@ if ([[ $# -eq 1 ]] && [[ "$1" =~ ^[0-9]+$ ]]) || \
     
     echo "=== Easy Mode: Extending simulation by ${extend_time} ps ==="
     echo ""
+    
+    init_commands_file
     
     # Source GROMACS if not already available
     if ! command -v gmx &> /dev/null; then
@@ -135,14 +162,17 @@ if ([[ $# -eq 1 ]] && [[ "$1" =~ ^[0-9]+$ ]]) || \
     
     # Extend TPR
     echo "Extending TPR by ${extend_time} ps..."
+    log_cmd "gmx convert-tpr -s ${found_tpr} -o ${found_tpr} -extend ${extend_time}"
     gmx convert-tpr -s "${found_tpr}" -o "${found_tpr}" -extend ${extend_time}
     
     # Run mdrun
     echo ""
     echo "Running mdrun in append mode..."
     if [[ -f "${found_cpt}" ]]; then
+        log_cmd "gmx mdrun -deffnm ${found_base} -cpi ${found_cpt} -append ${plumed_flag}"
         gmx mdrun -deffnm "${found_base}" -cpi "${found_cpt}" -append ${plumed_flag}
     else
+        log_cmd "gmx mdrun -deffnm ${found_base} -append ${plumed_flag}"
         gmx mdrun -deffnm "${found_base}" -append ${plumed_flag}
     fi
     
@@ -181,6 +211,8 @@ elif [[ $# -lt 5 ]]; then
     echo "  --topology <file>     Topology file (default: topol.top)"
     echo "  --plumed <file>       PLUMED input file for enhanced sampling/analysis"
     echo "  --ps                  Interpret times as picoseconds (default: nanoseconds)"
+    echo "  --commands-file <file> Reproducibility script recording every gmx command run"
+    echo "                        (default: gmx_continue_extend_commands.sh)"
     echo ""
     echo "Examples:"
     echo "  $0 5000                                          # Easy: extend by 5 ns"
@@ -269,6 +301,10 @@ else
                 time_unit="ps"
                 shift
                 ;;
+            --commands-file)
+                commands_file="$2"
+                shift 2
+                ;;
             *)
                 echo "Error: Unknown option '$1'"
                 exit 1
@@ -280,6 +316,8 @@ fi
 # =============================================================================
 # Common setup for both modes
 # =============================================================================
+
+init_commands_file
 
 base_name="${basename_arg}_${replica}"
 
@@ -514,11 +552,13 @@ elif [[ ${tstart} -eq 0 ]]; then
         
         echo "Running grompp for initial segment..."
         if [[ -f ${initial_basename}.cpt ]]; then
+            log_cmd "gmx grompp -f ${first_mdp} -c ${initial_basename}.gro -t ${initial_basename}.cpt -e ${initial_basename}.edr -p ${topology} -o ${main_tpr}"
             gmx grompp -f ${first_mdp} -c ${initial_basename}.gro \
                        -t ${initial_basename}.cpt -e ${initial_basename}.edr \
                        -p ${topology} -o ${main_tpr}
         else
             echo "Warning: No checkpoint file (${initial_basename}.cpt), continuing without"
+            log_cmd "gmx grompp -f ${first_mdp} -c ${initial_basename}.gro -e ${initial_basename}.edr -p ${topology} -o ${main_tpr}"
             gmx grompp -f ${first_mdp} -c ${initial_basename}.gro \
                        -e ${initial_basename}.edr -p ${topology} -o ${main_tpr}
         fi
@@ -526,9 +566,11 @@ elif [[ ${tstart} -eq 0 ]]; then
         echo "Running mdrun for segment 1..."
         if [[ -f ${base_name}.cpt ]]; then
             # Checkpoint exists, use it for crash recovery
+            log_cmd "gmx mdrun -deffnm ${base_name} -cpi ${base_name}.cpt ${plumed_flag}"
             gmx mdrun -deffnm ${base_name} -cpi ${base_name}.cpt ${plumed_flag}
         else
             # No checkpoint yet, first run
+            log_cmd "gmx mdrun -deffnm ${base_name} ${plumed_flag}"
             gmx mdrun -deffnm ${base_name} ${plumed_flag}
         fi
         
@@ -565,6 +607,7 @@ for ((seg=segment_num; seg<total_segments; seg++)); do
     fi
     extended_tpr="${main_tpr}"
     
+    log_cmd "gmx convert-tpr -s ${main_tpr} -o ${extended_tpr} -extend ${extend_by}"
     gmx convert-tpr -s ${main_tpr} -o ${extended_tpr} -extend ${extend_by}
     
     # Determine checkpoint file for this segment
@@ -578,17 +621,21 @@ for ((seg=segment_num; seg<total_segments; seg++)); do
     if [[ "${append_mode}" == "yes" ]]; then
         # Append mode: continue to same files
         if [[ -f ${current_cpt} ]]; then
+            log_cmd "gmx mdrun -deffnm ${base_name} -cpi ${current_cpt} -s ${extended_tpr} -append ${plumed_flag}"
             gmx mdrun -deffnm ${base_name} -cpi ${current_cpt} -s ${extended_tpr} -append ${plumed_flag}
         else
             echo "Warning: Checkpoint ${current_cpt} not found, starting from structure"
+            log_cmd "gmx mdrun -deffnm ${base_name} -s ${extended_tpr} -append ${plumed_flag}"
             gmx mdrun -deffnm ${base_name} -s ${extended_tpr} -append ${plumed_flag}
         fi
     else
         # Noappend mode: creates part000X files
         if [[ -f ${current_cpt} ]]; then
+            log_cmd "gmx mdrun -deffnm ${base_name} -cpi ${current_cpt} -s ${extended_tpr} -noappend ${plumed_flag}"
             gmx mdrun -deffnm ${base_name} -cpi ${current_cpt} -s ${extended_tpr} -noappend ${plumed_flag}
         else
             echo "Warning: Checkpoint ${current_cpt} not found, starting from structure"
+            log_cmd "gmx mdrun -deffnm ${base_name} -s ${extended_tpr} -noappend ${plumed_flag}"
             gmx mdrun -deffnm ${base_name} -s ${extended_tpr} -noappend ${plumed_flag}
         fi
     fi

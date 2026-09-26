@@ -21,6 +21,9 @@ Automates the continuation of molecular dynamics simulations by:
 - ✅ **Template-based**: Uses MDP templates from `mdp_templates/`
 - ✅ **Flexible**: Optional parameters for customization
 - ✅ **Idempotent**: Re-running same command is safe
+- ✅ **Command logging** (on by default): every gmx command run, plus the exact invocation used,
+  is saved to `gmx_continue_grompp_commands.sh` / `gmx_continue_extend_commands.sh`
+  (override with `--commands-file`)
 
 ## Quick Start
 

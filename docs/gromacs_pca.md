@@ -16,6 +16,8 @@ Performs complete PCA workflow from trajectory preprocessing through eigenvector
 - ✅ Flexible atom selection using GROMACS selection syntax
 - ✅ Customizable PBC and fitting options
 - ✅ Batch processing support
+- ✅ **Command logging** (on by default): every GROMACS command run, plus the exact invocation
+  used, is saved to `<outdir>/gromacs_pca_commands.sh` (override with `--commands-file`)
 
 ## Requirements
 

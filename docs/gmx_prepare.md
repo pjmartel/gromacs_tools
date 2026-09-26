@@ -18,7 +18,7 @@ Automates the complete setup pipeline from initial PDB structure to a fully prep
 - ✅ **Professional logging**: Python logging module with INFO/WARNING/ERROR levels
 - ✅ **System summary**: Post-pipeline statistics (atoms, box volume, composition)
 - ✅ **Enhanced error hints**: Step-specific troubleshooting guidance
-- ✅ Command logging to `commands.sh` for reproducibility
+- ✅ Command logging to `gmx_prepare_commands.sh` for reproducibility
 - ✅ **Dry-run mode**: Preview workflow with configuration summary
 - ✅ **Verbose mode**: Detailed debug output with `--verbose` flag
 
@@ -117,14 +117,14 @@ python bin/gmx_prepare.py --topology protein.top --structure protein.gro \
 ### Dry-Run Mode
 
 ```bash
-# Generate commands.sh without executing
+# Generate gmx_prepare_commands.sh without executing
 python bin/gmx_prepare.py protein.pdb --dry-run
 
 # Review the generated commands
-cat commands.sh
+cat gmx_prepare_commands.sh
 
 # Execute when ready
-bash commands.sh
+bash gmx_prepare_commands.sh
 ```
 
 ### Verbose Mode
@@ -168,6 +168,7 @@ python bin/gmx_prepare.py protein.pdb \
 | `--ignore-hydrogens` | `False` | Ignore H atoms in PDB (pass -ignh to pdb2gmx) |
 | `--dry-run` | `False` | Generate commands without executing (preview mode) |
 | `-v, --verbose` | `False` | Verbose output (show detailed progress) |
+| `--commands-file` | `gmx_prepare_commands.sh` | Command log output file |
 
 ## Output Files
 
@@ -180,7 +181,7 @@ Output files use the input PDB basename (e.g., for `protein.pdb`):
 - `protein_ions.gro` - Final system with ions
 - `protein_ions.tpr` - Input file for genion
 - `minimal.mdp` - Generated MDP file for preprocessing
-- `commands.sh` - Log of all executed commands
+- `gmx_prepare_commands.sh` - Log of all executed commands
 
 ## Pipeline Output
 
@@ -308,7 +309,7 @@ Example error output:
 
 - **Always** use `--dry-run` first to preview the workflow and validate configuration
 - Use `--verbose` for detailed debugging output
-- Check `commands.sh` for reproducibility and manual execution
+- Check `gmx_prepare_commands.sh` for reproducibility and manual execution
 - Review force field compatibility warnings—they help avoid simulation issues
 - Adjust box distance based on simulation length (larger for longer simulations)
 - Consider dodecahedral boxes for ~25% fewer water molecules (better efficiency)

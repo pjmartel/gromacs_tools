@@ -18,7 +18,7 @@ Automates the complete equilibration workflow from energy minimization through N
 - ✅ **Professional logging**: Python logging module with INFO/WARNING/ERROR levels
 - ✅ **Progress tracking**: Clear [1/4], [2/4], [3/4], [4/4] stage indicators
 - ✅ **Dry-run mode**: Preview all commands before execution
-- ✅ **Command logging**: Reproducible pipeline saved to `equilibrate_commands.sh`
+- ✅ **Command logging**: Reproducible pipeline saved to `gmx_equilibrate_commands.sh`
 - ✅ **Error hints**: Context-specific troubleshooting guidance
 
 ## Requirements
@@ -93,10 +93,10 @@ python bin/gmx_equilibrate.py protein_ions.gro protein.top --prefix myprotein
 python bin/gmx_equilibrate.py protein_ions.gro protein.top --dry-run
 
 # Review generated commands
-cat equilibrate_commands.sh
+cat gmx_equilibrate_commands.sh
 
 # Execute manually if desired
-bash equilibrate_commands.sh
+bash gmx_equilibrate_commands.sh
 ```
 
 ### Verbose Mode
@@ -216,7 +216,7 @@ python bin/gmx_equilibrate.py protein_ions.gro protein.top --prefix equil_rep2 -
 | `--pcoupl` | `C-rescale` | Pressure coupling: Berendsen, Parrinello-Rahman, C-rescale (used for both restrained and unrestrained NPT stages) |
 | `--dry-run` | `False` | Generate commands without executing (preview mode) |
 | `-v, --verbose` | `False` | Verbose output (detailed progress) |
-| `--commands-file` | `equilibrate_commands.sh` | Command log output file |
+| `--commands-file` | `gmx_equilibrate_commands.sh` | Command log output file |
 | `--gen-seed` | `-1` | Random seed for NVT velocity generation (-1 = random; use a fixed integer for reproducible replicas) |
 
 ### Advanced Options (Fine-Tuning)
@@ -351,7 +351,7 @@ All files use the specified prefix (default: `equil`):
 - `posre.itp` - Position restraint topology (only in `--posres-mode generate`, the default;
   regenerated per stage; name is fixed to match the topology's `#include "posre.itp"`). Not
   created in `--posres-mode existing`, which reuses itp files already on disk.
-- `equilibrate_commands.sh` - Reproducibility script
+- `gmx_equilibrate_commands.sh` - Reproducibility script
 
 ## Pipeline Output
 
@@ -379,7 +379,7 @@ GROMACS EQUILIBRATION PIPELINE
   [3/4] NPT (restrained):       200 ps
   [4/4] NPT (unrestrained):     500 ps
 
-All commands logged to: equilibrate_commands.sh
+All commands logged to: gmx_equilibrate_commands.sh
 
 [1/4] Energy Minimization
 ------------------------------------------------------------
