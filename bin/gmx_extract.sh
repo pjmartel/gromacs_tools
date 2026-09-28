@@ -22,6 +22,14 @@ set -o pipefail
 #   --center-group <name>     Group used for centering (default: same as --group)
 #   --fit-group <name>        Group used for the least-squares fit (default: same as --group)
 #
+#   Custom groups defined in an -n/--index .ndx file are valid values for -g,
+#   --center-group and --fit-group (used exactly like any default group). Before
+#   running the pipeline, every requested group name is checked against "gmx make_ndx"
+#   output for --tpr (+ --index, if given), so typos fail fast with the list of valid
+#   names instead of a cryptic error mid-pipeline. Use --list-groups to print that list
+#   and exit, or --skip-group-check to disable the check (e.g. for a --dry-run preview
+#   of group names that only exist in the --subset-tpr reduced .tpr).
+#
 # Trajectory slicing (applied only to the first stage that reads the raw input):
 #   -b, --start <ps>          Start time (ps)
 #   -e, --end <ps>            End time (ps)
@@ -55,6 +63,10 @@ set -o pipefail
 #
 # Misc:
 #   --gmx <path>              gmx binary/command to use (default: "gmx")
+#   --list-groups              Print all groups available for --tpr (+ --index, if given),
+#                             via "gmx make_ndx", then exit without running the pipeline
+#   --skip-group-check         Skip validating -g/--center-group/--fit-group against the
+#                             groups available for --tpr/--index
 #   --dry-run                 Print commands (and group selections) without running them
 #   --save-script <file>      Reproducibility script recording every command run (and the
 #                             exact invocation of this tool), written even with --dry-run
@@ -85,9 +97,12 @@ set -o pipefail
 #   # Non-contiguous group (protein + ion): build a reduced .tpr to keep indices consistent
 #   ./gmx_extract.sh -s md.tpr -f md.xtc -g Protein_Ion --fit-group C-alpha \
 #       --index index.ndx --subset-tpr
+#
+#   # List every group available for a tpr + custom index file (default groups + custom ones)
+#   ./gmx_extract.sh -s md.tpr --index index.ndx --list-groups
 
 print_usage() {
-    sed -n '2,60p' "$0" | sed -e 's/^# \{0,1\}//'
+    sed -n '2,102p' "$0" | sed -e 's/^# \{0,1\}//'
 }
 
 original_invocation="$0 $*"
@@ -117,6 +132,8 @@ gmx_bin="gmx"
 dry_run=false
 save_script=""
 subset_tpr=false
+list_groups_only=false
+skip_group_check=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -175,6 +192,10 @@ while [[ $# -gt 0 ]]; do
             save_script="$2"; shift 2 ;;
         --subset-tpr)
             subset_tpr=true; shift ;;
+        --list-groups)
+            list_groups_only=true; shift ;;
+        --skip-group-check)
+            skip_group_check=true; shift ;;
         -h|--help)
             print_usage; exit 0 ;;
         --*)
@@ -193,7 +214,7 @@ if [[ -z "${tpr_file}" ]]; then
     echo "Error: --tpr <file> is required"
     exit 1
 fi
-if [[ -z "${xtc_file}" ]]; then
+if [[ "${list_groups_only}" == false ]] && [[ -z "${xtc_file}" ]]; then
     echo "Error: --xtc <file> is required"
     exit 1
 fi
@@ -201,7 +222,7 @@ if [[ ! -f "${tpr_file}" ]]; then
     echo "Error: TPR file '${tpr_file}' not found"
     exit 1
 fi
-if [[ ! -f "${xtc_file}" ]]; then
+if [[ "${list_groups_only}" == false ]] && [[ ! -f "${xtc_file}" ]]; then
     echo "Error: Trajectory file '${xtc_file}' not found"
     exit 1
 fi
@@ -256,14 +277,59 @@ if [[ -n "${skip}" ]]; then
     slice_suffix="${slice_suffix}_skip${skip}"
 fi
 
-# Source GROMACS if not already available (skip check in dry-run mode)
-if [[ "${dry_run}" == false ]] && ! command -v "${gmx_bin%% *}" &> /dev/null; then
+# Source GROMACS if not already available (skip check in dry-run mode, unless --list-groups needs it)
+if { [[ "${dry_run}" == false ]] || [[ "${list_groups_only}" == true ]]; } && ! command -v "${gmx_bin%% *}" &> /dev/null; then
     if [[ -f /programs/gromacs-2025.2/bin/GMXRC.bash ]]; then
         . /programs/gromacs-2025.2/bin/GMXRC.bash
     else
         echo "Error: GROMACS not found. Please source GMXRC.bash manually or add gmx to PATH."
         exit 1
     fi
+fi
+
+# Queries "gmx make_ndx" for every group available for --tpr (+ --index, if given):
+# default groups plus any custom named groups defined in the .ndx file. Used by
+# --list-groups and to validate -g/--center-group/--fit-group before the pipeline runs.
+get_available_groups() {
+    local tmp_ndx
+    tmp_ndx="$(mktemp --suffix=.ndx)"
+    local cmd=("${gmx_bin}" make_ndx -f "${tpr_file}" -o "${tmp_ndx}")
+    [[ -n "${index_file}" ]] && cmd+=(-n "${index_file}")
+    local output
+    output="$(printf 'q\n' | "${cmd[@]}" 2>&1)" || true
+    rm -f "${tmp_ndx}"
+    echo "${output}" | grep -oP '^\s*[0-9]+\s+\K\S+(?=\s*:)'
+}
+
+if [[ "${list_groups_only}" == true ]]; then
+    echo "Available groups for '${tpr_file}'${index_file:+ + '${index_file}'}:"
+    get_available_groups
+    exit 0
+fi
+
+# Fail fast on group-name typos instead of hitting a cryptic error mid-pipeline.
+# Purely numeric values are left unchecked, since gmx also accepts group indices.
+if [[ "${skip_group_check}" == true ]] || [[ "${dry_run}" == true ]]; then
+    :
+else
+    mapfile -t available_groups < <(get_available_groups)
+    validate_group() {
+        local value="$1" label="$2"
+        [[ -z "${value}" ]] && return 0
+        [[ "${value}" =~ ^[0-9]+$ ]] && return 0
+        local g
+        for g in "${available_groups[@]}"; do
+            [[ "${g}" == "${value}" ]] && return 0
+        done
+        echo "Error: ${label} '${value}' not found in available groups for '${tpr_file}'${index_file:+ + '${index_file}'}"
+        echo "Available groups:"
+        printf '  %s\n' "${available_groups[@]}"
+        echo "(use --skip-group-check to bypass this check, e.g. for a group only present after --subset-tpr)"
+        exit 1
+    }
+    validate_group "${group}" "Extract group (-g/--group)"
+    [[ -n "${center_group}" ]] && validate_group "${center_group}" "Center group (--center-group)"
+    [[ -n "${fit_group}" ]] && validate_group "${fit_group}" "Fit group (--fit-group)"
 fi
 
 if [[ -n "${save_script}" ]]; then

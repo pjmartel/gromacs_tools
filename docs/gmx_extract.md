@@ -16,6 +16,7 @@ optionally written out as a multi-model PDB.
 - ✅ **Trajectory slicing**: `-b`/`-e`/`--dt`/`--skip`, applied once to the first stage that reads the raw input
 - ✅ **Independent group selection** for extraction, centering, and fitting
 - ✅ **Non-contiguous group support** (e.g. Protein + Ion) via `--subset-tpr`
+- ✅ **Custom `.ndx` groups**: any group defined in `-n/--index` is a valid `-g`/`--center-group`/`--fit-group` value; requested groups are validated against `gmx make_ndx` output up front, and `--list-groups` prints every available group for a `.tpr`/`.ndx` pair
 - ✅ **Dry-run mode** to preview commands without running them
 - ✅ **Command logging** (on by default): every command run, plus the exact invocation used, is
   saved to `<outdir>/gmx_extract_commands.sh` (override with `--save-script`), written even with `--dry-run`
@@ -63,6 +64,8 @@ gmx_extract.sh -s <tpr> -f <xtc> [OPTIONS]
 | `--outdir <dir>` | `.` | Output directory |
 | `-n, --index <file>` | - | Optional index (.ndx) file passed to every trjconv call |
 | `--gmx <path>` | `gmx` | gmx binary/command to use |
+| `--list-groups` | off | Print every group available for `--tpr` (+ `--index`, if given), via `gmx make_ndx`, then exit without running the pipeline |
+| `--skip-group-check` | off | Skip validating `-g`/`--center-group`/`--fit-group` against the groups available for `--tpr`/`--index` |
 | `--dry-run` | off | Print commands (and group selections) without running them |
 | `--save-script <file>` | `<outdir>/gmx_extract_commands.sh` | Reproducibility script recording every command run (and the exact invocation of this tool); written even with `--dry-run` |
 | `-h, --help` | - | Show help and exit |
@@ -73,6 +76,33 @@ From a typical protein `.tpr`, no index file required:
 
 `System, Protein, Protein-H, C-alpha, Backbone, MainChain, MainChain+Cb, MainChain+H,
 SideChain, SideChain-H, Prot-Masses, non-Protein, Water, SOL, non-Water, Ion, Water_and_ions`
+
+### Custom Groups from an `.ndx` File
+
+Any group defined in a file passed via `-n/--index` can be used as `-g/--group`,
+`--center-group` or `--fit-group`, exactly like a default group — it's simply piped to
+`gmx trjconv`/`gmx convert-tpr` as the selection.
+
+Before the pipeline runs, every requested group name is checked against `gmx make_ndx -f
+<tpr> [-n <index>]` output, so a typo fails immediately with the list of valid names instead
+of a confusing error mid-pipeline. Purely numeric values (e.g. `12`) are accepted without
+validation, since gmx also accepts group indices directly.
+
+```bash
+# See every group available for a tpr + custom index file
+bash bin/gmx_extract.sh -s md.tpr --index index.ndx --list-groups
+
+# Use a custom group defined in index.ndx for extraction
+bash bin/gmx_extract.sh -s md.tpr -f md.xtc -g MyCustomGroup --index index.ndx
+```
+
+Use `--skip-group-check` to bypass validation — for example when a group only exists in the
+reduced `.tpr` produced by `--subset-tpr` (see below), which isn't built until the pipeline
+actually runs.
+
+> [!NOTE]
+> With `--dry-run`, group-name validation is skipped automatically (no pipeline runs, so
+> nothing needs to be checked against a real `.tpr`).
 
 ## Non-Contiguous Groups (`--subset-tpr`)
 
