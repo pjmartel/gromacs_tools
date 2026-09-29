@@ -9,6 +9,8 @@ Plots are rendered by the plot_xvg.py tool located in the same directory.
 Usage:
   gmx_panel.py [--dir DIR] [--files FILE [FILE ...]] [--port PORT] [OPTIONS]
 """
+from __future__ import annotations
+
 import argparse
 import base64
 import io
