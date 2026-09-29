@@ -98,8 +98,9 @@ set -o pipefail
 #   # Dry run, saving the exact commands to a script for later/offline execution
 #   ./gmx_analysis.sh MnMT4_apo 0 --dry-run --save-script run_analysis.sh
 
+# Prints the header comment block (from line 3 up to the first non-comment line)
 print_usage() {
-    sed -n '3,87p' "$0" | sed -e 's/^# \{0,1\}//'
+    awk 'NR >= 3 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0"
 }
 
 original_invocation="$0 $*"
@@ -269,10 +270,22 @@ normalize_categories() {
         echo "${p}"
     done
 }
+# Use a command substitution (not a process substitution, whose exit status is lost)
+# so that an unknown category aborts the script
 skip_categories=()
 only_categories=()
-[[ -n "${skip_list}" ]] && mapfile -t skip_categories < <(normalize_categories "${skip_list}")
-[[ -n "${only_list}" ]] && mapfile -t only_categories < <(normalize_categories "${only_list}")
+if [[ -n "${skip_list}" ]]; then
+    normalized="$(normalize_categories "${skip_list}")" || exit 1
+    if [[ -n "${normalized}" ]]; then
+        mapfile -t skip_categories <<< "${normalized}"
+    fi
+fi
+if [[ -n "${only_list}" ]]; then
+    normalized="$(normalize_categories "${only_list}")" || exit 1
+    if [[ -n "${normalized}" ]]; then
+        mapfile -t only_categories <<< "${normalized}"
+    fi
+fi
 
 should_run() {
     local name="$1"
