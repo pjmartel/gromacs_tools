@@ -35,7 +35,8 @@
 #               Output: md_0.xtc, md_0.edr, md_0.log (continuously extended)
 #   
 #   --noappend: (DEFAULT) Extends TPR, creates new files per segment with part000X suffix
-#               Output: md_0.xtc, md_0.part0001.xtc, md_0.part0002.xtc, etc.
+#               Output: md_0.xtc, md_0.part0002.xtc, md_0.part0003.xtc, etc.
+#               (the first run is simulation part 1, so continuations start at part0002)
 #
 # WORKFLOW:
 #   1st segment: Creates TPR from template MDP (or uses --tpr if provided)
@@ -195,9 +196,9 @@ elif [[ $# -lt 5 ]]; then
     echo "Normal mode:"
     echo "  basename          Base name for output files"
     echo "  replica           Replica number"
-    echo "  start_time        Start time in ps"
-    echo "  end_time          End time in ps"
-    echo "  dt                Segment length in ps"
+    echo "  start_time        Start time in ns (ps with --ps)"
+    echo "  end_time          End time in ns (ps with --ps)"
+    echo "  dt                Segment length in ns (ps with --ps)"
     echo ""
     echo "Optional:"
     echo "  --template <file>     MDP template (default: md.mdp)"
@@ -390,58 +391,35 @@ if [[ -z "${existing_tpr}" ]] && [[ ! -f ${topology} ]]; then
 fi
 
 # Function to check if a segment completed successfully
-# Args: segment_number, append_mode, target_time_ns
+# Args: target_time (segment end time, in ${time_unit}: ns, or ps with --ps)
+#
+# Uses the time stored in the checkpoint, i.e. how far the simulation actually got.
+# This works the same in append and noappend modes. Log files are not reliable for
+# this: an earlier run's log (or part number) can already contain "Finished mdrun".
+# Neither is the TPR end time: the TPR is extended before mdrun runs, so after a
+# crash it already points past the last completed segment.
 check_segment_complete() {
-    local seg_num="$1"
-    local append="$2"
-    local target_time_ns="$3"
-    local log_file
+    local target_time="$1"
     
-    if [[ "${append}" == "yes" ]]; then
-        # In append mode, check if we've reached the target time
-        log_file="${base_name}.log"
-        
-        if [[ ! -f ${log_file} ]]; then
-            return 1
-        fi
-        
-        # Check if log indicates completion
-        if ! grep -q "Finished mdrun" ${log_file} 2>/dev/null; then
-            return 1
-        fi
-        
-        # Check the TPR file to see what time it's set to run until
-        local tpr_end_time=$(gmx check -f ${base_name}.tpr 2>&1 | grep "Last frame" | tail -1 | awk '{print $NF}')
-        
-        if [[ -n "${tpr_end_time}" ]]; then
-            # tpr_end_time is in ps, target_time_ns is in ns
-            local tpr_end_ns=$(awk -v t="${tpr_end_time}" 'BEGIN {printf "%.0f", t/1000}')
-            
-            # If TPR is set to at least target time, segment is complete
-            if [[ ${tpr_end_ns} -ge ${target_time_ns} ]]; then
-                return 0
-            fi
-        fi
-        
+    if [[ ! -f ${base_name}.cpt ]]; then
         return 1
-    else
-        # In noappend mode, first segment is main log, rest are partXXXX
-        if [[ ${seg_num} -eq 0 ]]; then
-            log_file="${base_name}.log"
-        else
-            log_file="${base_name}.part$(printf '%04d' ${seg_num}).log"
-        fi
-        
-        if [[ ! -f ${log_file} ]]; then
-            return 1
-        fi
-        
-        if grep -q "Finished mdrun" ${log_file} 2>/dev/null; then
-            return 0
-        else
-            return 1
-        fi
     fi
+    
+    local cpt_time=$(gmx check -f ${base_name}.cpt 2>&1 | grep "Last frame" | tail -1 | awk '{print $NF}')
+    
+    if [[ -z "${cpt_time}" ]]; then
+        return 1
+    fi
+    
+    # cpt_time is in ps; convert target_time to ps for the comparison
+    local target_ps="${target_time}"
+    if [[ "${time_unit}" != "ps" ]]; then
+        target_ps=$((target_time * 1000))
+    fi
+    
+    # If the checkpoint reached the target time (within one timestep), segment is complete
+    awk -v t="${cpt_time}" -v target="${target_ps}" -v ts="${timestep_ps}" \
+        'BEGIN {exit !(t >= target - ts)}'
 }
 
 # Determine output file pattern based on append mode
@@ -507,7 +485,7 @@ if [[ -n "${existing_tpr}" ]]; then
     fi
     
     # Check if first segment already completed
-    if check_segment_complete 0 "${append_mode}" ${dt}; then
+    if check_segment_complete $((tstart + dt)); then
         echo "First segment already completed. Will continue from segment 2..."
         segment_num=1
         current_time=$((tstart + dt))
@@ -517,12 +495,12 @@ elif [[ ${tstart} -eq 0 ]]; then
     # Create initial TPR from template and equilibration files
     
     # Check if already completed
-    if [[ -f ${main_tpr} ]] && check_segment_complete 0 "${append_mode}" ${dt}; then
+    if [[ -f ${main_tpr} ]] && check_segment_complete ${dt}; then
         echo "First segment already completed. Will continue from segment 2..."
         segment_num=1
         current_time=${dt}
     else
-        echo "Creating initial TPR for segment 1 (0 -> ${dt} ns)..."
+        echo "Creating initial TPR for segment 1 (0 -> ${dt} ${time_unit})..."
         
         # Check for required input files
         if [[ ! -f ${template_mdp} ]]; then
@@ -582,33 +560,30 @@ fi
 # Continue with remaining segments using TPR extension
 for ((seg=segment_num; seg<total_segments; seg++)); do
     segment_time=$((tstart + (seg + 1) * dt))
-    segment_time_ps=$((segment_time * 1000))
+    if [[ "${time_unit}" == "ps" ]]; then
+        segment_time_ps=${segment_time}
+    else
+        segment_time_ps=$((segment_time * 1000))
+    fi
     
     echo ""
-    echo "=== Segment $((seg + 1))/${total_segments}: ${current_time} -> ${segment_time} ns ==="
+    echo "=== Segment $((seg + 1))/${total_segments}: ${current_time} -> ${segment_time} ${time_unit} ==="
     
     # Check if segment already completed
-    if check_segment_complete $((seg + 1)) "${append_mode}" ${segment_time}; then
+    if check_segment_complete ${segment_time}; then
         echo "Segment $((seg + 1)) already completed. Skipping..."
         current_time=${segment_time}
         continue
     fi
     
-    # Extend TPR by fixed increment
-    # Note: -extend is INCREMENTAL, not absolute time
-    if [[ "${time_unit}" == "ps" ]]; then
-        # Times already in ps
-        extend_by=${dt}
-        echo "Extending TPR by ${dt} ps..."
-    else
-        # Times in ns, convert to ps
-        extend_by=$((dt * 1000))
-        echo "Extending TPR by ${dt} ns (${extend_by} ps)..."
-    fi
+    # Extend TPR up to the end of this segment
+    # Note: -until sets an ABSOLUTE end time (unlike the incremental -extend), so
+    # re-running after a crash mid-segment does not extend the same TPR twice
+    echo "Extending TPR until ${segment_time} ${time_unit} (${segment_time_ps} ps)..."
     extended_tpr="${main_tpr}"
     
-    log_cmd "gmx convert-tpr -s ${main_tpr} -o ${extended_tpr} -extend ${extend_by}"
-    gmx convert-tpr -s ${main_tpr} -o ${extended_tpr} -extend ${extend_by}
+    log_cmd "gmx convert-tpr -s ${main_tpr} -o ${extended_tpr} -until ${segment_time_ps}"
+    gmx convert-tpr -s ${main_tpr} -o ${extended_tpr} -until ${segment_time_ps}
     
     # Determine checkpoint file for this segment
     # IMPORTANT: In both append and noappend modes, checkpoint is always ${base_name}.cpt
@@ -650,12 +625,17 @@ for ((seg=segment_num; seg<total_segments; seg++)); do
 done
 
 echo ""
-echo "=== All segments completed successfully (${tstart} -> ${tend} ns) ==="
+echo "=== All segments completed successfully (${tstart} -> ${tend} ${time_unit}) ==="
 
 if [[ "${append_mode}" == "yes" ]]; then
     echo "Output files: ${base_name}.xtc, ${base_name}.edr, ${base_name}.log"
 else
-    echo "Output files: ${base_name}.xtc, ${base_name}.part0001.xtc, ... ${base_name}.part$(printf '%04d' $((total_segments - 1))).xtc"
+    # The first run is simulation part 1 (no suffix), so continuations start at part0002
+    if [[ ${total_segments} -gt 1 ]]; then
+        echo "Output files: ${base_name}.xtc, ${base_name}.part0002.xtc, ... ${base_name}.part$(printf '%04d' ${total_segments}).xtc"
+    else
+        echo "Output files: ${base_name}.xtc"
+    fi
     echo ""
     echo "To concatenate trajectories:"
     echo "  gmx trjcat -f ${base_name}.xtc ${base_name}.part*.xtc -o ${base_name}_complete.xtc -cat"
