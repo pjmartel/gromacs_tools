@@ -24,6 +24,8 @@ export PATH="$PATH:$(pwd)/bin"
 | **plot_xvg.py** | Versatile XVG plotting tool with extensive customization | [docs/plot_xvg.md](docs/plot_xvg.md) |
 | **gmx_continue_grompp.sh** | Intelligent MD simulation continuation with crash recovery | [docs/md_continuation.md](docs/md_continuation.md) |
 | **gmx_extract.sh** | Extract, clean up (PBC/center/fit) and convert a trajectory for visualization | [docs/gmx_extract.md](docs/gmx_extract.md) |
+| **gmx_analysis.sh** | Concatenate production segments and run standard analyses (energy, RMSD, Rg, SASA, DSSP, RMSF) | [docs/gmx_analysis.md](docs/gmx_analysis.md) |
+| **gmx_panel.py** | Web dashboard serving all XVG analysis plots in a directory | [docs/gmx_panel.md](docs/gmx_panel.md) |
 
 ## 💡 Quick Usage Examples
 
