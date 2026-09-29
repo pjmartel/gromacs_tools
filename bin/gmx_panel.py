@@ -22,6 +22,7 @@ from datetime import datetime
 from functools import partial
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 # Set Agg backend before any pyplot import (required for off-screen rendering)
 import matplotlib
@@ -39,11 +40,62 @@ import matplotlib.pyplot as plt            # noqa: E402
 # XVG file discovery
 # ---------------------------------------------------------------------------
 
+# Default presentation order for scanned directories, matching the file names
+# written by gmx_analysis.sh: (file-name prefixes, category) in display order.
+# Energy terms are recognized by name or by the "GROMACS Energies" title that
+# gmx energy writes; anything unrecognized is shown last, alphabetically.
+_CATEGORY_PREFIXES = [
+    (("rmsd",), "rmsd"),
+    (("secondary_structure", "dssp"), "dssp"),
+    (("rmsf",), "rmsf"),
+    (("gyrat",), "gyration"),
+    (("sasa",), "sasa"),
+]
+_ENERGY_ORDER = ["temperature", "pressure", "potential", "total_energy"]
+_ENERGY_TITLE = "GROMACS Energies"
+
+
+def read_xvg_title(xvg_path: Path) -> str:
+    """Return the '@ title' of an XVG file, reading only its header."""
+    try:
+        with open(xvg_path, "r") as f:
+            for line in f:
+                if line.startswith("@"):
+                    parts = line.split(None, 2)
+                    if len(parts) == 3 and parts[1] == "title":
+                        return parts[2].strip().strip('"')
+                elif line.strip() and not line.startswith("#"):
+                    break  # first data line: end of header
+    except OSError:
+        pass
+    return ""
+
+
+def xvg_sort_key(xvg_path: Path) -> tuple[int, int, str]:
+    """Sort key giving the default presentation order.
+
+    RMSD, secondary structure (DSSP), RMSF, radius of gyration, SASA, energy
+    terms, then any other files; alphabetical within each group, except energy
+    terms, which follow the gmx_analysis.sh default term order first.
+    """
+    stem = xvg_path.stem.lower()
+    for rank, (prefixes, _category) in enumerate(_CATEGORY_PREFIXES):
+        if stem.startswith(prefixes):
+            return (rank, 0, stem)
+    energy_rank = len(_CATEGORY_PREFIXES)
+    if stem in _ENERGY_ORDER:
+        return (energy_rank, _ENERGY_ORDER.index(stem), stem)
+    if read_xvg_title(xvg_path) == _ENERGY_TITLE:
+        return (energy_rank, len(_ENERGY_ORDER), stem)
+    return (energy_rank + 1, 0, stem)
+
+
 def find_xvg_files(directory: Path, names: list[str] | None = None) -> list[Path]:
     """Return XVG files from *directory*.
 
     If *names* is provided, resolve each name relative to *directory* and warn
-    about missing ones.  Otherwise, return all *.xvg files sorted by name.
+    about missing ones, keeping the given order.  Otherwise, return all *.xvg
+    files in the default presentation order (see xvg_sort_key).
     """
     if names:
         found = []
@@ -54,7 +106,7 @@ def find_xvg_files(directory: Path, names: list[str] | None = None) -> list[Path
             else:
                 print(f"Warning: {p} not found, skipping.", file=sys.stderr)
         return found
-    return sorted(directory.glob("*.xvg"))
+    return sorted(directory.glob("*.xvg"), key=xvg_sort_key)
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +185,7 @@ header h1 { font-size: 1.3rem; color: #e06c75; font-weight: 700; }
     transition: background 0.15s;
 }
 .btn:hover { background: #3a3a70; }
+.zoom-label { font-size: 0.8rem; color: #888; font-family: monospace; min-width: 3.5rem; text-align: center; }
 .grid {
     display: grid;
     grid-template-columns: {COLUMNS};
@@ -187,7 +240,7 @@ _HTML_TEMPLATE = """\
       <div class="header-meta">{META}</div>
     </div>
     <div class="toolbar">
-      <a class="btn" href="/">&#8635; Reload</a>
+      {ZOOM}<a class="btn" href="{RELOAD}">&#8635; Reload</a>
     </div>
   </header>
   <div class="grid">
@@ -196,6 +249,13 @@ _HTML_TEMPLATE = """\
 </body>
 </html>
 """
+
+_ZOOM_CONTROLS = """\
+<a class="btn" href="{ZOOM_OUT}" title="Smaller plots, more per row">&minus;</a>
+      <span class="zoom-label">{ZOOM_PCT}%</span>
+      <a class="btn" href="{ZOOM_IN}" title="Larger plots, fewer per row">+</a>
+      <a class="btn" href="{ZOOM_RESET}" title="Default size">Reset</a>
+      """
 
 _CARD_OK = """\
 <div class="card">
@@ -216,14 +276,38 @@ _CARD_ERR = """\
 </div>"""
 
 
+# Card width at --scale 1.0, and the zoom step/limits of the page's -/+ buttons
+_BASE_CARD_WIDTH_PX = 600
+_SCALE_STEP = 1.25
+_SCALE_MIN = 0.25
+_SCALE_MAX = 4.0
+
+
+def clamp_scale(scale: float) -> float:
+    """Limit *scale* to the supported range."""
+    return min(max(scale, _SCALE_MIN), _SCALE_MAX)
+
+
+def _scale_url(scale: float) -> str:
+    """Return the dashboard URL for the given plot scale."""
+    return f"/?scale={round(clamp_scale(scale), 3):g}"
+
+
 def build_html_page(xvg_files: list[Path], title: str, style: str,
                     figsize: tuple[float, float], dpi: int,
-                    columns: int, refresh: int) -> str:
-    """Render all XVG files and assemble the dashboard HTML."""
+                    columns: int | None, refresh: int,
+                    scale: float = 1.0, default_scale: float = 1.0) -> str:
+    """Render all XVG files and assemble the dashboard HTML.
+
+    *scale* sets the card width (``_BASE_CARD_WIDTH_PX * scale``); the grid fits
+    as many cards per row as the window allows, unless *columns* fixes the count.
+    Plots are rendered at ``dpi * scale`` when enlarged, so they stay sharp.
+    """
+    render_dpi = max(1, round(dpi * max(scale, 1.0)))
     cards = []
     for xvg in xvg_files:
         display_title = get_xvg_display_title(xvg)
-        img_b64, err = render_xvg_to_png_b64(xvg, style=style, figsize=figsize, dpi=dpi)
+        img_b64, err = render_xvg_to_png_b64(xvg, style=style, figsize=figsize, dpi=render_dpi)
         if img_b64:
             cards.append(_CARD_OK.format(TITLE=display_title, FNAME=xvg.name, IMG=img_b64))
         else:
@@ -235,7 +319,19 @@ def build_html_page(xvg_files: list[Path], title: str, style: str,
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     meta = (f"{len(xvg_files)} plot(s) | rendered {now}"
             + (f" | auto-refresh {refresh}s" if refresh else ""))
-    grid_cols = f"repeat({columns}, 1fr)"
+    if columns:
+        # Fixed grid: the scale no longer drives the layout, so hide the zoom buttons
+        grid_cols = f"repeat({columns}, 1fr)"
+        zoom = ""
+    else:
+        card_width = round(_BASE_CARD_WIDTH_PX * scale)
+        grid_cols = f"repeat(auto-fill, minmax(min(100%, {card_width}px), 1fr))"
+        zoom = _ZOOM_CONTROLS.format(
+            ZOOM_OUT=_scale_url(scale / _SCALE_STEP),
+            ZOOM_IN=_scale_url(scale * _SCALE_STEP),
+            ZOOM_RESET=_scale_url(default_scale),
+            ZOOM_PCT=round(scale * 100),
+        )
 
     return _HTML_TEMPLATE.format(
         TITLE=title,
@@ -243,6 +339,8 @@ def build_html_page(xvg_files: list[Path], title: str, style: str,
         CSS=_CSS.replace("{COLUMNS}", grid_cols),
         META=meta,
         CARDS="\n    ".join(cards),
+        ZOOM=zoom,
+        RELOAD=_scale_url(scale),
     )
 
 
@@ -260,8 +358,8 @@ class PanelHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         # Strip query string for path matching
-        path = self.path.split("?")[0]
-        if path not in ("/", "/index.html"):
+        url = urlsplit(self.path)
+        if url.path not in ("/", "/index.html"):
             self.send_error(404)
             return
 
@@ -272,6 +370,13 @@ class PanelHandler(BaseHTTPRequestHandler):
         else:
             xvg_files = find_xvg_files(Path(args.dir))
 
+        # Plot scale from the page's zoom buttons (?scale=...), else --scale
+        scale = args.scale
+        try:
+            scale = clamp_scale(float(parse_qs(url.query)["scale"][0]))
+        except (KeyError, ValueError):
+            pass
+
         html = build_html_page(
             xvg_files,
             title=args.title,
@@ -280,6 +385,8 @@ class PanelHandler(BaseHTTPRequestHandler):
             dpi=args.dpi,
             columns=args.columns,
             refresh=args.refresh,
+            scale=scale,
+            default_scale=args.scale,
         )
         body = html.encode("utf-8")
         self.send_response(200)
@@ -317,7 +424,10 @@ Examples:
   # Serve on a different port with auto-refresh every 60 s
   %(prog)s --dir ./analysis --port 9090 --refresh 60
 
-  # Three-column grid with line+dot style
+  # Larger plots (fewer per row); also adjustable with the -/+ buttons in the page
+  %(prog)s --scale 1.5
+
+  # Fixed three-column grid with line+dot style
   %(prog)s --columns 3 --style lines+dots
 
   # Wider, higher-resolution plot cards
@@ -351,8 +461,15 @@ Examples:
         help="Plot style passed to plot_xvg (default: lines)",
     )
     parser.add_argument(
-        "--columns", "-c", type=int, default=2,
-        help="Number of columns in the plot grid (default: 2)",
+        "--scale", type=float, default=1.0,
+        help="Plot size factor: cards are %d px wide times this factor, and as many "
+             "fit in a row as the window allows (default: 1.0; range %.2g-%.2g). "
+             "Also adjustable from the page" % (_BASE_CARD_WIDTH_PX, _SCALE_MIN, _SCALE_MAX),
+    )
+    parser.add_argument(
+        "--columns", "-c", type=int, default=None,
+        help="Fixed number of columns in the plot grid, overriding the automatic "
+             "layout from --scale (default: automatic)",
     )
     parser.add_argument(
         "--figsize", nargs=2, type=float, default=[9.0, 4.5],
@@ -369,6 +486,8 @@ Examples:
     )
 
     args = parser.parse_args()
+    if not _SCALE_MIN <= args.scale <= _SCALE_MAX:
+        parser.error(f"--scale must be between {_SCALE_MIN} and {_SCALE_MAX}")
 
     directory = Path(args.dir).resolve()
     if not directory.is_dir():

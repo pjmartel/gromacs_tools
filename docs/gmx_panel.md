@@ -20,7 +20,11 @@ output and open the dashboard in a local browser instead of copying files around
   updated `.xvg` files appear on reload (or automatically with `--refresh`)
 - ✅ **Titles from the XVG header**: each card shows the file's `@ title` (and `@ subtitle`), plus the file name
 - ✅ **Fault tolerant**: a file that can't be plotted shows an error card instead of breaking the page
-- ✅ **Configurable layout**: grid columns, figure size, resolution, plot style
+- ✅ **Analysis order**: plots from a directory scan are shown in a fixed, meaningful order
+  (RMSD, secondary structure, RMSF, gyration, SASA, energies; see [Plot Order](#plot-order))
+- ✅ **Scalable plots**: a scale factor (`--scale`, or the −/+ buttons in the page) sets the plot size,
+  and the grid fits as many plots per row as the window allows
+- ✅ **Configurable layout**: fixed grid columns, figure size, resolution, plot style
 - ✅ **No extra dependencies**: uses Python's built-in `http.server`, plus numpy/matplotlib
 
 ## Usage
@@ -43,7 +47,8 @@ Then open `http://localhost:8080/` in a browser. Stop the server with `Ctrl+C`.
 | `--host <addr>` | `0.0.0.0` | Interface to bind to (`0.0.0.0` = all interfaces) |
 | `--title <text>` | `GROMACS Analysis Dashboard` | Page title |
 | `-s, --style <style>` | `lines` | Plot style passed to `plot_xvg`: `dots`, `lines` or `lines+dots` |
-| `-c, --columns <n>` | `2` | Number of columns in the plot grid (collapses to one column on narrow screens) |
+| `--scale <factor>` | `1.0` | Plot size factor, from `0.25` to `4`: each plot card is 600 px wide times this factor, and as many fit in a row as the window allows. Can also be changed from the page (see [Plot Size](#plot-size)) |
+| `-c, --columns <n>` | automatic | Fixed number of columns in the plot grid, overriding the automatic layout from `--scale` (collapses to one column on narrow screens) |
 | `--figsize <W> <H>` | `9 4.5` | Figure size of each plot, in inches |
 | `--dpi <n>` | `100` | Image resolution |
 | `-r, --refresh <s>` | `0` | Auto-refresh interval in seconds (`0` = disabled) |
@@ -53,8 +58,9 @@ Then open `http://localhost:8080/` in a browser. Stop the server with `Ctrl+C`.
 
 1. On startup, the file list is built once to check there is something to show; the server
    exits with an error if no `.xvg` files are found.
-2. On every `GET /`, the directory is re-scanned (unless `--files` fixed the list) and
-   each file is rendered with `plot_xvg.plot_xvg()` using the matplotlib `Agg` backend.
+2. On every `GET /`, the directory is re-scanned (unless `--files` fixed the list), the files
+   are put in the [default order](#plot-order), and each one is rendered with
+   `plot_xvg.plot_xvg()` using the matplotlib `Agg` backend.
 3. Each plot is embedded in the page as a base64 PNG, so the page is a single
    self-contained HTML document (you can also save it from the browser).
 
@@ -66,6 +72,45 @@ as `secondary_structure.dat` are ignored.
 > Rendering happens on every request, so a directory with many large files (e.g. long
 > trajectories at full resolution) can take a few seconds to load. Use `--files` to limit the
 > set, or a lower `--dpi`.
+
+## Plot Order
+
+When scanning a directory, plots are shown in this order, based on the file names written by
+[gmx_analysis.sh](gmx_analysis.md):
+
+| # | Group | Files |
+|---|-------|-------|
+| 1 | RMSD | `rmsd*.xvg` |
+| 2 | Secondary structure (DSSP) | `secondary_structure*.xvg`, `dssp*.xvg` |
+| 3 | RMSF | `rmsf*.xvg` |
+| 4 | Radius of gyration | `gyrat*.xvg` (e.g. `gyration_radius.xvg`) |
+| 5 | SASA | `sasa*.xvg` |
+| 6 | Energy terms | `temperature`, `pressure`, `potential`, `total_energy` (in that order), then any other file titled `GROMACS Energies` (the title `gmx energy` writes, e.g. extra `--energy-terms`) |
+| 7 | Everything else | alphabetically |
+
+File names are matched case-insensitively, and files within a group are sorted alphabetically.
+With `--files`, the plots are shown in the order given instead.
+
+## Plot Size
+
+Each plot card is 600 px wide at scale 1.0. The grid fills each row with as many cards as fit
+in the browser window, stretching them to use the full width. Increasing the scale gives bigger
+plots and fewer per row; decreasing it fits more plots per row. Resizing the window reflows
+the grid.
+
+Set the initial scale with `--scale`, or change it while viewing with the toolbar buttons:
+
+| Button | Action |
+|--------|--------|
+| **−** / **+** | Smaller / larger plots (steps of ×1.25) |
+| **Reset** | Back to the `--scale` value |
+| **Reload** | Re-render the plots, keeping the current scale |
+
+The current scale is part of the page URL (e.g. `http://localhost:8080/?scale=1.5`), so it
+survives auto-refresh and can be bookmarked. When enlarged (scale above 1), plots are rendered
+at `--dpi` × scale so they stay sharp.
+
+With `--columns`, the number of plots per row is fixed and the zoom buttons are hidden.
 
 ## Remote Machines
 
@@ -115,7 +160,13 @@ python bin/gmx_panel.py --dir ./analysis --port 9090 --refresh 60
 ### Layout
 
 ```bash
-# Three-column grid with line+dot style
+# Larger plots, fewer per row (also adjustable with the -/+ buttons in the page)
+python bin/gmx_panel.py --scale 1.5
+
+# Small plots, many per row: a quick overview of many files
+python bin/gmx_panel.py --scale 0.6
+
+# Fixed three-column grid with line+dot style
 python bin/gmx_panel.py --columns 3 --style lines+dots
 
 # Wider, higher-resolution plot cards
