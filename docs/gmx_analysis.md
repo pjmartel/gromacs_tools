@@ -67,9 +67,9 @@ Both positional arguments must come before any option.
 | `--skip-concat` | off | Reuse an existing `<output-dir>/<basename>_<replica>_concat.{xtc,edr}` instead of rebuilding it |
 | `--begin <time>` | - | First frame to analyze, in the unit given by `--tu` |
 | `--end <time>` | - | Last frame to analyze, in the unit given by `--tu` |
-| `--dt <time>` | - | Only use frames spaced by this interval, **always in ps** regardless of `--tu` |
+| `--dt <time>` | - | Only use frames spaced by this interval, **always in ps** regardless of `--tu` (not applied to energy terms, see [Time Units](#time-units)) |
 | `--tu <ps\|ns\|us\|fs>` | `ps` | Unit for `--begin`/`--end` |
-| `--plot-tu <ps\|ns\|us\|fs>` | `ns` | Time unit for the x-axis of every generated `.xvg` (passed as `-tu` to each tool) |
+| `--plot-tu <ps\|ns\|us\|fs>` | `ns` | Time unit for the x-axis of the generated `.xvg` files (passed as `-tu` to each tool that accepts it; energy terms stay in ps) |
 | `-n, --index <file>` | - | Index (`.ndx`) file passed to every tool that accepts one (all except `gmx energy`) |
 | `-g, --group <name>` | `Protein` | Group used for RMSD (calculation), gyration, SASA (surface), secondary structure and RMSF |
 | `--fit-group <name>` | same as `--group` | Group used for the RMSD least-squares fit |
@@ -106,8 +106,17 @@ Two separate options control time:
   range is converted back to this unit before being passed as `-b`/`-e`/`-dt`, because gmx
   tools read those flags in whatever unit `-tu` specifies.
 
-`--dt` is always in ps. `gmx rmsf` has no time axis, so it gets no `-tu` and receives
-`-b`/`-e`/`-dt` in ps to select the frames it averages over.
+`--dt` is always in ps.
+
+Not every gmx tool accepts all of these options, and the set differs between GROMACS
+versions. Before each analysis, the script reads the tool's `-h` output and passes only the
+options it supports:
+
+- Tools without `-tu` get `-b`/`-e`/`-dt` in ps. `gmx rmsf` has no time axis at all; the
+  range only selects the frames it averages over.
+- **`gmx energy` has neither `-tu` nor `-dt`.** Energy terms are therefore always plotted in
+  ps, and use every frame in the `--begin`/`--end` range. The script prints a `Note:` line
+  when an option is left out.
 
 ```bash
 # Analyze 500-1000 ns every 100 ps; plot in ns (the default)

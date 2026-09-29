@@ -30,12 +30,12 @@ set -o pipefail
 #   --begin <time>             First frame to analyze (-b), in the unit given by --tu
 #   --end <time>                Last frame to analyze (-e), in the unit given by --tu
 #   --dt <time>                 Only use frames spaced by this interval (-dt), always in ps
-#                              regardless of --tu
+#                              regardless of --tu (not applied to gmx energy, which has no -dt)
 #   --tu <ps|ns|us|fs>          Unit for --begin/--end (default: ps). Values are
 #                              converted to ps internally before being passed to any tool,
 #                              so results stay consistent across every analysis.
 #   --plot-tu <ps|ns|us|fs>     Time unit for the x-axis of every generated .xvg plot
-#                              (passed as -tu to each gmx tool). Independent of --tu,
+#                              (as -tu, for tools that accept it; gmx energy stays in ps). Independent of --tu,
 #                              which only controls how --begin/--end are interpreted
 #                              (default: ns)
 #
@@ -350,21 +350,9 @@ convert_from_ps() {
             exit 1 ;;
     esac
 }
-begin_plot=""; end_plot=""; dt_plot=""
-[[ -n "${begin_ps}" ]] && begin_plot="$(convert_from_ps "${begin_ps}" "${plot_time_unit}")"
-[[ -n "${end_ps}" ]]   && end_plot="$(convert_from_ps "${end_ps}" "${plot_time_unit}")"
-[[ -n "${dt_ps}" ]]    && dt_plot="$(convert_from_ps "${dt_ps}" "${plot_time_unit}")"
-time_flags=(-tu "${plot_time_unit}")
-[[ -n "${begin_plot}" ]] && time_flags+=(-b "${begin_plot}")
-[[ -n "${end_plot}" ]]   && time_flags+=(-e "${end_plot}")
-[[ -n "${dt_plot}" ]]    && time_flags+=(-dt "${dt_plot}")
-
-# rmsf's x-axis is residue/atom index, not time, so it has no -tu flag;
-# it still needs -b/-e/-dt (in ps) to select the trajectory range to average over.
-traj_range_flags=()
-[[ -n "${begin_ps}" ]] && traj_range_flags+=(-b "${begin_ps}")
-[[ -n "${end_ps}" ]]   && traj_range_flags+=(-e "${end_ps}")
-[[ -n "${dt_ps}" ]]    && traj_range_flags+=(-dt "${dt_ps}")
+convert_from_ps "0" "${plot_time_unit}" > /dev/null  # validate --plot-tu early
+# The per-tool -tu/-b/-e/-dt flags are built by set_time_flags (below), since not
+# every gmx tool accepts all of them
 
 mkdir -p "${output_dir}"
 log_file="${output_dir}/${base_name}_analysis.log"
@@ -462,6 +450,52 @@ has_gmx_dssp() {
     "${gmx_bin}" dssp -h >/dev/null 2>&1
 }
 
+# Returns success if gmx <tool> accepts option <opt>, parsed from its help text
+# (looked up once per tool). Option sets differ between tools and GROMACS versions,
+# e.g. gmx energy has no -tu/-dt. If the help can't be read (e.g. --dry-run without
+# gmx available), every option is assumed to be supported.
+declare -A tool_options_cache=()
+tool_supports() {
+    local tool="$1" opt="$2"
+    if [[ -z "${tool_options_cache[${tool}]+set}" ]]; then
+        tool_options_cache[${tool}]="$( { "${gmx_bin}" "${tool}" -h 2>/dev/null || true; } \
+            | grep -oE '^ +-[A-Za-z0-9_]+' | tr -d ' ' | tr '\n' ' ' || true)"
+    fi
+    [[ -z "${tool_options_cache[${tool}]}" ]] && return 0
+    [[ " ${tool_options_cache[${tool}]} " == *" ${opt} "* ]]
+}
+
+# Sets the time_flags array for gmx <tool> from --begin/--end/--dt/--plot-tu,
+# passing only options the tool supports. Tools with -tu get the --plot-tu unit,
+# and -b/-e/-dt in that unit (gmx reads them in the -tu unit); tools without -tu
+# (e.g. gmx energy, gmx rmsf) read -b/-e/-dt in ps.
+# Pass "range-only" for tools whose x-axis is not time (gmx rmsf), to skip the
+# note about the time axis unit.
+set_time_flags() {
+    local tool="$1" mode="$2" unit="ps"
+    time_flags=()
+    if tool_supports "${tool}" -tu; then
+        unit="${plot_time_unit}"
+        time_flags+=(-tu "${unit}")
+    elif [[ "${mode}" != "range-only" && "${plot_time_unit}" != "ps" ]]; then
+        echo "Note: gmx ${tool} has no -tu option; its time axis stays in ps"
+    fi
+    local opt value_ps
+    for opt in -b -e -dt; do
+        case "${opt}" in
+            -b)  value_ps="${begin_ps}" ;;
+            -e)  value_ps="${end_ps}" ;;
+            -dt) value_ps="${dt_ps}" ;;
+        esac
+        [[ -z "${value_ps}" ]] && continue
+        if tool_supports "${tool}" "${opt}"; then
+            time_flags+=("${opt}" "$(convert_from_ps "${value_ps}" "${unit}")")
+        else
+            echo "Note: gmx ${tool} has no ${opt} option; it is not applied to this analysis"
+        fi
+    done
+}
+
 # Source GROMACS if not already available (skip check in dry-run mode)
 if [[ "${dry_run}" == false ]] && ! command -v "${gmx_bin%% *}" &> /dev/null; then
     if [[ -f /programs/gromacs-2025.2/bin/GMXRC.bash ]]; then
@@ -495,6 +529,7 @@ fi
 
 # --- 2. Energy terms (temperature, pressure, potential, total energy, ...) --
 if should_run energy; then
+    set_time_flags energy
     IFS=',' read -ra terms <<< "${energy_terms}"
     for term in "${terms[@]}"; do
         term="$(echo "${term}" | xargs)"
@@ -509,6 +544,7 @@ fi
 # --- 3. RMSD to reference structure -----------------------------------------
 if should_run rmsd; then
     out="${output_dir}/rmsd.xvg"
+    set_time_flags rms
     cmd=("${gmx_bin}" rms -s "${structure_file}" -f "${concat_xtc}" -o "${out}" -xvg "${xvg_format}" "${index_flag[@]}" "${time_flags[@]}")
     stdin_data="${fit_group}"$'\n'"${group}"
     run_piped_cmd "RMSD (fit=${fit_group}, calc=${group})" "${stdin_data}" "${cmd[@]}" || true
@@ -517,6 +553,7 @@ fi
 # --- 4. Radius of gyration ---------------------------------------------------
 if should_run gyration; then
     out="${output_dir}/gyration_radius.xvg"
+    set_time_flags gyrate
     cmd=("${gmx_bin}" gyrate -s "${structure_file}" -f "${concat_xtc}" -o "${out}" -sel "${group}" -xvg "${xvg_format}" "${index_flag[@]}" "${time_flags[@]}")
     run_cmd "Radius of gyration (${group})" "${cmd[@]}" || true
 fi
@@ -524,6 +561,7 @@ fi
 # --- 5. Solvent accessible surface area --------------------------------------
 if should_run sasa; then
     out="${output_dir}/sasa.xvg"
+    set_time_flags sasa
     cmd=("${gmx_bin}" sasa -s "${structure_file}" -f "${concat_xtc}" -o "${out}" -surface "${group}" -probe "${probe_radius}" -xvg "${xvg_format}" "${index_flag[@]}" "${time_flags[@]}")
     run_cmd "Solvent accessible surface area (${group})" "${cmd[@]}" || true
 fi
@@ -533,6 +571,7 @@ if should_run secondary-structure; then
     if [[ "${dry_run}" == true ]] || has_gmx_dssp; then
         out_dat="${output_dir}/secondary_structure.dat"
         out_num="${output_dir}/secondary_structure_counts.xvg"
+        set_time_flags dssp
         cmd=("${gmx_bin}" dssp -s "${structure_file}" -f "${concat_xtc}" -sel "${group}" \
              -o "${out_dat}" -num "${out_num}" -hmode "${dssp_hmode}" -xvg "${xvg_format}" \
              "${index_flag[@]}" "${time_flags[@]}")
@@ -548,7 +587,9 @@ fi
 # --- 7. RMS fluctuations ------------------------------------------------------
 if should_run rmsf; then
     out="${output_dir}/rmsf.xvg"
-    cmd=("${gmx_bin}" rmsf -s "${structure_file}" -f "${concat_xtc}" -o "${out}" -xvg "${xvg_format}" "${index_flag[@]}" "${traj_range_flags[@]}")
+    # rmsf's x-axis is residue/atom index, not time; -b/-e/-dt only select the frames to average over
+    set_time_flags rmsf range-only
+    cmd=("${gmx_bin}" rmsf -s "${structure_file}" -f "${concat_xtc}" -o "${out}" -xvg "${xvg_format}" "${index_flag[@]}" "${time_flags[@]}")
     [[ "${per_residue}" == true ]] && cmd+=(-res)
     run_piped_cmd "RMS fluctuations (${group})" "${group}" "${cmd[@]}" || true
 fi
