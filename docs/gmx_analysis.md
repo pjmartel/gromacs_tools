@@ -120,18 +120,21 @@ options it supports:
   its time axis in ps; energy terms use every frame in the `--begin`/`--end` range. The
   script prints a `Note:` line when an option (such as `-dt`) is left out.
 
-### Energy plot time unit (`--energy-tu`)
+### Energy plot post-processing (titles and `--energy-tu`)
 
-Energy plots have their own time unit option, `--energy-tu` (default `ps`), independent of
-`--plot-tu`. Since `gmx energy` can't write any other unit, the option is not passed to it.
-Instead, after each energy term is calculated, the script:
+`gmx energy` titles every plot `GROMACS Energies` and can only write its time axis in ps.
+After each energy term is calculated, the script post-processes its `.xvg` file:
 
-1. multiplies the first (time) column of the `.xvg` file by the conversion factor
-   (e.g. `0.001` for ns), leaving every other column and header line untouched, and
-2. changes the x-axis label from `Time (ps)` to the new unit.
+1. **Title**: sets the title to the term's name, taken from the legend `gmx energy` writes
+   (e.g. `Temperature`, `Total Energy`, `Kinetic En.`). This is always done.
+2. **Time unit**: energy plots have their own time unit option, `--energy-tu` (default `ps`),
+   independent of `--plot-tu`. It is not passed to `gmx energy`. Instead, if it is not `ps`, the
+   first (time) column is multiplied by the conversion factor (e.g. `0.001` for ns) and the
+   x-axis label is changed from `Time (ps)` to the new unit.
 
-Both steps are ordinary logged commands (`awk`, then `mv`), so they appear in `--dry-run` output
-and in the reproducibility script.
+Nothing else in the file changes: the data columns and all other header lines are kept as
+`gmx energy` wrote them. The post-processing runs as ordinary logged commands (`awk`, then
+`mv`), so it appears in `--dry-run` output and in the reproducibility script.
 
 ```bash
 # Energy plots in ns, to match the other plots

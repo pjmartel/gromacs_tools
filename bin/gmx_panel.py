@@ -42,8 +42,8 @@ import matplotlib.pyplot as plt            # noqa: E402
 
 # Default presentation order for scanned directories, matching the file names
 # written by gmx_analysis.sh: (file-name prefixes, category) in display order.
-# Energy terms are recognized by name or by the "GROMACS Energies" title that
-# gmx energy writes; anything unrecognized is shown last, alphabetically.
+# Energy terms are recognized by name, or as gmx energy output (see
+# is_gmx_energy_xvg); anything unrecognized is shown last, alphabetically.
 _CATEGORY_PREFIXES = [
     (("rmsd",), "rmsd"),
     (("secondary_structure", "dssp"), "dssp"),
@@ -53,22 +53,33 @@ _CATEGORY_PREFIXES = [
 ]
 _ENERGY_ORDER = ["temperature", "pressure", "potential", "total_energy"]
 _ENERGY_TITLE = "GROMACS Energies"
+# Command line recorded in the XVG header comments, e.g. "#   gmx energy -f ..."
+# (also matches gmx_mpi, or a full path to the gmx binary)
+_ENERGY_COMMAND_RE = re.compile(r"^#\s+\S*gmx\S*\s+energy\b")
 
 
-def read_xvg_title(xvg_path: Path) -> str:
-    """Return the '@ title' of an XVG file, reading only its header."""
+def is_gmx_energy_xvg(xvg_path: Path) -> bool:
+    """Return True if the XVG file was written by gmx energy, reading only its header.
+
+    Detected from the command line gmx records in the header comments, or from
+    the default "GROMACS Energies" title (files not retitled by gmx_analysis.sh).
+    """
     try:
         with open(xvg_path, "r") as f:
             for line in f:
-                if line.startswith("@"):
+                if line.startswith("#"):
+                    if _ENERGY_COMMAND_RE.match(line):
+                        return True
+                elif line.startswith("@"):
                     parts = line.split(None, 2)
-                    if len(parts) == 3 and parts[1] == "title":
-                        return parts[2].strip().strip('"')
-                elif line.strip() and not line.startswith("#"):
+                    if (len(parts) == 3 and parts[1] == "title"
+                            and parts[2].strip().strip('"') == _ENERGY_TITLE):
+                        return True
+                elif line.strip():
                     break  # first data line: end of header
     except OSError:
         pass
-    return ""
+    return False
 
 
 def xvg_sort_key(xvg_path: Path) -> tuple[int, int, str]:
@@ -85,7 +96,7 @@ def xvg_sort_key(xvg_path: Path) -> tuple[int, int, str]:
     energy_rank = len(_CATEGORY_PREFIXES)
     if stem in _ENERGY_ORDER:
         return (energy_rank, _ENERGY_ORDER.index(stem), stem)
-    if read_xvg_title(xvg_path) == _ENERGY_TITLE:
+    if is_gmx_energy_xvg(xvg_path):
         return (energy_rank, len(_ENERGY_ORDER), stem)
     return (energy_rank + 1, 0, stem)
 

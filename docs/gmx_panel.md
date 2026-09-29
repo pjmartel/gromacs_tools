@@ -85,7 +85,7 @@ When scanning a directory, plots are shown in this order, based on the file name
 | 3 | RMSF | `rmsf*.xvg` |
 | 4 | Radius of gyration | `gyrat*.xvg` (e.g. `gyration_radius.xvg`) |
 | 5 | SASA | `sasa*.xvg` |
-| 6 | Energy terms | `temperature`, `pressure`, `potential`, `total_energy` (in that order), then any other file titled `GROMACS Energies` (the title `gmx energy` writes, e.g. extra `--energy-terms`) |
+| 6 | Energy terms | `temperature`, `pressure`, `potential`, `total_energy` (in that order), then any other `gmx energy` output (e.g. extra `--energy-terms`), recognized from the command line recorded in its header, or from the default `GROMACS Energies` title |
 | 7 | Everything else | alphabetically |
 
 File names are matched case-insensitively, and files within a group are sorted alphabetically.

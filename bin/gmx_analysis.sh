@@ -523,25 +523,39 @@ set_time_flags() {
     done
 }
 
-# Rescales the time column (first column) of an .xvg file written in ps to <unit>,
-# and updates its x-axis label to match. Used for gmx energy, which has no -tu option.
+# Post-processes an .xvg file written by gmx energy, which always titles its plots
+# "GROMACS Energies" and has no -tu option:
+#   - sets the title to the energy term name, taken from the file's legend
+#     ('@ s0 legend "Total Energy"' -> '@ title "Total Energy"')
+#   - if <unit> is not ps, rescales the time column (first column) to <unit> and
+#     updates the x-axis label to match; otherwise data lines are left untouched
 # Runs through run_cmd, so it is logged to --save-script and honors --dry-run.
-scale_xvg_time() {
-    local xvg="$1" unit="$2" factor
+postprocess_energy_xvg() {
+    local xvg="$1" unit="$2" factor desc
     case "${unit}" in
         ps) factor="1" ;;
         ns) factor="0.001" ;;
         us) factor="0.000001" ;;
         fs) factor="1000" ;;
     esac
-    local prog='/^[@#]/ || NF == 0 {
-        if ($0 ~ /^@ *xaxis +label/) sub(/\(ps\)/, "(" unit ")")
+    # Two passes over the file: the first only reads the legend (which follows the title)
+    local prog='FNR == NR {
+        if (name == "" && $0 ~ /^@ +s0 +legend/) {
+            name = $0; sub(/^@ +s0 +legend +/, "", name); gsub(/"/, "", name)
+        }
+        next
+    }
+    /^[@#]/ || NF == 0 {
+        if (name != "" && $0 ~ /^@ +title /) $0 = "@    title \"" name "\""
+        if (factor != 1 && $0 ~ /^@ *xaxis +label/) sub(/\(ps\)/, "(" unit ")")
         print > out; next
     }
-    { $1 = sprintf("%.6f", $1 * factor); print > out }'
-    run_cmd "Convert time axis of $(basename "${xvg}") to ${unit}" \
-        awk -v factor="${factor}" -v unit="${unit}" -v out="${xvg}.tmp" "${prog}" "${xvg}" &&
-    run_cmd "Replace $(basename "${xvg}") with the converted file" mv "${xvg}.tmp" "${xvg}"
+    { if (factor != 1) $1 = sprintf("%.6f", $1 * factor); print > out }'
+    desc="Set title of $(basename "${xvg}") to the energy term name"
+    [[ "${unit}" != "ps" ]] && desc+=", convert its time axis to ${unit}"
+    run_cmd "${desc}" \
+        awk -v factor="${factor}" -v unit="${unit}" -v out="${xvg}.tmp" "${prog}" "${xvg}" "${xvg}" &&
+    run_cmd "Replace $(basename "${xvg}") with the processed file" mv "${xvg}.tmp" "${xvg}"
 }
 
 # Source GROMACS if not already available (skip check in dry-run mode)
@@ -586,9 +600,7 @@ if should_run energy; then
         out="${output_dir}/${slug}.xvg"
         cmd=("${gmx_bin}" energy -f "${concat_edr}" -s "${structure_file}" -o "${out}" -xvg "${xvg_format}" "${time_flags[@]}")
         if run_piped_cmd "Energy term: ${term}" "${term}" "${cmd[@]}"; then
-            if [[ "${energy_time_unit}" != "ps" ]]; then
-                scale_xvg_time "${out}" "${energy_time_unit}" || true
-            fi
+            postprocess_energy_xvg "${out}" "${energy_time_unit}" || true
         fi
     done
 fi
