@@ -35,9 +35,12 @@ set -o pipefail
 #                              converted to ps internally before being passed to any tool,
 #                              so results stay consistent across every analysis.
 #   --plot-tu <ps|ns|us|fs>     Time unit for the x-axis of every generated .xvg plot
-#                              (as -tu, for tools that accept it; gmx energy stays in ps). Independent of --tu,
+#                              (as -tu, for tools that accept it; energy terms use --energy-tu). Independent of --tu,
 #                              which only controls how --begin/--end are interpreted
 #                              (default: ns)
+#   --energy-tu <ps|ns|us|fs>   Time unit for the x-axis of the energy-term plots (default: ps).
+#                              gmx energy has no -tu option, so the time column of its .xvg
+#                              output is rescaled after the calculation
 #
 # Group/selection:
 #   -n, --index <file>         Optional index (.ndx) file passed to every tool that accepts one
@@ -96,7 +99,7 @@ set -o pipefail
 #   ./gmx_analysis.sh MnMT4_apo 0 --dry-run --save-script run_analysis.sh
 
 print_usage() {
-    sed -n '3,84p' "$0" | sed -e 's/^# \{0,1\}//'
+    sed -n '3,87p' "$0" | sed -e 's/^# \{0,1\}//'
 }
 
 original_invocation="$0 $*"
@@ -137,6 +140,7 @@ end_time=""
 dt_time=""
 time_unit="ps"
 plot_time_unit="ns"
+energy_time_unit="ps"
 skip_list=""
 only_list=""
 energy_terms="Temperature,Pressure,Potential,Total-Energy"
@@ -184,6 +188,9 @@ while [[ $# -gt 0 ]]; do
         --plot-tu)
             [[ -z "$2" || "$2" == --* ]] && { echo "Error: $1 requires a value"; exit 1; }
             plot_time_unit="$2"; shift 2 ;;
+        --energy-tu)
+            [[ -z "$2" || "$2" == --* ]] && { echo "Error: $1 requires a value"; exit 1; }
+            energy_time_unit="$2"; shift 2 ;;
         --skip)
             [[ -z "$2" || "$2" == --* ]] && { echo "Error: $1 requires a value"; exit 1; }
             skip_list="$2"; shift 2 ;;
@@ -351,6 +358,12 @@ convert_from_ps() {
     esac
 }
 convert_from_ps "0" "${plot_time_unit}" > /dev/null  # validate --plot-tu early
+case "${energy_time_unit}" in
+    ps|ns|us|fs) ;;
+    *)
+        echo "Error: Unsupported --energy-tu unit '${energy_time_unit}' (use ps, ns, us, or fs)" >&2
+        exit 1 ;;
+esac
 # The per-tool -tu/-b/-e/-dt flags are built by set_time_flags (below), since not
 # every gmx tool accepts all of them
 
@@ -469,12 +482,13 @@ tool_supports() {
 # passing only options the tool supports. Tools with -tu get the --plot-tu unit,
 # and -b/-e/-dt in that unit (gmx reads them in the -tu unit); tools without -tu
 # (e.g. gmx energy, gmx rmsf) read -b/-e/-dt in ps.
-# Pass "range-only" for tools whose x-axis is not time (gmx rmsf), to skip the
-# note about the time axis unit.
+# Pass "range-only" for tools whose time axis is not set with -tu: gmx rmsf (no
+# time axis) and gmx energy (rescaled afterwards, see --energy-tu). These always
+# get -b/-e/-dt in ps and never -tu.
 set_time_flags() {
     local tool="$1" mode="$2" unit="ps"
     time_flags=()
-    if tool_supports "${tool}" -tu; then
+    if [[ "${mode}" != "range-only" ]] && tool_supports "${tool}" -tu; then
         unit="${plot_time_unit}"
         time_flags+=(-tu "${unit}")
     elif [[ "${mode}" != "range-only" && "${plot_time_unit}" != "ps" ]]; then
@@ -494,6 +508,27 @@ set_time_flags() {
             echo "Note: gmx ${tool} has no ${opt} option; it is not applied to this analysis"
         fi
     done
+}
+
+# Rescales the time column (first column) of an .xvg file written in ps to <unit>,
+# and updates its x-axis label to match. Used for gmx energy, which has no -tu option.
+# Runs through run_cmd, so it is logged to --save-script and honors --dry-run.
+scale_xvg_time() {
+    local xvg="$1" unit="$2" factor
+    case "${unit}" in
+        ps) factor="1" ;;
+        ns) factor="0.001" ;;
+        us) factor="0.000001" ;;
+        fs) factor="1000" ;;
+    esac
+    local prog='/^[@#]/ || NF == 0 {
+        if ($0 ~ /^@ *xaxis +label/) sub(/\(ps\)/, "(" unit ")")
+        print > out; next
+    }
+    { $1 = sprintf("%.6f", $1 * factor); print > out }'
+    run_cmd "Convert time axis of $(basename "${xvg}") to ${unit}" \
+        awk -v factor="${factor}" -v unit="${unit}" -v out="${xvg}.tmp" "${prog}" "${xvg}" &&
+    run_cmd "Replace $(basename "${xvg}") with the converted file" mv "${xvg}.tmp" "${xvg}"
 }
 
 # Source GROMACS if not already available (skip check in dry-run mode)
@@ -529,7 +564,7 @@ fi
 
 # --- 2. Energy terms (temperature, pressure, potential, total energy, ...) --
 if should_run energy; then
-    set_time_flags energy
+    set_time_flags energy range-only
     IFS=',' read -ra terms <<< "${energy_terms}"
     for term in "${terms[@]}"; do
         term="$(echo "${term}" | xargs)"
@@ -537,7 +572,11 @@ if should_run energy; then
         slug="$(echo "${term}" | tr '[:upper:]' '[:lower:]' | tr '-' '_')"
         out="${output_dir}/${slug}.xvg"
         cmd=("${gmx_bin}" energy -f "${concat_edr}" -s "${structure_file}" -o "${out}" -xvg "${xvg_format}" "${time_flags[@]}")
-        run_piped_cmd "Energy term: ${term}" "${term}" "${cmd[@]}" || true
+        if run_piped_cmd "Energy term: ${term}" "${term}" "${cmd[@]}"; then
+            if [[ "${energy_time_unit}" != "ps" ]]; then
+                scale_xvg_time "${out}" "${energy_time_unit}" || true
+            fi
+        fi
     done
 fi
 

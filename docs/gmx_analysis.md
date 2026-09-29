@@ -18,7 +18,8 @@ analysis is written to its own clearly named `.xvg` file in one output directory
 - ✅ **Six analysis categories**: energy terms, RMSD, radius of gyration, SASA, secondary structure (DSSP), RMSF
 - ✅ **Selectable analyses** via `--only` / `--skip`
 - ✅ **Time slicing** with `--begin`/`--end`/`--dt`, given in any unit via `--tu`
-- ✅ **Plot time unit** (`--plot-tu`, default `ns`) independent of the slicing unit
+- ✅ **Plot time unit** (`--plot-tu`, default `ns`) independent of the slicing unit, and a separate
+  unit for the energy plots (`--energy-tu`, default `ps`)
 - ✅ **Custom groups** from an index file (`-n/--index`)
 - ✅ **Fault tolerant**: a failing analysis is reported and skipped; the remaining analyses still run
 - ✅ **Dry-run mode** to preview commands without running them
@@ -69,7 +70,8 @@ Both positional arguments must come before any option.
 | `--end <time>` | - | Last frame to analyze, in the unit given by `--tu` |
 | `--dt <time>` | - | Only use frames spaced by this interval, **always in ps** regardless of `--tu` (not applied to energy terms, see [Time Units](#time-units)) |
 | `--tu <ps\|ns\|us\|fs>` | `ps` | Unit for `--begin`/`--end` |
-| `--plot-tu <ps\|ns\|us\|fs>` | `ns` | Time unit for the x-axis of the generated `.xvg` files (passed as `-tu` to each tool that accepts it; energy terms stay in ps) |
+| `--plot-tu <ps\|ns\|us\|fs>` | `ns` | Time unit for the x-axis of the generated `.xvg` files (passed as `-tu` to each tool that accepts it; energy terms use `--energy-tu`) |
+| `--energy-tu <ps\|ns\|us\|fs>` | `ps` | Time unit for the x-axis of the energy-term `.xvg` files, applied by rescaling their time column after `gmx energy` runs |
 | `-n, --index <file>` | - | Index (`.ndx`) file passed to every tool that accepts one (all except `gmx energy`) |
 | `-g, --group <name>` | `Protein` | Group used for RMSD (calculation), gyration, SASA (surface), secondary structure and RMSF |
 | `--fit-group <name>` | same as `--group` | Group used for the RMSD least-squares fit |
@@ -114,9 +116,27 @@ options it supports:
 
 - Tools without `-tu` get `-b`/`-e`/`-dt` in ps. `gmx rmsf` has no time axis at all; the
   range only selects the frames it averages over.
-- **`gmx energy` has neither `-tu` nor `-dt`.** Energy terms are therefore always plotted in
-  ps, and use every frame in the `--begin`/`--end` range. The script prints a `Note:` line
-  when an option is left out.
+- **`gmx energy` has neither `-tu` nor `-dt`.** It always gets `-b`/`-e` in ps and writes
+  its time axis in ps; energy terms use every frame in the `--begin`/`--end` range. The
+  script prints a `Note:` line when an option (such as `-dt`) is left out.
+
+### Energy plot time unit (`--energy-tu`)
+
+Energy plots have their own time unit option, `--energy-tu` (default `ps`), independent of
+`--plot-tu`. Since `gmx energy` can't write any other unit, the option is not passed to it.
+Instead, after each energy term is calculated, the script:
+
+1. multiplies the first (time) column of the `.xvg` file by the conversion factor
+   (e.g. `0.001` for ns), leaving every other column and header line untouched, and
+2. changes the x-axis label from `Time (ps)` to the new unit.
+
+Both steps are ordinary logged commands (`awk`, then `mv`), so they appear in `--dry-run` output
+and in the reproducibility script.
+
+```bash
+# Energy plots in ns, to match the other plots
+bash bin/gmx_analysis.sh MnMT4_apo 0 --energy-tu ns
+```
 
 ```bash
 # Analyze 500-1000 ns every 100 ps; plot in ns (the default)
