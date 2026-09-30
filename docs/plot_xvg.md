@@ -15,6 +15,7 @@ A powerful plotting tool that handles everything from simple time series to comp
 - ✅ **Trajectory slicing**: Analyze specific simulation portions
 - ✅ **Multi-file overlay**: Compare multiple datasets
 - ✅ **2D/3D correlations**: Correlation analysis
+- ✅ **Statistics box**: show the `gmx energy` average, RMSD and drift on energy plots (`--stats`)
 - ✅ **Extensive customization**: Styles, colors, labels, sizes
 - ✅ **Publication-ready**: High DPI, multiple formats (PNG, PDF, SVG)
 
@@ -118,6 +119,31 @@ python bin/plot_xvg.py rmsd.xvg --start 1000 --style lines
 # Analyze early trajectory only
 python bin/plot_xvg.py energy.xvg --end 2000
 ```
+
+## Statistics Box (`--stats`)
+
+For energy terms, [gmx_analysis.sh](gmx_analysis.md) adds the statistics that `gmx energy`
+prints to each `.xvg` file, as a header comment line:
+
+```
+# gmx_analysis stats: Average=299.99 Err.Est.=0.098 RMSD=3.53537 Tot-Drift=0.6368 unit=K
+```
+
+With `--stats`, these values are shown in a small text box in the top-left corner of the plot:
+
+```bash
+python bin/plot_xvg.py analysis/temperature.xvg --style lines --stats
+```
+
+- The legend is placed in the top-right corner (instead of the automatic `best` position),
+  so the box and legend never overlap.
+- Files without a statistics line (e.g. RMSD, or `.xvg` files from plain `gmx energy`) are
+  plotted exactly as without `--stats`.
+- Only single-file plots are supported; with several files, `--multi` or correlations,
+  `--stats` is ignored with a warning.
+- The values are shown as `gmx energy` printed them. Which values appear, and in what order,
+  is set by `STATS_FIELDS` at the top of `plot_xvg.py` (default: Average, RMSD, Tot-Drift;
+  `Err.Est.` is also available), with display names in `STATS_LABELS`.
 
 ## Customization Options
 

@@ -33,7 +33,21 @@ if _cli_backend:
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.offsetbox import AnchoredText
 from mpl_toolkits.mplot3d import Axes3D
+
+# Statistics shown in the --stats text box, read from the "# gmx_analysis stats: ..."
+# header line that gmx_analysis.sh adds to gmx energy .xvg files. Edit STATS_FIELDS to
+# choose which values are shown, and in which order. Available keys: Average,
+# Err.Est., RMSD, Tot-Drift (all in the quantity's unit, given by the line's unit=).
+STATS_FIELDS = ["Average", "RMSD", "Tot-Drift"]
+STATS_LABELS = {
+    "Average": "Average",
+    "Err.Est.": "Err. est.",
+    "RMSD": "RMSD",
+    "Tot-Drift": "Total drift",
+}
+STATS_COMMENT_PREFIX = "# gmx_analysis stats:"
 
 def moving_average(data, window_size):
   if window_size < 1:
@@ -50,6 +64,46 @@ def build_title(labels, default='', show_subtitle=True):
     return title
 
 
+def parse_stats_comment(line):
+    """Parse a '# gmx_analysis stats: Key=value ... unit=<unit>' header line.
+
+    Returns a dict of the values (as strings, formatted as gmx energy printed them)
+    plus 'unit'. The unit comes last on the line and may be empty.
+    """
+    body = line[len(STATS_COMMENT_PREFIX):].strip()
+    body, _, unit = body.partition('unit=')
+    stats = {}
+    for token in body.split():
+        key, sep, value = token.partition('=')
+        if sep:
+            stats[key] = value
+    stats['unit'] = unit.strip()
+    return stats
+
+
+def format_stats_text(stats):
+    """Return the text for the --stats box (one line per STATS_FIELDS entry), or None."""
+    unit = f" {stats['unit']}" if stats.get('unit') else ''
+    lines = [f"{STATS_LABELS.get(key, key)}: {stats[key]}{unit}"
+             for key in STATS_FIELDS if key in stats]
+    return "\n".join(lines) if lines else None
+
+
+def add_stats_box(ax, labels):
+    """Draw the statistics from the XVG header (labels['stats']) in a text box in the
+    top-left corner of *ax*. Returns True if a box was drawn (the file had statistics)."""
+    text = format_stats_text(labels['stats']) if 'stats' in labels else None
+    if not text:
+        return False
+    box = AnchoredText(text, loc='upper left', prop=dict(size='small'),
+                       frameon=True, pad=0.4, borderpad=0.6)
+    box.patch.set_boxstyle('round,pad=0.3')
+    box.patch.set_alpha(0.8)
+    box.set_zorder(5)  # above the data
+    ax.add_artist(box)
+    return True
+
+
 def parse_xvg(filename):
     legends = {}
     labels = {}
@@ -58,6 +112,9 @@ def parse_xvg(filename):
     with open(filename, 'r') as f:
         for line in f:
             line = line.strip()
+            if line.startswith(STATS_COMMENT_PREFIX):
+                labels['stats'] = parse_stats_comment(line)
+                continue
             if not line or line.startswith('#'):
                 continue
 
@@ -86,7 +143,7 @@ def parse_xvg(filename):
 def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots', 
              scatter_colormap='viridis', use_scatter=False, use_histogram=False, 
              hist_bins=50, markersize=3, start_row=None, end_row=None, columns=None,
-             custom_legends=None, show_subtitle=True):
+             custom_legends=None, show_subtitle=True, show_stats=False):
     """Plot a single XVG file and return (fig, ax) without displaying.
 
     The previous implementation called plt.show() internally which prevented
@@ -112,6 +169,11 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
         Custom legend labels for each column. If provided, overrides XVG legend metadata.
     show_subtitle : bool
         If True (default), append the XVG '@ subtitle' text as a second title line.
+    show_stats : bool
+        If True, show the statistics from a '# gmx_analysis stats:' header line (written
+        by gmx_analysis.sh for energy terms) in a text box in the top-left corner, and
+        place the legend in the top-right corner so the two never overlap. Files without
+        statistics are plotted as usual.
     """
     data_columns, legends, labels = parse_xvg(filename)
     
@@ -146,6 +208,11 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
 
     fig, ax = plt.subplots(figsize=(10, 6))
 
+    # With a stats box (top left), pin the legend to the top right instead of 'best',
+    # which only avoids the data, not other boxes
+    stats_shown = show_stats and add_stats_box(ax, labels)
+    legend_loc = 'upper right' if stats_shown else 'best'
+
     if use_histogram:
         # Histogram mode: plot distribution of second column (y values)
         for i in range(num_datasets):
@@ -157,7 +224,7 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
         ax.set_ylabel('Frequency')
         ax.set_title(build_title(labels, 'Distribution', show_subtitle))
         if num_datasets > 1 or legends:
-            ax.legend()
+            ax.legend(loc=legend_loc)
     else:
         # Standard xy plot mode
         for i in range(num_datasets):
@@ -191,7 +258,7 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
         ax.set_ylabel(labels.get('ylabel', 'Y-axis'))
         ax.set_title(build_title(labels, '', show_subtitle))
         if num_datasets > 1 or legends:
-            ax.legend()
+            ax.legend(loc=legend_loc)
     
     ax.grid(True)
     fig.tight_layout()
@@ -436,6 +503,12 @@ Examples:
 
     parser.add_argument('--no-subtitle', action='store_true',
                         help='Do not display the XVG "@ subtitle" text as a second title line.')
+
+    parser.add_argument('--stats', action='store_true',
+                        help='Show the gmx energy statistics (average, RMSD, drift) that '
+                             'gmx_analysis.sh adds to energy .xvg files, in a text box in the '
+                             'top-left corner; the legend moves to the top right. '
+                             'Single-file plots only.')
     
     parser.add_argument('--xlabel', type=str,
                         help='Custom x-axis label (overrides XVG label)')
@@ -1029,6 +1102,9 @@ def main():
             print("Incorrect: script.py --legends \"Label A\" \"Label B\" file.xvg", file=sys.stderr)
         return 1
     
+    if args.stats and (args.xy_correlation or args.multi or len(args.files) > 1):
+        print("Warning: --stats is only supported for single-file plots; ignored.", file=sys.stderr)
+
     try:
         if args.xy_correlation:
             if args.multi:
@@ -1057,7 +1133,8 @@ def main():
                                style=args.style, scatter_colormap=args.colormap, use_scatter=args.scatter,
                                use_histogram=args.histogram, hist_bins=args.bins, markersize=args.markersize,
                                start_row=args.start, end_row=args.end, columns=args.columns,
-                               custom_legends=args.legends, show_subtitle=not args.no_subtitle)
+                               custom_legends=args.legends, show_subtitle=not args.no_subtitle,
+                               show_stats=args.stats)
             
             apply_plot_customization(ax, args, is_3d=False)
 
