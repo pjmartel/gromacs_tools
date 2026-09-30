@@ -559,14 +559,30 @@ postprocess_energy_xvg() {
     # Reads three inputs, told apart by the role=... assignments on the command line:
     # the gmx energy output (stats table), then the .xvg twice (the first pass only reads
     # the legend, which follows the title), writing the result on the second pass.
-    local prog='role == "stats" {
-        # Summary table row: "<name>  Average  Err.Est.  RMSD  Tot-Drift  (unit)", where
-        # <name> may contain spaces, so fields are counted from the end
-        if ($0 ~ /^-----/) { in_table = 1; next }
-        if (in_table && stats == "" && NF >= 6 && $NF ~ /^\(.*\)$/) {
-            u = $NF; gsub(/[()]/, "", u)
-            stats = "# gmx_analysis stats: Average=" $(NF-4) " Err.Est.=" $(NF-3) \
-                    " RMSD=" $(NF-2) " Tot-Drift=" $(NF-1) " unit=" u
+    local prog='function is_num(v) { return v ~ /^[-+]?([0-9]+[.]?[0-9]*|[.][0-9]+)([eE][-+]?[0-9]+)?$/ }
+    role == "stats" {
+        # Summary table: a header line, a line of dashes, then the row
+        #   "<name>  Average  Err.Est.  RMSD  Tot-Drift  (unit)"
+        # where <name> may contain spaces, so fields are counted from the end. The output
+        # also holds other text (e.g. the GROMACS quote, other dashed lines), so only the
+        # first line after that exact header + dashes is used, and only if its values are
+        # numbers (Err.Est. is "--" when there is too little data to estimate it).
+        if (stats != "" || done_table) next
+        if (!in_header && $0 ~ /^Energy[ \t]+Average[ \t]+Err[.]Est[.][ \t]+RMSD[ \t]+Tot-Drift/) {
+            in_header = 1; next
+        }
+        if (in_header && !in_table) {
+            if ($0 ~ /^-+[ \t]*$/) in_table = 1; else in_header = 0
+            next
+        }
+        if (in_table) {
+            done_table = 1
+            if (NF >= 6 && $NF ~ /^\(.*\)$/ && is_num($(NF-4)) && is_num($(NF-2)) \
+                    && is_num($(NF-1)) && (is_num($(NF-3)) || $(NF-3) == "--")) {
+                u = $NF; gsub(/[()]/, "", u)
+                stats = "# gmx_analysis stats: Average=" $(NF-4) " Err.Est.=" $(NF-3) \
+                        " RMSD=" $(NF-2) " Tot-Drift=" $(NF-1) " unit=" u
+            }
         }
         next
     }
