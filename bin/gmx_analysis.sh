@@ -443,7 +443,13 @@ run_cmd() {
 }
 
 # Same as run_cmd, but feeds $stdin_data (already containing literal newlines) to the tool.
+# With --capture <file>, the tool's output is also saved to <file> (overwritten), e.g. to
+# parse the summary table gmx energy prints; it is still appended to log_file as well.
 run_piped_cmd() {
+    local capture_file=""
+    if [[ "$1" == "--capture" ]]; then
+        capture_file="$2"; shift 2
+    fi
     local desc="$1"; shift
     local stdin_data="$1"; shift
     echo ""
@@ -456,6 +462,7 @@ run_piped_cmd() {
             while IFS= read -r line; do echo "    '${line}' \\"; done <<< "${stdin_data}"
             printf '  | '
             printf '%q ' "$@"
+            [[ -n "${capture_file}" ]] && printf '> %q 2>&1' "${capture_file}"
             echo ""
         } >> "${save_script}"
     fi
@@ -463,7 +470,14 @@ run_piped_cmd() {
         echo "(dry run: not executed)"
         return 0
     fi
-    if printf '%s\n' "${stdin_data}" | "$@" >> "${log_file}" 2>&1; then
+    local status=0
+    if [[ -n "${capture_file}" ]]; then
+        printf '%s\n' "${stdin_data}" | "$@" > "${capture_file}" 2>&1 || status=$?
+        cat "${capture_file}" >> "${log_file}"
+    else
+        printf '%s\n' "${stdin_data}" | "$@" >> "${log_file}" 2>&1 || status=$?
+    fi
+    if [[ ${status} -eq 0 ]]; then
         echo "✓ ${desc} completed"
         return 0
     else
@@ -529,21 +543,43 @@ set_time_flags() {
 #     ('@ s0 legend "Total Energy"' -> '@ title "Total Energy"')
 #   - if <unit> is not ps, rescales the time column (first column) to <unit> and
 #     updates the x-axis label to match; otherwise data lines are left untouched
+#   - adds the statistics gmx energy printed for the term (read from <stats_file>, its
+#     captured output) as a header comment line, e.g.
+#       # gmx_analysis stats: Average=299.99 Err.Est.=0.098 RMSD=3.53537 Tot-Drift=0.6368 unit=K
+#     which plot_xvg.py --stats shows in a text box; <stats_file> is removed afterwards
 # Runs through run_cmd, so it is logged to --save-script and honors --dry-run.
 postprocess_energy_xvg() {
-    local xvg="$1" unit="$2" factor desc
+    local xvg="$1" unit="$2" stats_file="$3" factor desc
     case "${unit}" in
         ps) factor="1" ;;
         ns) factor="0.001" ;;
         us) factor="0.000001" ;;
         fs) factor="1000" ;;
     esac
-    # Two passes over the file: the first only reads the legend (which follows the title)
-    local prog='FNR == NR {
+    # Reads three inputs, told apart by the role=... assignments on the command line:
+    # the gmx energy output (stats table), then the .xvg twice (the first pass only reads
+    # the legend, which follows the title), writing the result on the second pass.
+    local prog='role == "stats" {
+        # Summary table row: "<name>  Average  Err.Est.  RMSD  Tot-Drift  (unit)", where
+        # <name> may contain spaces, so fields are counted from the end
+        if ($0 ~ /^-----/) { in_table = 1; next }
+        if (in_table && stats == "" && NF >= 6 && $NF ~ /^\(.*\)$/) {
+            u = $NF; gsub(/[()]/, "", u)
+            stats = "# gmx_analysis stats: Average=" $(NF-4) " Err.Est.=" $(NF-3) \
+                    " RMSD=" $(NF-2) " Tot-Drift=" $(NF-1) " unit=" u
+        }
+        next
+    }
+    role == "scan" {
         if (name == "" && $0 ~ /^@ +s0 +legend/) {
             name = $0; sub(/^@ +s0 +legend +/, "", name); gsub(/"/, "", name)
         }
         next
+    }
+    # role == "out": stats line goes at the end of the leading # comment block
+    !stats_done && !/^#/ {
+        if (stats != "") print stats > out
+        stats_done = 1
     }
     /^[@#]/ || NF == 0 {
         if (name != "" && $0 ~ /^@ +title /) $0 = "@    title \"" name "\""
@@ -551,11 +587,13 @@ postprocess_energy_xvg() {
         print > out; next
     }
     { if (factor != 1) $1 = sprintf("%.6f", $1 * factor); print > out }'
-    desc="Set title of $(basename "${xvg}") to the energy term name"
+    desc="Set title of $(basename "${xvg}") to the energy term name, add its statistics"
     [[ "${unit}" != "ps" ]] && desc+=", convert its time axis to ${unit}"
     run_cmd "${desc}" \
-        awk -v factor="${factor}" -v unit="${unit}" -v out="${xvg}.tmp" "${prog}" "${xvg}" "${xvg}" &&
-    run_cmd "Replace $(basename "${xvg}") with the processed file" mv "${xvg}.tmp" "${xvg}"
+        awk -v factor="${factor}" -v unit="${unit}" -v out="${xvg}.tmp" "${prog}" \
+            role=stats "${stats_file}" role=scan "${xvg}" role=out "${xvg}" &&
+    run_cmd "Replace $(basename "${xvg}") with the processed file" mv "${xvg}.tmp" "${xvg}" &&
+    run_cmd "Remove temporary gmx energy output" rm -f "${stats_file}"
 }
 
 # Source GROMACS if not already available (skip check in dry-run mode)
@@ -599,8 +637,12 @@ if should_run energy; then
         slug="$(echo "${term}" | tr '[:upper:]' '[:lower:]' | tr '-' '_')"
         out="${output_dir}/${slug}.xvg"
         cmd=("${gmx_bin}" energy -f "${concat_edr}" -s "${structure_file}" -o "${out}" -xvg "${xvg_format}" "${time_flags[@]}")
-        if run_piped_cmd "Energy term: ${term}" "${term}" "${cmd[@]}"; then
-            postprocess_energy_xvg "${out}" "${energy_time_unit}" || true
+        # gmx energy's output is captured to a temporary file, to read its statistics table
+        stats_file="${out}.energy.txt"
+        if run_piped_cmd --capture "${stats_file}" "Energy term: ${term}" "${term}" "${cmd[@]}"; then
+            postprocess_energy_xvg "${out}" "${energy_time_unit}" "${stats_file}" || true
+        else
+            rm -f "${stats_file}"
         fi
     done
 fi

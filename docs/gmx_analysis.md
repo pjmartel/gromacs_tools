@@ -120,7 +120,7 @@ options it supports:
   its time axis in ps; energy terms use every frame in the `--begin`/`--end` range. The
   script prints a `Note:` line when an option (such as `-dt`) is left out.
 
-### Energy plot post-processing (titles and `--energy-tu`)
+### Energy plot post-processing (titles, `--energy-tu` and statistics)
 
 `gmx energy` titles every plot `GROMACS Energies` and can only write its time axis in ps.
 After each energy term is calculated, the script post-processes its `.xvg` file:
@@ -131,6 +131,17 @@ After each energy term is calculated, the script post-processes its `.xvg` file:
    independent of `--plot-tu`. It is not passed to `gmx energy`. Instead, if it is not `ps`, the
    first (time) column is multiplied by the conversion factor (e.g. `0.001` for ns) and the
    x-axis label is changed from `Time (ps)` to the new unit.
+3. **Statistics**: adds the summary `gmx energy` prints for the term (average, error
+   estimate, RMSD and total drift over the analyzed range) as a header comment line:
+
+   ```
+   # gmx_analysis stats: Average=299.99 Err.Est.=0.098 RMSD=3.53537 Tot-Drift=0.6368 unit=K
+   ```
+
+   Other tools ignore `#` lines, so the file stays a normal `.xvg`. `plot_xvg.py --stats` and
+   `gmx_panel.py --stats` show these values in a text box on the plot. To read the table,
+   `gmx energy`'s output is saved to a temporary `<term>.xvg.energy.txt` file, which is
+   removed afterwards.
 
 Nothing else in the file changes: the data columns and all other header lines are kept as
 `gmx energy` wrote them. The post-processing runs as ordinary logged commands (`awk`, then
