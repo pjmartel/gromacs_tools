@@ -125,13 +125,16 @@ def find_xvg_files(directory: Path, names: list[str] | None = None) -> list[Path
 # ---------------------------------------------------------------------------
 
 def render_xvg_to_png_b64(xvg_path: Path, style: str, figsize: tuple[float, float],
-                            dpi: int) -> tuple[str | None, str | None]:
+                            dpi: int, show_stats: bool = False) -> tuple[str | None, str | None]:
     """Render *xvg_path* to a base64-encoded PNG.
+
+    With *show_stats*, plot_xvg draws the gmx energy statistics box on files that
+    have them (energy terms from gmx_analysis.sh).
 
     Returns ``(b64_string, None)`` on success or ``(None, error_message)`` on failure.
     """
     try:
-        fig, _ax = plot_xvg(str(xvg_path), style=style)
+        fig, _ax = plot_xvg(str(xvg_path), style=style, show_stats=show_stats)
         fig.set_size_inches(*figsize)
         buf = io.BytesIO()
         fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
@@ -196,6 +199,8 @@ header h1 { font-size: 1.3rem; color: #e06c75; font-weight: 700; }
     transition: background 0.15s;
 }
 .btn:hover { background: #3a3a70; }
+.btn-on { background: #e06c75; border-color: #e06c75; color: #12121f; }
+.btn-on:hover { background: #e8878f; }
 .zoom-label { font-size: 0.8rem; color: #888; font-family: monospace; min-width: 3.5rem; text-align: center; }
 .grid {
     display: grid;
@@ -251,7 +256,8 @@ _HTML_TEMPLATE = """\
       <div class="header-meta">{META}</div>
     </div>
     <div class="toolbar">
-      {ZOOM}<a class="btn" href="{RELOAD}">&#8635; Reload</a>
+      {ZOOM}<a class="btn{STATS_CLASS}" href="{STATS_URL}" title="Show/hide the gmx energy statistics on energy plots">Stats</a>
+      <a class="btn" href="{RELOAD}">&#8635; Reload</a>
     </div>
   </header>
   <div class="grid">
@@ -299,26 +305,33 @@ def clamp_scale(scale: float) -> float:
     return min(max(scale, _SCALE_MIN), _SCALE_MAX)
 
 
-def _scale_url(scale: float) -> str:
-    """Return the dashboard URL for the given plot scale."""
-    return f"/?scale={round(clamp_scale(scale), 3):g}"
+def _page_url(scale: float, stats: bool) -> str:
+    """Return the dashboard URL for the given plot scale and statistics setting.
+
+    Both are always included, so each toolbar button keeps the other setting, and
+    stats=0 overrides a --stats default.
+    """
+    return f"/?scale={round(clamp_scale(scale), 3):g}&stats={int(stats)}"
 
 
 def build_html_page(xvg_files: list[Path], title: str, style: str,
                     figsize: tuple[float, float], dpi: int,
                     columns: int | None, refresh: int,
-                    scale: float = 1.0, default_scale: float = 1.0) -> str:
+                    scale: float = 1.0, default_scale: float = 1.0,
+                    show_stats: bool = False) -> str:
     """Render all XVG files and assemble the dashboard HTML.
 
     *scale* sets the card width (``_BASE_CARD_WIDTH_PX * scale``); the grid fits
     as many cards per row as the window allows, unless *columns* fixes the count.
     Plots are rendered at ``dpi * scale`` when enlarged, so they stay sharp.
+    *show_stats* shows the gmx energy statistics box on energy plots.
     """
     render_dpi = max(1, round(dpi * max(scale, 1.0)))
     cards = []
     for xvg in xvg_files:
         display_title = get_xvg_display_title(xvg)
-        img_b64, err = render_xvg_to_png_b64(xvg, style=style, figsize=figsize, dpi=render_dpi)
+        img_b64, err = render_xvg_to_png_b64(xvg, style=style, figsize=figsize, dpi=render_dpi,
+                                             show_stats=show_stats)
         if img_b64:
             cards.append(_CARD_OK.format(TITLE=display_title, FNAME=xvg.name, IMG=img_b64))
         else:
@@ -338,9 +351,9 @@ def build_html_page(xvg_files: list[Path], title: str, style: str,
         card_width = round(_BASE_CARD_WIDTH_PX * scale)
         grid_cols = f"repeat(auto-fill, minmax(min(100%, {card_width}px), 1fr))"
         zoom = _ZOOM_CONTROLS.format(
-            ZOOM_OUT=_scale_url(scale / _SCALE_STEP),
-            ZOOM_IN=_scale_url(scale * _SCALE_STEP),
-            ZOOM_RESET=_scale_url(default_scale),
+            ZOOM_OUT=_page_url(scale / _SCALE_STEP, show_stats),
+            ZOOM_IN=_page_url(scale * _SCALE_STEP, show_stats),
+            ZOOM_RESET=_page_url(default_scale, show_stats),
             ZOOM_PCT=round(scale * 100),
         )
 
@@ -351,7 +364,9 @@ def build_html_page(xvg_files: list[Path], title: str, style: str,
         META=meta,
         CARDS="\n    ".join(cards),
         ZOOM=zoom,
-        RELOAD=_scale_url(scale),
+        STATS_CLASS=" btn-on" if show_stats else "",
+        STATS_URL=_page_url(scale, not show_stats),
+        RELOAD=_page_url(scale, show_stats),
     )
 
 
@@ -381,12 +396,17 @@ class PanelHandler(BaseHTTPRequestHandler):
         else:
             xvg_files = find_xvg_files(Path(args.dir))
 
-        # Plot scale from the page's zoom buttons (?scale=...), else --scale
+        # Plot scale and statistics setting from the page's toolbar buttons
+        # (?scale=...&stats=0|1), else --scale / --stats
+        query = parse_qs(url.query)
         scale = args.scale
         try:
-            scale = clamp_scale(float(parse_qs(url.query)["scale"][0]))
+            scale = clamp_scale(float(query["scale"][0]))
         except (KeyError, ValueError):
             pass
+        show_stats = args.stats
+        if query.get("stats", [""])[0] in ("0", "1"):
+            show_stats = query["stats"][0] == "1"
 
         html = build_html_page(
             xvg_files,
@@ -398,6 +418,7 @@ class PanelHandler(BaseHTTPRequestHandler):
             refresh=args.refresh,
             scale=scale,
             default_scale=args.scale,
+            show_stats=show_stats,
         )
         body = html.encode("utf-8")
         self.send_response(200)
@@ -438,6 +459,9 @@ Examples:
   # Larger plots (fewer per row); also adjustable with the -/+ buttons in the page
   %(prog)s --scale 1.5
 
+  # Show the gmx energy statistics on energy plots (also toggled by the Stats button)
+  %(prog)s --dir ./MnMT4_apo_0_analysis --stats
+
   # Fixed three-column grid with line+dot style
   %(prog)s --columns 3 --style lines+dots
 
@@ -470,6 +494,12 @@ Examples:
         "--style", "-s", type=str, default="lines",
         choices=["dots", "lines", "lines+dots"],
         help="Plot style passed to plot_xvg (default: lines)",
+    )
+    parser.add_argument(
+        "--stats", action="store_true",
+        help="Show the gmx energy statistics (average, RMSD, drift) that gmx_analysis.sh "
+             "adds to energy .xvg files, in a box on each energy plot (default: off; "
+             "also toggled by the Stats button in the page)",
     )
     parser.add_argument(
         "--scale", type=float, default=1.0,

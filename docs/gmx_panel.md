@@ -24,6 +24,8 @@ output and open the dashboard in a local browser instead of copying files around
   (RMSD, secondary structure, RMSF, gyration, SASA, energies; see [Plot Order](#plot-order))
 - ✅ **Scalable plots**: a scale factor (`--scale`, or the −/+ buttons in the page) sets the plot size,
   and the grid fits as many plots per row as the window allows
+- ✅ **Energy statistics**: optionally show the `gmx energy` average, RMSD and drift on each energy
+  plot (`--stats`, or the **Stats** button; see [Energy Statistics](#energy-statistics))
 - ✅ **Configurable layout**: fixed grid columns, figure size, resolution, plot style
 - ✅ **No extra dependencies**: uses Python's built-in `http.server`, plus numpy/matplotlib
 
@@ -47,6 +49,7 @@ Then open `http://localhost:8080/` in a browser. Stop the server with `Ctrl+C`.
 | `--host <addr>` | `0.0.0.0` | Interface to bind to (`0.0.0.0` = all interfaces) |
 | `--title <text>` | `GROMACS Analysis Dashboard` | Page title |
 | `-s, --style <style>` | `lines` | Plot style passed to `plot_xvg`: `dots`, `lines` or `lines+dots` |
+| `--stats` | off | Show the `gmx energy` statistics box on energy plots (see [Energy Statistics](#energy-statistics)). Can also be toggled from the page |
 | `--scale <factor>` | `1.0` | Plot size factor, from `0.25` to `4`: each plot card is 600 px wide times this factor, and as many fit in a row as the window allows. Can also be changed from the page (see [Plot Size](#plot-size)) |
 | `-c, --columns <n>` | automatic | Fixed number of columns in the plot grid, overriding the automatic layout from `--scale` (collapses to one column on narrow screens) |
 | `--figsize <W> <H>` | `9 4.5` | Figure size of each plot, in inches |
@@ -104,13 +107,28 @@ Set the initial scale with `--scale`, or change it while viewing with the toolba
 |--------|--------|
 | **−** / **+** | Smaller / larger plots (steps of ×1.25) |
 | **Reset** | Back to the `--scale` value |
-| **Reload** | Re-render the plots, keeping the current scale |
+| **Stats** | Show/hide the [energy statistics](#energy-statistics) (highlighted when shown) |
+| **Reload** | Re-render the plots, keeping the current settings |
 
-The current scale is part of the page URL (e.g. `http://localhost:8080/?scale=1.5`), so it
-survives auto-refresh and can be bookmarked. When enlarged (scale above 1), plots are rendered
+The current scale and statistics setting are part of the page URL (e.g.
+`http://localhost:8080/?scale=1.5&stats=1`), so they survive auto-refresh and can be bookmarked. When enlarged (scale above 1), plots are rendered
 at `--dpi` × scale so they stay sharp.
 
-With `--columns`, the number of plots per row is fixed and the zoom buttons are hidden.
+With `--columns`, the number of plots per row is fixed and the zoom buttons are hidden (the
+**Stats** button remains).
+
+## Energy Statistics
+
+For energy terms, [gmx_analysis.sh](gmx_analysis.md) stores the statistics `gmx energy`
+prints (average, error estimate, RMSD and total drift) in each `.xvg` file. With `--stats`,
+or the **Stats** toolbar button, each energy plot shows the average, RMSD and total drift in a
+small box in its top-left corner, and its legend moves to the top-right corner. The box is
+drawn by [plot_xvg.py --stats](plot_xvg.md#statistics-box---stats), which also sets which
+values are shown.
+
+The statistics are off by default. Plots without statistics (RMSD, RMSF, ..., or energy files
+produced before this feature) are unaffected; re-run the energy step of `gmx_analysis.sh` to
+add statistics to older files.
 
 ## Remote Machines
 
