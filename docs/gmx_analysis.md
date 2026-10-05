@@ -24,7 +24,7 @@ analysis is written to its own clearly named `.xvg` file in one output directory
 - ✅ **Fault tolerant**: a failing analysis is reported and skipped; the remaining analyses still run
 - ✅ **Dry-run mode** to preview commands without running them
 - ✅ **Command logging** (on by default): every command run, plus the exact invocation used, is
-  saved to `<output-dir>/gmx_analysis_commands.sh` (override with `--save-script`), written even with `--dry-run`
+  saved to `<output-dir>/gmx_analysis_commands.sh` (override with `--save-script`), written even with `--dry-run`; the file from an earlier run is kept as `…_commands.1.sh`, `.2.sh`, … (highest number = most recent)
 
 ## Pipeline
 

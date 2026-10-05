@@ -18,7 +18,7 @@ Automates the complete setup pipeline from initial PDB structure to a fully prep
 - ✅ **Professional logging**: Python logging module with INFO/WARNING/ERROR levels
 - ✅ **System summary**: Post-pipeline statistics (atoms, box volume, composition)
 - ✅ **Enhanced error hints**: Step-specific troubleshooting guidance
-- ✅ Command logging to `gmx_prepare_commands.sh` for reproducibility
+- ✅ Command logging to `gmx_prepare_commands.sh` for reproducibility; the file from an earlier run is kept as `…_commands.1.sh`, `.2.sh`, … (highest number = most recent)
 - ✅ **Dry-run mode**: Preview workflow with configuration summary
 - ✅ **Verbose mode**: Detailed debug output with `--verbose` flag
 

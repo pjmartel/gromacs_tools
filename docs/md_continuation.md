@@ -22,7 +22,7 @@ Automates the continuation of molecular dynamics simulations by:
 - ✅ **Flexible**: Optional parameters for customization
 - ✅ **Idempotent**: Re-running same command is safe
 - ✅ **Command logging** (on by default): every gmx command run, plus the exact invocation used,
-  is saved to `gmx_continue_grompp_commands.sh` / `gmx_continue_extend_commands.sh`
+  is saved to `gmx_continue_grompp_commands.sh` / `gmx_continue_extend_commands.sh`; the file from an earlier run is kept as `…_commands.1.sh`, `.2.sh`, … (highest number = most recent)
   (override with `--commands-file`)
 
 ## Quick Start

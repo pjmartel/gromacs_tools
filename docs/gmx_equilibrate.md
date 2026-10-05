@@ -18,7 +18,7 @@ Automates the complete equilibration workflow from energy minimization through N
 - ✅ **Professional logging**: Python logging module with INFO/WARNING/ERROR levels
 - ✅ **Progress tracking**: Clear [1/4], [2/4], [3/4], [4/4] stage indicators
 - ✅ **Dry-run mode**: Preview all commands before execution
-- ✅ **Command logging**: Reproducible pipeline saved to `gmx_equilibrate_commands.sh`
+- ✅ **Command logging**: Reproducible pipeline saved to `gmx_equilibrate_commands.sh`; the file from an earlier run is kept as `…_commands.1.sh`, `.2.sh`, … (highest number = most recent)
 - ✅ **Error hints**: Context-specific troubleshooting guidance
 
 ## Requirements

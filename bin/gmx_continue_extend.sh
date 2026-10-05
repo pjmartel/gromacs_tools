@@ -62,9 +62,34 @@
 original_invocation="$0 $*"
 commands_file="gmx_continue_extend_commands.sh"
 
+# If <file> exists, rename it to the next numbered backup before it is overwritten:
+# name.sh -> name.1.sh, name.2.sh, ... (highest number = most recent), so the commands
+# of earlier runs are kept. Files not ending in .sh become name.1, name.2, ...
+backup_existing_file() {
+    local file="$1"
+    [[ -e "${file}" ]] || return 0
+    local base="${file##*/}"
+    local prefix="${file%"${base}"}"
+    local stem="${base}" ext=""
+    if [[ "${base}" == *.sh ]]; then
+        stem="${base%.sh}"; ext=".sh"
+    fi
+    local max=0 f n
+    for f in "${prefix}${stem}".*"${ext}"; do
+        n="${f#"${prefix}${stem}."}"; n="${n%"${ext}"}"
+        if [[ "${n}" =~ ^[0-9]+$ ]] && (( 10#${n} > max )); then
+            max=$(( 10#${n} ))
+        fi
+    done
+    local backup="${prefix}${stem}.$(( max + 1 ))${ext}"
+    mv "${file}" "${backup}"
+    echo "Previous commands file kept as: ${backup}"
+}
+
 # Reproducibility script: records every gmx command this run executes, plus the
 # exact command line used to invoke this script
 init_commands_file() {
+    backup_existing_file "${commands_file}"
     {
         echo "#!/bin/bash -e"
         echo "# Commands executed by gmx_continue_extend.sh"

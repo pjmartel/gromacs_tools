@@ -28,7 +28,7 @@ segment.
 - ✅ **STOP file**: create `./STOP` to halt cleanly after the current segment
 - ✅ **PLUMED support** via `--plumed`
 - ✅ **Command logging** (on by default): every gmx command run, plus the exact invocation used,
-  is saved to `gmx_continue_extend_commands.sh` (override with `--commands-file`)
+  is saved to `gmx_continue_extend_commands.sh` (override with `--commands-file`); the file from an earlier run is kept as `…_commands.1.sh`, `.2.sh`, … (highest number = most recent)
 
 ## Usage
 

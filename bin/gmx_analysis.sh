@@ -388,7 +388,32 @@ log_file="${output_dir}/${base_name}_analysis.log"
     echo "=========================================="
 } > "${log_file}"
 
+# If <file> exists, rename it to the next numbered backup before it is overwritten:
+# name.sh -> name.1.sh, name.2.sh, ... (highest number = most recent), so the commands
+# of earlier runs are kept. Files not ending in .sh become name.1, name.2, ...
+backup_existing_file() {
+    local file="$1"
+    [[ -e "${file}" ]] || return 0
+    local base="${file##*/}"
+    local prefix="${file%"${base}"}"
+    local stem="${base}" ext=""
+    if [[ "${base}" == *.sh ]]; then
+        stem="${base%.sh}"; ext=".sh"
+    fi
+    local max=0 f n
+    for f in "${prefix}${stem}".*"${ext}"; do
+        n="${f#"${prefix}${stem}."}"; n="${n%"${ext}"}"
+        if [[ "${n}" =~ ^[0-9]+$ ]] && (( 10#${n} > max )); then
+            max=$(( 10#${n} ))
+        fi
+    done
+    local backup="${prefix}${stem}.$(( max + 1 ))${ext}"
+    mv "${file}" "${backup}"
+    echo "Previous commands file kept as: ${backup}"
+}
+
 if [[ -n "${save_script}" ]]; then
+    backup_existing_file "${save_script}"
     {
         echo "#!/bin/bash -e"
         echo "# Commands executed by gmx_analysis.sh"

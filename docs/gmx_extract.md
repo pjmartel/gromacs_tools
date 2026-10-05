@@ -19,7 +19,7 @@ optionally written out as a multi-model PDB.
 - ✅ **Custom `.ndx` groups**: any group defined in `-n/--index` is a valid `-g`/`--center-group`/`--fit-group` value; requested groups are validated against `gmx make_ndx` output up front, and `--list-groups` prints every available group for a `.tpr`/`.ndx` pair
 - ✅ **Dry-run mode** to preview commands without running them
 - ✅ **Command logging** (on by default): every command run, plus the exact invocation used, is
-  saved to `<outdir>/gmx_extract_commands.sh` (override with `--save-script`), written even with `--dry-run`
+  saved to `<outdir>/gmx_extract_commands.sh` (override with `--save-script`), written even with `--dry-run`; the file from an earlier run is kept as `…_commands.1.sh`, `.2.sh`, … (highest number = most recent)
 
 ## Pipeline Stages
 

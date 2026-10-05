@@ -17,7 +17,7 @@ Performs complete PCA workflow from trajectory preprocessing through eigenvector
 - ✅ Customizable PBC and fitting options
 - ✅ Batch processing support
 - ✅ **Command logging** (on by default): every GROMACS command run, plus the exact invocation
-  used, is saved to `<outdir>/gromacs_pca_commands.sh` (override with `--commands-file`)
+  used, is saved to `<outdir>/gromacs_pca_commands.sh` (override with `--commands-file`); the file from an earlier run is kept as `…_commands.1.sh`, `.2.sh`, … (highest number = most recent)
 
 ## Requirements
 

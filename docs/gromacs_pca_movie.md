@@ -14,7 +14,7 @@ Creates animated trajectories that visualize the motion captured by specific pri
 - ✅ Compatible with all molecular viewers
 - ✅ Multiple output formats (PDB, XTC, TRR)
 - ✅ **Command logging** (on by default): every GROMACS command run, plus the exact invocation
-  used, is saved to `<outdir>/gromacs_pca_movie_commands.sh` (override with `--commands-file`)
+  used, is saved to `<outdir>/gromacs_pca_movie_commands.sh` (override with `--commands-file`); the file from an earlier run is kept as `…_commands.1.sh`, `.2.sh`, … (highest number = most recent)
 
 ## Requirements
 

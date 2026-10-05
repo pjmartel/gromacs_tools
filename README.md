@@ -129,8 +129,11 @@ gromacs_tools/
 ## 🎯 Key Features
 
 - **Automation**: Reduce manual GROMACS command execution
-- **Reproducibility**: Every tool logs every command it runs (plus its own exact invocation) to a
-  `<tool_name>_commands.sh` script by default, even in dry-run mode
+- **Reproducibility**: Every tool logs every command it runs (plus its own exact invocation and
+  the date) to a `<tool_name>_commands.sh` script by default, even in dry-run mode. Running a
+  tool again keeps the previous script as `<tool_name>_commands.1.sh`, `.2.sh`, … (the highest
+  number is the most recent), so a series of runs, e.g. `gmx_analysis.sh --only rmsd`, then
+  `--only energy`, keeps every step's commands
 - **Safety**: Dry-run modes, crash recovery, validation checks
 - **Flexibility**: Extensive customization options
 - **Documentation**: Comprehensive guides and examples

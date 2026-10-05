@@ -46,10 +46,36 @@ def setup_logging(verbose=False):
         datefmt='%H:%M:%S'
     )
 
+def backup_existing_file(path):
+    """If *path* exists, rename it to the next numbered backup before it is overwritten.
+
+    name.sh -> name.1.sh, name.2.sh, ... (highest number = most recent), so the commands
+    of earlier runs are kept. Files not ending in .sh become name.1, name.2, ...
+    Returns the backup path, or None if *path* did not exist.
+    """
+    path = Path(path)
+    if not path.exists():
+        return None
+    stem, suffix = (path.stem, path.suffix) if path.suffix == ".sh" else (path.name, "")
+    prefix = stem + "."
+    max_n = 0
+    for p in path.parent.iterdir():
+        name = p.name
+        if name.startswith(prefix) and name.endswith(suffix):
+            n = name[len(prefix):len(name) - len(suffix)]
+            if n.isdigit():
+                max_n = max(max_n, int(n))
+    backup = path.with_name(f"{stem}.{max_n + 1}{suffix}")
+    path.rename(backup)
+    return backup
+
 def set_command_script_path(path):
     """Set the global path for logging commands."""
     global _command_script_path
     _command_script_path = path
+    backup = backup_existing_file(path)
+    if backup:
+        logging.getLogger(__name__).info(f"Previous commands file kept as: {backup}")
     with open(path, 'w') as f:
         f.write("#!/bin/bash\n")
         f.write("# GROMACS equilibration pipeline commands\n")
