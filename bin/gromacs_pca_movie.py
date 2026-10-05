@@ -326,6 +326,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     
     # Initialize command logging script
     command_script = outdir / args.commands_file
+    command_script.parent.mkdir(parents=True, exist_ok=True)  # --outdir may not exist yet
     set_command_script_path(command_script)
     
     # Validation
