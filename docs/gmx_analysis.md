@@ -14,7 +14,8 @@ analysis is written to its own clearly named `.xvg` file in one output directory
 
 - ✅ **Automatic segment discovery**: finds every `<basename>_<replica>_<start>_<end>.xtc` in
   `--segments-dir`, sorts them numerically by start time, and checks each has a matching `.edr` and `.tpr`
-- ✅ **Concatenation** with `gmx trjcat` / `gmx eneconv` (reusable later with `--skip-concat`)
+- ✅ **Concatenation** with `gmx trjcat` / `gmx eneconv` (reusable later with `--skip-concat`), or on its
+  own with `--concat-only`
 - ✅ **Six analysis categories**: energy terms, RMSD, radius of gyration, SASA, secondary structure (DSSP), RMSF
 - ✅ **Selectable analyses** via `--only` / `--skip`
 - ✅ **Time slicing** with `--begin`/`--end`/`--dt`, given in any unit via `--tu`
@@ -66,6 +67,7 @@ Both positional arguments must come before any option.
 | `--segments-dir <dir>` | `.` | Directory containing the segment files |
 | `--structure <file>` | `.tpr` of the earliest segment | Reference `.tpr`/`.gro`/`.pdb` used for all analyses (including as the RMSD reference) |
 | `--skip-concat` | off | Reuse an existing `<output-dir>/<basename>_<replica>_concat.{xtc,edr}` instead of rebuilding it |
+| `--concat-only` | off | Only build the concatenated `.xtc`/`.edr` files, then stop without running any analysis. Cannot be combined with `--only`, `--skip` or `--skip-concat` |
 | `--begin <time>` | - | First frame to analyze, in the unit given by `--tu` |
 | `--end <time>` | - | Last frame to analyze, in the unit given by `--tu` |
 | `--dt <time>` | - | Only use frames spaced by this interval, **always in ps** regardless of `--tu` (not applied to energy terms, see [Time Units](#time-units)) |
@@ -201,6 +203,9 @@ bash bin/gmx_analysis.sh MnMT4_apo 0 -n index.ndx --fit-group C-alpha --group Ac
 ### Selecting Analyses
 
 ```bash
+# Only concatenate the segments (no analysis), e.g. to inspect the trajectory first
+bash bin/gmx_analysis.sh MnMT4_apo 0 --concat-only
+
 # Only recompute RMSD and RMSF, reusing the already concatenated trajectory
 bash bin/gmx_analysis.sh MnMT4_apo 0 --only rmsd,rmsf --skip-concat
 

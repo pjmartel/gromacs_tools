@@ -25,6 +25,9 @@ set -o pipefail
 #                              (default: the .tpr of the earliest/first segment found)
 #   --skip-concat              Reuse an existing "<output-dir>/<basename>_<replica>_concat.{xtc,edr}"
 #                              instead of rebuilding it from the segments
+#   --concat-only              Only build the concatenated trajectory and energy files, then
+#                              stop without running any analysis (cannot be combined with
+#                              --only, --skip or --skip-concat)
 #
 # Time range / sampling:
 #   --begin <time>             First frame to analyze (-b), in the unit given by --tu
@@ -149,6 +152,7 @@ probe_radius="0.14"
 dssp_hmode="gromacs"
 per_residue=true
 skip_concat=false
+concat_only=false
 xvg_format="xmgrace"
 gmx_bin="gmx"
 dry_run=false
@@ -211,6 +215,8 @@ while [[ $# -gt 0 ]]; do
             per_residue=false; shift ;;
         --skip-concat)
             skip_concat=true; shift ;;
+        --concat-only)
+            concat_only=true; shift ;;
         --xvg-format)
             [[ -z "$2" || "$2" == --* ]] && { echo "Error: $1 requires a value"; exit 1; }
             xvg_format="$2"; shift 2 ;;
@@ -241,6 +247,19 @@ output_dir="${output_dir:-${base_name}_analysis}"
 
 # Default reproducibility script name, unless overridden with --save-script
 save_script="${save_script:-${output_dir}/gmx_analysis_commands.sh}"
+
+# --concat-only stops before the analyses, so options selecting analyses (or skipping the
+# concatenation itself) would silently do nothing: reject the combination instead
+if [[ "${concat_only}" == true ]]; then
+    conflict=""
+    if [[ -n "${only_list}" ]]; then conflict="--only"; fi
+    if [[ -n "${skip_list}" ]]; then conflict="--skip"; fi
+    if [[ "${skip_concat}" == true ]]; then conflict="--skip-concat"; fi
+    if [[ -n "${conflict}" ]]; then
+        echo "Error: --concat-only cannot be combined with ${conflict}"
+        exit 1
+    fi
+fi
 
 if [[ ! -d "${segments_dir}" ]]; then
     echo "Error: Segments directory '${segments_dir}' not found"
@@ -437,7 +456,11 @@ echo "Group:           ${group} (fit group for RMSD: ${fit_group})"
 [[ -n "${end_ps}" ]]   && echo "End:             ${end_ps} ps"
 [[ -n "${dt_ps}" ]]    && echo "dt:              ${dt_ps} ps"
 echo "Plot time unit:  ${plot_time_unit}"
-echo "Energy terms:    ${energy_terms}"
+if [[ "${concat_only}" == true ]]; then
+    echo "Analyses:        none (--concat-only)"
+else
+    echo "Energy terms:    ${energy_terms}"
+fi
 echo "Output dir:      ${output_dir}"
 echo "===================================="
 
@@ -666,6 +689,20 @@ else
 
     cmd=("${gmx_bin}" eneconv -f "${seg_edr[@]}" -o "${concat_edr}")
     run_cmd "Concatenate ${#seg_edr[@]} energy segment(s)" "${cmd[@]}"
+fi
+
+if [[ "${concat_only}" == true ]]; then
+    echo ""
+    echo "=== Concatenation complete (--concat-only) ==="
+    if [[ "${dry_run}" == true ]]; then
+        echo "Dry run: no files were written."
+    else
+        echo "Concatenated files:"
+        echo "  - ${concat_xtc}"
+        echo "  - ${concat_edr}"
+        echo "Analyze them later with --skip-concat. Full command log: ${log_file}"
+    fi
+    exit 0
 fi
 
 # --- 2. Energy terms (temperature, pressure, potential, total energy, ...) --
