@@ -94,8 +94,11 @@ python bin/plot_xvg.py r1a.xvg r2a.xvg r1b.xvg r2b.xvg \
 
 ### Working with Multi-Column Files
 
+Columns are numbered as in the file, counting from 0: column 0 is normally time (the default
+x-axis), so `--columns 1` is the file's second column.
+
 ```bash
-# Plot only columns 1, 3, and 5 (1-indexed)
+# Plot only columns 1, 3, and 5
 python bin/plot_xvg.py multicolumn.xvg --columns 1 3 5
 
 # Add custom legends
@@ -106,6 +109,33 @@ python bin/plot_xvg.py data.xvg --columns 1 2 3 \
 python bin/plot_xvg.py raw_data.dat \
     --columns 1 2 --legends "Temperature" "Pressure" --style lines
 ```
+
+### Choosing the X Column (`--xcol`)
+
+By default the first column (column 0) is the x-axis. `--xcol N` uses file column `N` instead,
+with the same numbering as `--columns`, to plot one quantity against another from the same file:
+
+```bash
+# Plot the 3rd column against the 2nd (columns 2 vs 1, counting from 0)
+python bin/plot_xvg.py data.xvg --xcol 1 --columns 2
+
+# Same, with points coloured by time order
+python bin/plot_xvg.py data.xvg --xcol 1 --columns 2 --scatter
+
+# Without --columns: every column except column 0 (time) and the x column
+python bin/plot_xvg.py data.xvg --xcol 1
+
+# Time on the y-axis is possible too
+python bin/plot_xvg.py data.xvg --xcol 1 --columns 0
+```
+
+- The x-axis label is the x column's legend from the file header (or `Column N` if it has
+  none). The y-axis keeps the file's y label, which usually holds the unit; override either
+  with `--xlabel` / `--ylabel`.
+- Points are connected in file (row) order, so for quantities that go back and forth, dots
+  (the default) or `--scatter` usually work better than `--style lines`.
+- Works for single files and `--multi` overlays (the same columns from each file).
+  `--xcol` has no effect with `--histogram` or `--xy-correlation`, which have their own axes.
 
 ## Trajectory Slicing
 

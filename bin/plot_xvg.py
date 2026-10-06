@@ -157,10 +157,61 @@ def parse_xvg(filename):
 
     return data_by_columns, legends, labels
 
+def select_xy_columns(data_columns, legends, labels, xcol=0, columns=None):
+    """Choose the x column and the y columns to plot.
+
+    Columns are numbered as in the file, counting from 0 (column 0 is normally time).
+
+    Parameters
+    ----------
+    data_columns, legends, labels : as returned by parse_xvg (legends[i] belongs to
+        file column i + 1)
+    xcol : int
+        File column used as the x-axis (default 0).
+    columns : list of int or None
+        File columns to plot as y. If None: every column except column 0 and xcol.
+
+    Returns
+    -------
+    (data, legends, xlabel): data[0] is the x column and data[1:] the y columns, legends
+    maps each y column's position (0, 1, ...) to its label, and xlabel is the default x-axis
+    label. With xcol=0 the result is the same as plotting the file's columns directly.
+    """
+    ncols = len(data_columns)
+    if not 0 <= xcol < ncols:
+        raise ValueError(f"--xcol {xcol} out of range: the file has columns 0-{ncols - 1}")
+
+    if xcol == 0:
+        # Default x-axis (normally time)
+        xlabel = labels.get('xlabel', 'X-axis')
+        if columns is None:
+            return data_columns, legends, xlabel
+        for col_idx in columns:
+            if col_idx < 1 or col_idx > ncols - 1:
+                raise ValueError(f"Column index {col_idx} out of range. Valid range: 1-{ncols - 1}")
+    else:
+        xlabel = legends.get(xcol - 1, f'Column {xcol}')
+        if columns is None:
+            columns = [c for c in range(1, ncols) if c != xcol]
+        for col_idx in columns:
+            if not 0 <= col_idx < ncols or col_idx == xcol:
+                raise ValueError(f"Column index {col_idx} out of range. Valid range: 0-{ncols - 1}, "
+                                 f"except the x column ({xcol})")
+
+    def column_label(col_idx):
+        if col_idx == 0:  # column 0 (normally time) plotted as y
+            return labels.get('xlabel', 'Column 0')
+        return legends.get(col_idx - 1, f'Dataset {col_idx}')
+
+    selected_data = [data_columns[xcol]] + [data_columns[c] for c in columns]
+    selected_legends = {i: column_label(c) for i, c in enumerate(columns)}
+    return selected_data, selected_legends, xlabel
+
+
 def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots', 
              scatter_colormap='viridis', use_scatter=False, use_histogram=False, 
              hist_bins=50, markersize=3, start_row=None, end_row=None, columns=None,
-             custom_legends=None, show_subtitle=True, show_stats=False):
+             custom_legends=None, show_subtitle=True, show_stats=False, xcol=0):
     """Plot a single XVG file and return (fig, ax) without displaying.
 
     The previous implementation called plt.show() internally which prevented
@@ -180,8 +231,8 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
     end_row : int or None
         Last data row to include (exclusive, 0-indexed). If None, include until end.
     columns : list of int or None
-        Specific column indices (1-indexed) to plot. If None, plot all columns.
-        Example: [1, 3, 5] plots only columns 1, 3, and 5.
+        File columns (counting from 0) to plot as y. If None, plot all columns except
+        column 0 and xcol. Example: [1, 3, 5] plots only columns 1, 3, and 5.
     custom_legends : list of str or None
         Custom legend labels for each column. If provided, overrides XVG legend metadata.
     show_subtitle : bool
@@ -191,6 +242,9 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
         by gmx_analysis.sh for energy terms) in a text box in the top-left corner, and
         place the legend in the top-right corner so the two never overlap. Files without
         statistics are plotted as usual.
+    xcol : int
+        File column (counting from 0) used as the x-axis (default 0, normally time).
+        Points are connected in file (row) order.
     """
     data_columns, legends, labels = parse_xvg(filename)
     
@@ -198,23 +252,9 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
     if start_row is not None or end_row is not None:
         data_columns = [list(col)[start_row:end_row] for col in data_columns]
     
+    data_columns, legends, xlabel = select_xy_columns(data_columns, legends, labels,
+                                                      xcol, columns)
     x = data_columns[0]
-    
-    # Filter columns if specified (columns are 1-indexed from user perspective)
-    if columns is not None:
-        # Validate column indices
-        max_col = len(data_columns) - 1  # exclude x-column
-        for col_idx in columns:
-            if col_idx < 1 or col_idx > max_col:
-                raise ValueError(f"Column index {col_idx} out of range. Valid range: 1-{max_col}")
-        # Keep only selected columns
-        selected_data = [x] + [data_columns[col_idx] for col_idx in columns]
-        # Update legends to match selected columns
-        selected_legends = {i: legends.get(col_idx - 1, f'Dataset {col_idx}') 
-                           for i, col_idx in enumerate(columns)}
-        data_columns = selected_data
-        legends = selected_legends
-    
     num_datasets = len(data_columns) - 1
     
     # Apply custom legends if provided (overrides XVG metadata)
@@ -271,7 +311,7 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
                 ax.plot(x_avg, y_avg, label=f'{label} (Moving Avg, window={window_size})',
                         linestyle='--', linewidth=2)
 
-        ax.set_xlabel(labels.get('xlabel', 'X-axis'))
+        ax.set_xlabel(xlabel)
         ax.set_ylabel(labels.get('ylabel', 'Y-axis'))
         ax.set_title(build_title(labels, '', show_subtitle))
         if num_datasets > 1 or legends:
@@ -286,7 +326,7 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
 def plot_xvg_multi(filename, show_moving_avg=False, window_size=10, ax=None, 
                    custom_legend=None, style='dots', scatter_colormap='viridis', 
                    use_scatter=False, use_histogram=False, hist_bins=50, markersize=3,
-                   start_row=None, end_row=None, columns=None, show_subtitle=True):
+                   start_row=None, end_row=None, columns=None, show_subtitle=True, xcol=0):
 
     data_columns, legends, labels = parse_xvg(filename)
     
@@ -294,23 +334,9 @@ def plot_xvg_multi(filename, show_moving_avg=False, window_size=10, ax=None,
     if start_row is not None or end_row is not None:
         data_columns = [list(col)[start_row:end_row] for col in data_columns]
     
+    data_columns, legends, xlabel = select_xy_columns(data_columns, legends, labels,
+                                                      xcol, columns)
     x = data_columns[0]
-    
-    # Filter columns if specified (columns are 1-indexed from user perspective)
-    if columns is not None:
-        # Validate column indices
-        max_col = len(data_columns) - 1  # exclude x-column
-        for col_idx in columns:
-            if col_idx < 1 or col_idx > max_col:
-                raise ValueError(f"Column index {col_idx} out of range. Valid range: 1-{max_col}")
-        # Keep only selected columns
-        selected_data = [x] + [data_columns[col_idx] for col_idx in columns]
-        # Update legends to match selected columns
-        selected_legends = {i: legends.get(col_idx - 1, f'Dataset {col_idx}') 
-                           for i, col_idx in enumerate(columns)}
-        data_columns = selected_data
-        legends = selected_legends
-    
     num_datasets = len(data_columns) - 1
 
     # Create new Axes if none provided
@@ -356,7 +382,7 @@ def plot_xvg_multi(filename, show_moving_avg=False, window_size=10, ax=None,
                 ax.plot(x_avg, y_avg, linestyle='--', linewidth=2,
                         label=f'{label} (Moving Avg, window={window_size})')
 
-        ax.set_xlabel(labels.get('xlabel', 'X-axis'))
+        ax.set_xlabel(xlabel)
         ax.set_ylabel(labels.get('ylabel', 'Y-axis'))
         ax.set_title(build_title(labels, '', show_subtitle))
 
@@ -584,11 +610,19 @@ Examples:
                              'specific portions of trajectories. If omitted, includes until end.')
     
     parser.add_argument('--columns', '--cols', type=int, nargs='+', default=None,
-                        help='Specific column numbers to plot (1-indexed, space-separated). '
-                             'By default, all columns are plotted. Example: --columns 1 3 5 '
-                             'plots only the 1st, 3rd, and 5th data columns. '
-                             'Note: Column 0 is the x-axis, so data columns start at 1. '
+                        help='File columns to plot as y, counting from 0 (column 0 is normally '
+                             'time, the default x-axis). By default, all columns except column 0 '
+                             'and the --xcol column are plotted. Example: --columns 1 3 plots the '
+                             'file\'s 2nd and 4th columns. '
                              'NOTE: Specify file names BEFORE this option to avoid parsing errors.')
+
+    parser.add_argument('--xcol', type=int, default=0,
+                        help='File column to use as the x-axis, counting from 0 like --columns '
+                             '(default: 0, normally time). E.g. --xcol 1 --columns 2 plots the 3rd '
+                             'column against the 2nd. Points are connected in file order, so dots '
+                             'or --scatter usually suit such plots best. The x-axis label is taken '
+                             'from that column\'s legend in the file header (or use --xlabel). '
+                             'Ignored with --histogram and --xy-correlation.')
     
     return parser
 
@@ -1134,6 +1168,10 @@ def main():
     
     if args.stats and (args.xy_correlation or args.multi or len(args.files) > 1):
         print("Warning: --stats is only supported for single-file plots; ignored.", file=sys.stderr)
+    if args.xcol and (args.xy_correlation or args.histogram):
+        print("Warning: --xcol has no effect with --histogram or --xy-correlation; ignored.",
+              file=sys.stderr)
+        args.xcol = 0
 
     try:
         if args.xy_correlation:
@@ -1164,7 +1202,7 @@ def main():
                                use_histogram=args.histogram, hist_bins=args.bins, markersize=args.markersize,
                                start_row=args.start, end_row=args.end, columns=args.columns,
                                custom_legends=args.legends, show_subtitle=not args.no_subtitle,
-                               show_stats=args.stats)
+                               show_stats=args.stats, xcol=args.xcol)
             
             apply_plot_customization(ax, args, is_3d=False)
 
@@ -1180,7 +1218,7 @@ def main():
                              use_scatter=args.scatter, use_histogram=args.histogram,
                              hist_bins=args.bins, markersize=args.markersize,
                              start_row=args.start, end_row=args.end, columns=args.columns,
-                             show_subtitle=not args.no_subtitle)
+                             show_subtitle=not args.no_subtitle, xcol=args.xcol)
             
             apply_plot_customization(ax, args, is_3d=False)
             plt.tight_layout()
