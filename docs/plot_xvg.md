@@ -272,6 +272,13 @@ authentication, so serve on all interfaces only on networks you trust.
 The WebAgg backend needs the `tornado` package (included automatically when `plot_xvg.py` is
 run through uv). If port 8988 is in use, the next free port is taken (and shown in the address).
 
+## Tab Completion
+
+With the completion file loaded (see [completions/README.md](../completions/README.md)), Tab
+completes `plot_xvg.py`'s options and their values: option names (`--st<Tab>` → `--start
+--stats --style`), `--style` values, Matplotlib colormaps (`--colormap`), styles
+(`--plot-style`) and backends (`--backend`), and file names.
+
 ## Saving Plots
 
 ```bash
