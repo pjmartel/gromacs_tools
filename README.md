@@ -7,10 +7,21 @@ A collection of Python and Bash tools for automating GROMACS molecular dynamics 
 ```bash
 git clone https://github.com/yourusername/gromacs_tools.git
 cd gromacs_tools
-pip install -r requirements.txt
 
-# Add to PATH (optional)
+# Add to PATH (optional; put this in ~/.bashrc to make it permanent)
 export PATH="$PATH:$(pwd)/bin"
+```
+
+The Python tools that need extra packages (`plot_xvg.py`, `gmx_panel.py`, `gromacs_pca.py`)
+declare them in an inline script header ([PEP 723](https://peps.python.org/pep-0723/)). With
+[uv](https://docs.astral.sh/uv/) installed, run them directly (`plot_xvg.py file.xvg`): uv
+creates and caches an environment with their dependencies on first use, so no virtual or
+conda environment needs to be active. Without uv, install the packages and run them with
+Python instead:
+
+```bash
+pip install -r requirements.txt
+python bin/plot_xvg.py file.xvg
 ```
 
 ## 📦 Tools
@@ -111,7 +122,8 @@ bash bin/gmx_extract.sh -s md.tpr -f md.xtc -g Protein_Ion --fit-group C-alpha \
 
 - **Python**: 3.7+
 - **GROMACS**: 2021+ (tested with 2021-2025)
-- **Python packages**: numpy, matplotlib (see `requirements.txt`)
+- **Python packages**: numpy, matplotlib (see `requirements.txt`; installed automatically
+  when the tools are run directly with [uv](https://docs.astral.sh/uv/) available)
 
 ## 📂 Repository Structure
 

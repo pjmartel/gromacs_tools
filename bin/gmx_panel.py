@@ -1,4 +1,14 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.8"
+# dependencies = [
+#     "numpy>=1.20",
+#     "matplotlib>=3.5",
+# ]
+# ///
+# Run directly (./gmx_panel.py or from PATH): uv creates and caches an environment with the
+# dependencies above, so no virtual/conda environment needs to be active. Running it with
+# 'python <script>' still works, using that Python's installed packages.
 """
 gmx_panel - Web dashboard for GROMACS analysis XVG files.
 
