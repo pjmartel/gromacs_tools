@@ -209,6 +209,25 @@ python bin/plot_xvg.py data.xvg --markersize 5
 python bin/plot_xvg.py dense_data.xvg --scatter --markersize 1
 ```
 
+### Display Backend
+
+`--backend` (alias `--mpl-backend`) chooses the Matplotlib backend used to show the plot
+interactively, e.g. `Qt5Agg` or `TkAgg`.
+
+With `--backend webagg`, the plot is served as an interactive web page on a local port
+instead of in a window. This is useful on machines without a display, such as WSL without
+X or a Linux browser. `plot_xvg.py` does not try to open a browser: it prints the address,
+which you open yourself (on WSL, from a Windows browser):
+
+```bash
+python bin/plot_xvg.py rmsd.xvg --backend webagg
+# To view figure, visit http://127.0.0.1:8988
+# Press Ctrl+C to stop WebAgg server
+```
+
+The WebAgg backend needs the `tornado` package. If port 8988 is in use, the next free port is
+taken (and shown in the address).
+
 ## Saving Plots
 
 ```bash

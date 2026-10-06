@@ -23,6 +23,11 @@ def _get_backend_from_argv(argv):
             return arg.split("=", 1)[1]
     return None
 
+# WebAgg backend: only serve the plot (the URL is printed), don't try to open a browser.
+# Opening one fails on headless systems such as WSL without a Linux browser, where the
+# page is opened from the Windows side instead. Has no effect on other backends.
+matplotlib.rcParams['webagg.open_in_browser'] = False
+
 _cli_backend = _get_backend_from_argv(sys.argv[1:])
 if _cli_backend:
     try:
