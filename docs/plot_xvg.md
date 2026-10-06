@@ -221,12 +221,26 @@ which you open yourself (on WSL, from a Windows browser):
 
 ```bash
 python bin/plot_xvg.py rmsd.xvg --backend webagg
-# To view figure, visit http://127.0.0.1:8988
+# Serving on all network interfaces: from another machine, open http://<this machine's name or IP>:<port>, ...
+# To view figure, visit http://0.0.0.0:8988
 # Press Ctrl+C to stop WebAgg server
 ```
 
-The WebAgg backend needs the `tornado` package. If port 8988 is in use, the next free port is
-taken (and shown in the address).
+By default the plot is served on all network interfaces (`--webagg-host 0.0.0.0`), so it can
+also be opened from other machines, e.g. on a Tailscale network, at
+`http://<this machine's name or IP>:<port>`. On the machine itself, `http://localhost:<port>`
+works. Use `--webagg-host 127.0.0.1` to allow only this machine. The page has no
+authentication, so serve on all interfaces only on networks you trust.
+
+> [!NOTE]
+> On WSL2 in its default (NAT) networking mode, other machines reach the Windows host, not
+> WSL. To open a plot served from WSL elsewhere, enable mirrored networking
+> (`networkingMode=mirrored` under `[wsl2]` in `%UserProfile%\.wslconfig`, then
+> `wsl --shutdown`), run Tailscale inside WSL, or forward the port from Windows
+> (`netsh interface portproxy`).
+
+The WebAgg backend needs the `tornado` package (included automatically when `plot_xvg.py` is
+run through uv). If port 8988 is in use, the next free port is taken (and shown in the address).
 
 ## Saving Plots
 

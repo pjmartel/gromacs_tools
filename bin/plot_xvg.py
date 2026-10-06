@@ -568,6 +568,12 @@ Examples:
                         help='Matplotlib backend to use (e.g., Qt5Agg, TkAgg, Agg). '
                              'Note: must be provided before other options to take effect; '
                              'this script reads it early to configure Matplotlib before importing pyplot.')
+
+    parser.add_argument('--webagg-host', type=str, default='0.0.0.0',
+                        help='Network address the WebAgg backend (--backend webagg) serves the plot on. '
+                             'Default 0.0.0.0: all interfaces, so the plot can be opened from other '
+                             'machines (e.g. on a Tailscale network) at http://<this machine>:<port>. '
+                             'Use 127.0.0.1 to allow only this machine.')
     
     parser.add_argument('--start', type=int, default=None,
                         help='First data row to plot (0-indexed). Allows viewing specific '
@@ -1071,6 +1077,13 @@ def handle_output(fig, args):
         fig.savefig(args.output, dpi=args.dpi, bbox_inches='tight')
         print(f"Plot saved to: {args.output}")
     else:
+        if matplotlib.get_backend().lower() == 'webagg':
+            # Read by Matplotlib when the WebAgg server starts (in plt.show)
+            matplotlib.rcParams['webagg.address'] = args.webagg_host
+            if args.webagg_host == '0.0.0.0':
+                # Matplotlib's "visit" line will show 0.0.0.0, which other machines can't use
+                print("Serving on all network interfaces: from another machine, open "
+                      "http://<this machine's name or IP>:<port>, with the port shown below.")
         # Use the pyplot-level show which blocks and opens a window
         # consistently across backends (Qt5Agg, TkAgg, etc.).
         plt.show()
