@@ -281,6 +281,21 @@ bash bin/gmx_analysis.sh MnMT4_apo 0 --begin 500 --end 1000 --tu ns --dt 100
 bash bin/gmx_analysis.sh MnMT4_apo 0 --plot-tu ps
 ```
 
+### Analyzing One Segment
+
+Each segment of a segmented run is a complete set of files (`.xtc`, `.tpr`, `.edr`), so giving
+a segment's full name without a replica number analyzes just that segment, as a
+[single run](#single-runs): nothing is concatenated, which makes it fast.
+
+```bash
+# Only the 500-1000 ns segment of replica 0 -> MnMT4_apo_0_500_1000_analysis/
+bash bin/gmx_analysis.sh MnMT4_apo_0_500_1000 --segments-dir ../prod
+```
+
+Plots keep the segment's real times (here 500-1000 ns) on the x-axis. For a time range that
+spans several segments, use a time window on the whole run instead (`--begin`/`--end`, see
+[Time Window](#time-window)); with `--skip-concat` it reuses an existing concatenated trajectory.
+
 ### Custom Reference and Groups
 
 ```bash
