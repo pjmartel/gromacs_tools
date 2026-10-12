@@ -6,7 +6,9 @@ Standard post-processing analysis for a (possibly segmented) GROMACS production 
 
 Takes a production run produced by [gmx_continue_grompp.sh](md_continuation.md) — segment
 files named `<basename>_<replica>_<start>_<end>.{xtc,edr,tpr}` — concatenates all segments
-into a single trajectory and energy file, and runs a standard set of analyses on it. Each
+into a single trajectory and energy file, and runs a standard set of analyses on it. A
+**single trajectory** (`md.xtc`, `md.tpr`, optionally `md.edr`) can be analyzed too: give the
+base name without a replica number (see [Single Runs](#single-runs)). Each
 analysis is written to its own clearly named `.xvg` file in one output directory, ready for
 [plot_xvg.py](plot_xvg.md) or the [gmx_panel.py](gmx_panel.md) web dashboard.
 
@@ -53,22 +55,43 @@ with a message instead of failing.
 ### Basic Syntax
 
 ```bash
-gmx_analysis.sh <basename> <replica> [OPTIONS]
+gmx_analysis.sh <basename> <replica> [OPTIONS]    # segmented run (gmx_continue_grompp.sh)
+gmx_analysis.sh <basename> [OPTIONS]              # single run: <basename>.xtc
 ```
 
 | Argument | Description |
 |----------|-------------|
-| `basename` | Base name used for the run (e.g. `MnMT4_apo`) |
-| `replica` | Replica number (e.g. `0`), so segments are `<basename>_<replica>_<start>_<end>.*` |
+| `basename` | Base name used for the run (e.g. `MnMT4_apo`; for a single run e.g. `md` or `md.xtc`, optionally with a path) |
+| `replica` | Replica number (e.g. `0`), so segments are `<basename>_<replica>_<start>_<end>.*`. Without it, the run is analyzed as a single trajectory |
 
-Both positional arguments must come before any option.
+The positional arguments must come before any option.
+
+### Single Runs
+
+Without a replica number, `<basename>.xtc` is analyzed directly, with `<basename>.tpr` as the
+reference structure (or `--structure`) and `<basename>.edr` for the energy terms. These are the
+files `gmx mdrun -deffnm <basename>` writes. They are looked for in `--segments-dir` (default:
+the current directory), unless the base name includes a path.
+
+```bash
+gmx_analysis.sh md                          # md.xtc, md.tpr, md.edr -> md_analysis/
+gmx_analysis.sh ../run2/md.xtc --only rmsd,rmsf
+```
+
+- Nothing is concatenated, so `--skip-concat` and `--concat-only` don't apply (and are
+  rejected).
+- If there is no `<basename>.edr`, the energy analyses are skipped with a note; everything else
+  runs.
+- Output goes to `<basename>_analysis/` by default.
+- Only one trajectory file is used: `gmx_continue_extend.sh` output in several parts
+  (`md_0.part0002.xtc`, ...) needs joining with `gmx trjcat` first.
 
 ### Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--segments-dir <dir>` | `.` | Directory containing the segment files |
-| `--structure <file>` | `.tpr` of the earliest segment | Reference `.tpr`/`.gro`/`.pdb` used for all analyses (including as the RMSD reference) |
+| `--segments-dir <dir>` | `.` | Directory containing the segment files, or a single run's files |
+| `--structure <file>` | `.tpr` of the earliest segment, or `<basename>.tpr` for a single run | Reference `.tpr`/`.gro`/`.pdb` used for all analyses (including as the RMSD reference) |
 | `--skip-concat` | off | Reuse an existing `<output-dir>/<basename>_<replica>_concat.{xtc,edr}` instead of rebuilding it |
 | `--concat-only` | off | Only build the concatenated `.xtc`/`.edr` files, then stop without running any analysis. Cannot be combined with `--only`, `--skip` or `--skip-concat` |
 | `--begin <time>` | - | First frame to analyze, in the unit given by `--tu` |
@@ -87,7 +110,7 @@ Both positional arguments must come before any option.
 | `--dssp-hmode <gromacs\|dssp>` | `gromacs` | `gmx dssp -hmode` |
 | `--per-atom` | off | RMSF per atom instead of the default per residue (`-res`) |
 | `--measure <file>` | - | Distances, angles and dihedrals to measure, see [Distances, Angles and Dihedrals](#distances-angles-and-dihedrals---measure) |
-| `--output-dir <dir>` | `<basename>_<replica>_analysis` | Where `.xvg`/`.dat`/log files are written |
+| `--output-dir <dir>` | `<basename>_<replica>_analysis` (single run: `<basename>_analysis`) | Where `.xvg`/`.dat`/log files are written |
 | `--xvg-format <xmgrace\|xmgr\|none>` | `xmgrace` | Passed as `-xvg` to every tool that supports it |
 | `--gmx <path>` | `gmx` | gmx binary/command to use |
 | `--dry-run` | off | Print commands (and stdin group selections) without running them |

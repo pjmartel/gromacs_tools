@@ -1,12 +1,15 @@
 #!/bin/bash -e
 set -o pipefail
-# Standard post-processing analysis for a (possibly segmented) GROMACS production run.
+# Standard post-processing analysis for a GROMACS production run: either a segmented run
+# produced by gmx_continue_grompp.sh, or a single trajectory.
 #
-# Given a run produced by gmx_continue_grompp.sh (files named
-# <basename>_<replica>_<start>_<end>.{xtc,edr,tpr,...}), this script:
+# Segmented run (files named <basename>_<replica>_<start>_<end>.{xtc,edr,tpr,...}):
 #   1. Finds every trajectory segment for <basename>/<replica> in --segments-dir
 #   2. Concatenates the segments (gmx trjcat / gmx eneconv) into one trajectory+energy file
-#   3. Runs the standard analyses on the (optionally time-sliced) concatenated data:
+# Single run (files <basename>.xtc, <basename>.tpr and optionally <basename>.edr, as written
+# e.g. by gmx mdrun -deffnm): uses these files directly, nothing is concatenated.
+# Then, in both cases:
+#   3. Runs the standard analyses on the (optionally time-sliced) data:
 #        - energy terms (Temperature, Pressure, Potential, Total-Energy by default)
 #        - RMSD to a reference structure (gmx rms)
 #        - radius of gyration (gmx gyrate)
@@ -15,16 +18,20 @@ set -o pipefail
 #        - per-residue RMS fluctuations (gmx rmsf)
 #   Each analysis is written to its own clearly-named .xvg file in --output-dir.
 #
-# Usage: ./gmx_analysis.sh <basename> <replica> [OPTIONS]
-#   basename:  Base name used for the run (e.g. "MnMT4_apo")
-#   replica:   Replica number (e.g. 0), so segments are "<basename>_<replica>_<start>_<end>"
+# Usage: ./gmx_analysis.sh <basename> <replica> [OPTIONS]    segmented run
+#        ./gmx_analysis.sh <basename> [OPTIONS]              single run
+#   basename:  Base name used for the run (e.g. "MnMT4_apo"; for a single run e.g. "md" or
+#              "md.xtc", optionally with a path)
+#   replica:   Replica number (e.g. 0), so segments are "<basename>_<replica>_<start>_<end>".
+#              Without it, <basename>.xtc is analyzed as a single run.
 #
 # File discovery:
-#   --segments-dir <dir>       Directory containing the segment files (default: .)
-#   --structure <file>         Reference .tpr/.gro/.pdb used for all analyses
-#                              (default: the .tpr of the earliest/first segment found)
+#   --segments-dir <dir>       Directory containing the segment files, or a single run's files
+#                              (default: .)
+#   --structure <file>         Reference .tpr/.gro/.pdb used for all analyses (default: the .tpr
+#                              of the earliest segment, or <basename>.tpr for a single run)
 #   --skip-concat              Reuse an existing "<output-dir>/<basename>_<replica>_concat.{xtc,edr}"
-#                              instead of rebuilding it from the segments
+#                              instead of rebuilding it from the segments (segmented runs only)
 #   --concat-only              Only build the concatenated trajectory and energy files, then
 #                              stop without running any analysis (cannot be combined with
 #                              --only, --skip or --skip-concat)
@@ -80,7 +87,8 @@ set -o pipefail
 #
 # Output:
 #   --output-dir <dir>          Where .xvg/.dat/log files are written
-#                              (default: "<basename>_<replica>_analysis")
+#                              (default: "<basename>_<replica>_analysis", or "<basename>_analysis"
+#                              for a single run)
 #   --xvg-format <xmgrace|xmgr|none>  Passed as -xvg to every tool that supports it (default: xmgrace)
 #
 # Misc:
@@ -99,6 +107,9 @@ set -o pipefail
 # Examples:
 #   # Full analysis of MnMT4_apo replica 0 (segments MnMT4_apo_0_0_500.xtc, _500_1000.xtc, ...)
 #   ./gmx_analysis.sh MnMT4_apo 0
+#
+#   # A single run: md.xtc, md.tpr (and md.edr, if present) in the current directory
+#   ./gmx_analysis.sh md
 #
 #   # Only the last 500 ns, sampled every 100 ps
 #   ./gmx_analysis.sh MnMT4_apo 0 --begin 500 --end 1000 --tu ns --dt 100
@@ -135,19 +146,25 @@ if [[ "$1" == "-h" || "$1" == "--help" ]]; then
     exit 0
 fi
 
-# Validate that first 2 arguments are not flags (before shifting)
-for i in 1 2; do
-    eval "arg=\${$i}"
-    if [[ "$arg" == --* ]]; then
-        echo "Error: Argument $i appears to be a flag ('$arg')"
-        echo "The first 2 arguments must be: <basename> <replica>"
-        exit 1
-    fi
-done
-
+# First argument: <basename>. Second (optional): <replica>. Without a replica (no second
+# argument, or it is an option), <basename>.xtc is analyzed as a single run.
+if [[ "$1" == -* ]]; then
+    echo "Error: The first argument must be <basename>, got the option '$1'"
+    echo "Usage: $0 <basename> <replica> [OPTIONS]   (segmented run)"
+    echo "       $0 <basename> [OPTIONS]             (single run)"
+    exit 1
+fi
 basename_arg="$1"
-replica="$2"
-shift 2
+shift
+if [[ $# -gt 0 && "$1" != -* ]]; then
+    replica="$1"
+    shift
+    single_run=false
+else
+    replica=""
+    single_run=true
+    basename_arg="${basename_arg%.xtc}"     # accept "md.xtc" as well as "md"
+fi
 
 # Defaults
 segments_dir="."
@@ -263,7 +280,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 fit_group="${fit_group:-${group}}"
-base_name="${basename_arg}_${replica}"
+if [[ "${single_run}" == true ]]; then
+    base_name="${basename_arg##*/}"
+else
+    base_name="${basename_arg}_${replica}"
+fi
 output_dir="${output_dir:-${base_name}_analysis}"
 
 # Default reproducibility script name, unless overridden with --save-script
@@ -280,6 +301,16 @@ if [[ "${concat_only}" == true ]]; then
         echo "Error: --concat-only cannot be combined with ${conflict}"
         exit 1
     fi
+fi
+
+# A single run has nothing to concatenate
+if [[ "${single_run}" == true && "${concat_only}" == true ]]; then
+    echo "Error: --concat-only only applies to segmented runs (a single run is used as is)"
+    exit 1
+fi
+if [[ "${single_run}" == true && "${skip_concat}" == true ]]; then
+    echo "Error: --skip-concat only applies to segmented runs (a single run is used as is)"
+    exit 1
 fi
 
 if [[ ! -d "${segments_dir}" ]]; then
@@ -388,43 +419,64 @@ should_run() {
     return 0
 }
 
-# Discover trajectory segments: <segments_dir>/<base_name>_<start>_<end>.xtc
-shopt -s nullglob
-candidates=("${segments_dir}/${base_name}_"[0-9]*_[0-9]*.xtc)
-if [[ ${#candidates[@]} -eq 0 ]]; then
-    echo "Error: No trajectory segments found matching '${base_name}_<start>_<end>.xtc' in '${segments_dir}'"
-    exit 1
+if [[ "${single_run}" == true ]]; then
+    # Single run: <basename>.xtc (+ .tpr, optional .edr), in --segments-dir unless a path is given
+    if [[ "${basename_arg}" == */* ]]; then
+        single_prefix="${basename_arg}"
+else
+        single_prefix="${segments_dir}/${basename_arg}"
+    fi
+    single_xtc="${single_prefix}.xtc"
+    single_edr="${single_prefix}.edr"
+    if [[ ! -f "${single_xtc}" ]]; then
+        echo "Error: Trajectory '${single_xtc}' not found"
+        echo "(For a segmented run from gmx_continue_grompp.sh, also give the replica: $0 ${basename_arg} <replica>)"
+        exit 1
+    fi
+    [[ -f "${single_edr}" ]] || single_edr=""
+    default_structure="${single_prefix}.tpr"
+else
+    # Discover trajectory segments: <segments_dir>/<base_name>_<start>_<end>.xtc
+    shopt -s nullglob
+    candidates=("${segments_dir}/${base_name}_"[0-9]*_[0-9]*.xtc)
+    if [[ ${#candidates[@]} -eq 0 ]]; then
+        echo "Error: No trajectory segments found matching '${base_name}_<start>_<end>.xtc' in '${segments_dir}'"
+        exit 1
+    fi
+
+    seg_xtc=()
+    seg_edr=()
+    seg_tpr=()
+    while IFS=$'\t' read -r start end xtc; do
+        edr="${segments_dir}/${base_name}_${start}_${end}.edr"
+        tpr="${segments_dir}/${base_name}_${start}_${end}.tpr"
+        if [[ ! -f "${edr}" ]]; then
+            echo "Error: Missing energy file for segment ${start}-${end}: '${edr}'"
+            exit 1
+        fi
+        if [[ ! -f "${tpr}" ]]; then
+            echo "Error: Missing run input file for segment ${start}-${end}: '${tpr}'"
+            exit 1
+        fi
+        seg_xtc+=("${xtc}")
+        seg_edr+=("${edr}")
+        seg_tpr+=("${tpr}")
+    done < <(
+        for f in "${candidates[@]}"; do
+            fname="$(basename "${f}")"
+            if [[ "${fname}" =~ ^${base_name}_([0-9]+)_([0-9]+)\.xtc$ ]]; then
+                printf '%s\t%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${f}"
+            fi
+        done | sort -n -k1,1
+    )
+
+    default_structure="${seg_tpr[0]}"
 fi
 
-seg_xtc=()
-seg_edr=()
-seg_tpr=()
-while IFS=$'\t' read -r start end xtc; do
-    edr="${segments_dir}/${base_name}_${start}_${end}.edr"
-    tpr="${segments_dir}/${base_name}_${start}_${end}.tpr"
-    if [[ ! -f "${edr}" ]]; then
-        echo "Error: Missing energy file for segment ${start}-${end}: '${edr}'"
-        exit 1
-    fi
-    if [[ ! -f "${tpr}" ]]; then
-        echo "Error: Missing run input file for segment ${start}-${end}: '${tpr}'"
-        exit 1
-    fi
-    seg_xtc+=("${xtc}")
-    seg_edr+=("${edr}")
-    seg_tpr+=("${tpr}")
-done < <(
-    for f in "${candidates[@]}"; do
-        fname="$(basename "${f}")"
-        if [[ "${fname}" =~ ^${base_name}_([0-9]+)_([0-9]+)\.xtc$ ]]; then
-            printf '%s\t%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${f}"
-        fi
-    done | sort -n -k1,1
-)
-
-structure_file="${structure_file:-${seg_tpr[0]}}"
+structure_file="${structure_file:-${default_structure}}"
 if [[ ! -f "${structure_file}" ]]; then
     echo "Error: Reference structure '${structure_file}' not found"
+    [[ "${single_run}" == true ]] && echo "Give one with --structure (a .tpr is best)"
     exit 1
 fi
 
@@ -515,12 +567,18 @@ if [[ -n "${save_script}" ]]; then
 fi
 
 echo "=== GROMACS Trajectory Analysis ==="
-echo "Basename:        ${basename_arg}  (replica ${replica})"
-echo "Segments dir:    ${segments_dir}"
-echo "Segments found:  ${#seg_xtc[@]}"
-for i in "${!seg_xtc[@]}"; do
-    echo "  - $(basename "${seg_xtc[$i]}")"
-done
+if [[ "${single_run}" == true ]]; then
+    echo "Run:             ${basename_arg}  (single trajectory)"
+    echo "Trajectory:      ${single_xtc}"
+    echo "Energy file:     ${single_edr:-(none: energy analyses skipped)}"
+else
+    echo "Basename:        ${basename_arg}  (replica ${replica})"
+    echo "Segments dir:    ${segments_dir}"
+    echo "Segments found:  ${#seg_xtc[@]}"
+    for i in "${!seg_xtc[@]}"; do
+        echo "  - $(basename "${seg_xtc[$i]}")"
+    done
+fi
 echo "Structure:       ${structure_file}"
 echo "Group:           ${group} (fit group for RMSD: ${fit_group})"
 [[ -n "${index_file}" ]] && echo "Index:           ${index_file}"
@@ -808,25 +866,33 @@ if [[ ${#measure_types[@]} -gt 0 ]] && [[ "${concat_only}" == false ]] && { shou
     fi
 fi
 
-# --- 1. Concatenate segments -------------------------------------------------
-concat_xtc="${output_dir}/${base_name}_concat.xtc"
-concat_edr="${output_dir}/${base_name}_concat.edr"
-
-if [[ "${skip_concat}" == true ]]; then
-    if [[ "${dry_run}" == false ]] && { [[ ! -f "${concat_xtc}" ]] || [[ ! -f "${concat_edr}" ]]; }; then
-        echo "Error: --skip-concat given but concatenated files not found:"
-        echo "  ${concat_xtc}"
-        echo "  ${concat_edr}"
-        exit 1
-    fi
-    echo ""
-    echo "Skipping concatenation, reusing: ${concat_xtc}, ${concat_edr}"
+# --- 1. Concatenate segments (segmented runs) ----------------------------------
+# traj_xtc/traj_edr: the trajectory and energy file the analyses read
+if [[ "${single_run}" == true ]]; then
+        traj_xtc="${single_xtc}"
+        traj_edr="${single_edr}"
 else
-    cmd=("${gmx_bin}" trjcat -f "${seg_xtc[@]}" -o "${concat_xtc}")
-    run_cmd "Concatenate ${#seg_xtc[@]} trajectory segment(s)" "${cmd[@]}"
+    concat_xtc="${output_dir}/${base_name}_concat.xtc"
+    concat_edr="${output_dir}/${base_name}_concat.edr"
+    traj_xtc="${concat_xtc}"
+    traj_edr="${concat_edr}"
 
-    cmd=("${gmx_bin}" eneconv -f "${seg_edr[@]}" -o "${concat_edr}")
-    run_cmd "Concatenate ${#seg_edr[@]} energy segment(s)" "${cmd[@]}"
+    if [[ "${skip_concat}" == true ]]; then
+        if [[ "${dry_run}" == false ]] && { [[ ! -f "${concat_xtc}" ]] || [[ ! -f "${concat_edr}" ]]; }; then
+            echo "Error: --skip-concat given but concatenated files not found:"
+            echo "  ${concat_xtc}"
+            echo "  ${concat_edr}"
+            exit 1
+        fi
+        echo ""
+        echo "Skipping concatenation, reusing: ${concat_xtc}, ${concat_edr}"
+else
+        cmd=("${gmx_bin}" trjcat -f "${seg_xtc[@]}" -o "${concat_xtc}")
+        run_cmd "Concatenate ${#seg_xtc[@]} trajectory segment(s)" "${cmd[@]}"
+
+        cmd=("${gmx_bin}" eneconv -f "${seg_edr[@]}" -o "${concat_edr}")
+        run_cmd "Concatenate ${#seg_edr[@]} energy segment(s)" "${cmd[@]}"
+    fi
 fi
 
 if [[ "${concat_only}" == true ]]; then
@@ -844,7 +910,11 @@ if [[ "${concat_only}" == true ]]; then
 fi
 
 # --- 2. Energy terms (temperature, pressure, potential, total energy, ...) --
-if should_run energy; then
+if should_run energy && [[ -z "${traj_edr}" ]]; then
+    echo ""
+    echo "--- Energy terms ---"
+    echo "No energy file (${single_prefix}.edr): energy analyses skipped."
+elif should_run energy; then
     set_time_flags energy range-only
     IFS=',' read -ra terms <<< "${energy_terms}"
     for term in "${terms[@]}"; do
@@ -852,7 +922,7 @@ if should_run energy; then
         [[ -z "${term}" ]] && continue
         slug="$(echo "${term}" | tr '[:upper:]' '[:lower:]' | tr '-' '_')"
         out="${output_dir}/${slug}.xvg"
-        cmd=("${gmx_bin}" energy -f "${concat_edr}" -s "${structure_file}" -o "${out}" -xvg "${xvg_format}" "${time_flags[@]}")
+        cmd=("${gmx_bin}" energy -f "${traj_edr}" -s "${structure_file}" -o "${out}" -xvg "${xvg_format}" "${time_flags[@]}")
         # gmx energy's output is captured to a temporary file, to read its statistics table
         stats_file="${out}.energy.txt"
         if run_piped_cmd --capture "${stats_file}" "Energy term: ${term}" "${term}" "${cmd[@]}"; then
@@ -867,7 +937,7 @@ fi
 if should_run rmsd; then
     out="${output_dir}/rmsd.xvg"
     set_time_flags rms
-    cmd=("${gmx_bin}" rms -s "${structure_file}" -f "${concat_xtc}" -o "${out}" -xvg "${xvg_format}" "${index_flag[@]}" "${time_flags[@]}")
+    cmd=("${gmx_bin}" rms -s "${structure_file}" -f "${traj_xtc}" -o "${out}" -xvg "${xvg_format}" "${index_flag[@]}" "${time_flags[@]}")
     stdin_data="${fit_group}"$'\n'"${group}"
     run_piped_cmd "RMSD (fit=${fit_group}, calc=${group})" "${stdin_data}" "${cmd[@]}" || true
 fi
@@ -876,7 +946,7 @@ fi
 if should_run gyration; then
     out="${output_dir}/gyration_radius.xvg"
     set_time_flags gyrate
-    cmd=("${gmx_bin}" gyrate -s "${structure_file}" -f "${concat_xtc}" -o "${out}" -sel "${group}" -xvg "${xvg_format}" "${index_flag[@]}" "${time_flags[@]}")
+    cmd=("${gmx_bin}" gyrate -s "${structure_file}" -f "${traj_xtc}" -o "${out}" -sel "${group}" -xvg "${xvg_format}" "${index_flag[@]}" "${time_flags[@]}")
     run_cmd "Radius of gyration (${group})" "${cmd[@]}" || true
 fi
 
@@ -884,7 +954,7 @@ fi
 if should_run sasa; then
     out="${output_dir}/sasa.xvg"
     set_time_flags sasa
-    cmd=("${gmx_bin}" sasa -s "${structure_file}" -f "${concat_xtc}" -o "${out}" -surface "${group}" -probe "${probe_radius}" -xvg "${xvg_format}" "${index_flag[@]}" "${time_flags[@]}")
+    cmd=("${gmx_bin}" sasa -s "${structure_file}" -f "${traj_xtc}" -o "${out}" -surface "${group}" -probe "${probe_radius}" -xvg "${xvg_format}" "${index_flag[@]}" "${time_flags[@]}")
     run_cmd "Solvent accessible surface area (${group})" "${cmd[@]}" || true
 fi
 
@@ -894,7 +964,7 @@ if should_run secondary-structure; then
         out_dat="${output_dir}/secondary_structure.dat"
         out_num="${output_dir}/secondary_structure_counts.xvg"
         set_time_flags dssp
-        cmd=("${gmx_bin}" dssp -s "${structure_file}" -f "${concat_xtc}" -sel "${group}" \
+        cmd=("${gmx_bin}" dssp -s "${structure_file}" -f "${traj_xtc}" -sel "${group}" \
              -o "${out_dat}" -num "${out_num}" -hmode "${dssp_hmode}" -xvg "${xvg_format}" \
              "${index_flag[@]}" "${time_flags[@]}")
         run_cmd "Secondary structure (${group})" "${cmd[@]}" || true
@@ -911,7 +981,7 @@ if should_run rmsf; then
     out="${output_dir}/rmsf.xvg"
     # rmsf's x-axis is residue/atom index, not time; -b/-e/-dt only select the frames to average over
     set_time_flags rmsf range-only
-    cmd=("${gmx_bin}" rmsf -s "${structure_file}" -f "${concat_xtc}" -o "${out}" -xvg "${xvg_format}" "${index_flag[@]}" "${time_flags[@]}")
+    cmd=("${gmx_bin}" rmsf -s "${structure_file}" -f "${traj_xtc}" -o "${out}" -xvg "${xvg_format}" "${index_flag[@]}" "${time_flags[@]}")
     [[ "${per_residue}" == true ]] && cmd+=(-res)
     run_piped_cmd "RMS fluctuations (${group})" "${group}" "${cmd[@]}" || true
 fi
@@ -930,11 +1000,11 @@ for i in "${!measure_types[@]}"; do
     out="${output_dir}/${m_type}_${m_name}.xvg"
     if [[ "${m_type}" == distance ]]; then
         set_time_flags distance
-        cmd=("${gmx_bin}" distance -s "${structure_file}" -f "${concat_xtc}" -select "${m_selection}" \
+        cmd=("${gmx_bin}" distance -s "${structure_file}" -f "${traj_xtc}" -select "${m_selection}" \
              -oall "${out}" -xvg "${xvg_format}" "${index_flag[@]}" "${time_flags[@]}")
     else
         set_time_flags gangle
-        cmd=("${gmx_bin}" gangle -s "${structure_file}" -f "${concat_xtc}" -g1 "${m_type}" -group1 "${m_selection}" \
+        cmd=("${gmx_bin}" gangle -s "${structure_file}" -f "${traj_xtc}" -g1 "${m_type}" -group1 "${m_selection}" \
              -oall "${out}" -xvg "${xvg_format}" "${index_flag[@]}" "${time_flags[@]}")
     fi
     if run_cmd "${m_type^} ${m_name}" "${cmd[@]}"; then
