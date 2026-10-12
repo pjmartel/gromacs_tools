@@ -60,6 +60,9 @@ _CATEGORY_PREFIXES = [
     (("rmsf",), "rmsf"),
     (("gyrat",), "gyration"),
     (("sasa",), "sasa"),
+    (("distance_",), "distance"),   # gmx_analysis.sh --measure
+    (("angle_",), "angle"),
+    (("dihedral_",), "dihedral"),
 ]
 _ENERGY_ORDER = ["temperature", "pressure", "potential", "total_energy"]
 _ENERGY_TITLE = "GROMACS Energies"
@@ -95,8 +98,8 @@ def is_gmx_energy_xvg(xvg_path: Path) -> bool:
 def xvg_sort_key(xvg_path: Path) -> tuple[int, int, str]:
     """Sort key giving the default presentation order.
 
-    RMSD, secondary structure (DSSP), RMSF, radius of gyration, SASA, energy
-    terms, then any other files; alphabetical within each group, except energy
+    RMSD, secondary structure (DSSP), RMSF, radius of gyration, SASA, distances,
+    angles, dihedrals, energy terms, then any other files; alphabetical within each group, except energy
     terms, which follow the gmx_analysis.sh default term order first.
     """
     stem = xvg_path.stem.lower()

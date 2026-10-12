@@ -21,7 +21,7 @@ output and open the dashboard in a local browser instead of copying files around
 - ✅ **Titles from the XVG header**: each card shows the file's `@ title` (and `@ subtitle`), plus the file name
 - ✅ **Fault tolerant**: a file that can't be plotted shows an error card instead of breaking the page
 - ✅ **Analysis order**: plots from a directory scan are shown in a fixed, meaningful order
-  (RMSD, secondary structure, RMSF, gyration, SASA, energies; see [Plot Order](#plot-order))
+  (RMSD, secondary structure, RMSF, gyration, SASA, distances and angles, energies; see [Plot Order](#plot-order))
 - ✅ **Scalable plots**: a scale factor (`--scale`, or the −/+ buttons in the page) sets the plot size,
   and the grid fits as many plots per row as the window allows
 - ✅ **Energy statistics**: optionally show the `gmx energy` average, RMSD and drift on each energy
@@ -88,8 +88,9 @@ When scanning a directory, plots are shown in this order, based on the file name
 | 3 | RMSF | `rmsf*.xvg` |
 | 4 | Radius of gyration | `gyrat*.xvg` (e.g. `gyration_radius.xvg`) |
 | 5 | SASA | `sasa*.xvg` |
-| 6 | Energy terms | `temperature`, `pressure`, `potential`, `total_energy` (in that order), then any other `gmx energy` output (e.g. extra `--energy-terms`), recognized from the command line recorded in its header, or from the default `GROMACS Energies` title |
-| 7 | Everything else | alphabetically |
+| 6 | Distances, angles, dihedrals (in that order) | `distance_*.xvg`, `angle_*.xvg`, `dihedral_*.xvg` (from `gmx_analysis.sh --measure`) |
+| 7 | Energy terms | `temperature`, `pressure`, `potential`, `total_energy` (in that order), then any other `gmx energy` output (e.g. extra `--energy-terms`), recognized from the command line recorded in its header, or from the default `GROMACS Energies` title |
+| 8 | Everything else | alphabetically |
 
 File names are matched case-insensitively, and files within a group are sorted alphabetically.
 With `--files`, the plots are shown in the order given instead.

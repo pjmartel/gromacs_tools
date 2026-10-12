@@ -17,6 +17,8 @@ analysis is written to its own clearly named `.xvg` file in one output directory
 - ✅ **Concatenation** with `gmx trjcat` / `gmx eneconv` (reusable later with `--skip-concat`), or on its
   own with `--concat-only`
 - ✅ **Six analysis categories**: energy terms, RMSD, radius of gyration, SASA, secondary structure (DSSP), RMSF
+- ✅ **Distances, angles and dihedrals** between atoms or group centres, defined in a measurements file
+  (`--measure`), with every selection checked before anything runs
 - ✅ **Selectable analyses** via `--only` / `--skip`
 - ✅ **Time slicing** with `--begin`/`--end`/`--dt`, given in any unit via `--tu`
 - ✅ **Plot time unit** (`--plot-tu`, default `ns`) independent of the slicing unit, and a separate
@@ -38,6 +40,7 @@ analysis is written to its own clearly named `.xvg` file in one output directory
 | 5 | `sasa` | `gmx sasa` | `sasa.xvg` |
 | 6 | `secondary-structure` (alias `dssp`) | `gmx dssp` | `secondary_structure.dat`, `secondary_structure_counts.xvg` |
 | 7 | `rmsf` | `gmx rmsf` | `rmsf.xvg` (per residue by default) |
+| 8 | `distance`, `angle` (only with `--measure`) | `gmx distance`, `gmx gangle` | one file per measurement: `distance_<name>.xvg`, `angle_<name>.xvg`, `dihedral_<name>.xvg` |
 
 Energy file names are the term name in lower case with `-` replaced by `_`
 (`Total-Energy` → `total_energy.xvg`).
@@ -83,6 +86,7 @@ Both positional arguments must come before any option.
 | `--probe-radius <nm>` | `0.14` | SASA solvent probe radius (`gmx sasa -probe`) |
 | `--dssp-hmode <gromacs\|dssp>` | `gromacs` | `gmx dssp -hmode` |
 | `--per-atom` | off | RMSF per atom instead of the default per residue (`-res`) |
+| `--measure <file>` | - | Distances, angles and dihedrals to measure, see [Distances, Angles and Dihedrals](#distances-angles-and-dihedrals---measure) |
 | `--output-dir <dir>` | `<basename>_<replica>_analysis` | Where `.xvg`/`.dat`/log files are written |
 | `--xvg-format <xmgrace\|xmgr\|none>` | `xmgrace` | Passed as `-xvg` to every tool that supports it |
 | `--gmx <path>` | `gmx` | gmx binary/command to use |
@@ -91,7 +95,8 @@ Both positional arguments must come before any option.
 | `-h, --help` | - | Show help and exit |
 
 Valid category names for `--skip`/`--only`: `energy`, `rmsd`, `gyration`, `sasa`,
-`secondary-structure` (or `dssp`), `rmsf`. Unknown names are rejected before anything runs.
+`secondary-structure` (or `dssp`), `rmsf`, `distance`, `angle` (the last two need `--measure`).
+Unknown names are rejected before anything runs.
 
 ### Available Default Groups
 
@@ -99,6 +104,69 @@ From a typical protein `.tpr`, no index file required:
 
 `System, Protein, Protein-H, C-alpha, Backbone, MainChain, MainChain+Cb, MainChain+H,
 SideChain, SideChain-H, Prot-Masses, non-Protein, Water, SOL, non-Water, Ion, Water_and_ions`
+
+## Distances, Angles and Dihedrals (`--measure`)
+
+List the measurements in a text file, one per line, and pass it with `--measure`:
+
+```
+# type      name        selections, separated by |        ('#' starts a comment line)
+distance    SAM_C36     resname SAM and name SD | resid 36 and name SG
+distance    SAM_loop    com of resname SAM | com of group "Loop1"
+angle       hinge       resid 10 and name CA | com of group "Helix" | resid 90 and name CA
+dihedral    chi1_W6     resid 6 and name N | resid 6 and name CA | resid 6 and name CB | resid 6 and name CG
+```
+
+```bash
+bash bin/gmx_analysis.sh MnMT4_apo 0 --measure measurements.txt -n index.ndx
+# Only the measurements, reusing the concatenated trajectory
+bash bin/gmx_analysis.sh MnMT4_apo 0 --measure measurements.txt --only distance,angle --skip-concat
+```
+
+- **type**: `distance` (2 selections, `gmx distance`), `angle` (3) or `dihedral` (4) (both
+  `gmx gangle`). Distances are in nm, angles and dihedrals in degrees.
+- **name**: letters, digits, `_ . -`; used in the output file name (`distance_SAM_C36.xvg`) and
+  as the plot title. Names must be unique.
+- **selections**: [GROMACS selection syntax](https://manual.gromacs.org/current/onlinehelp/selections.html)
+  (`gmx help selections`). **Each must give exactly one position**: one atom, or `com of` /
+  `cog of` (centre of mass / geometry) a group. Periodic boundaries are taken into account.
+
+Measurements form the categories `distance` and `angle` (dihedrals included) for `--only` /
+`--skip`, and they run only when `--measure` is given. They use the same time window and
+`--plot-tu` as the other analyses.
+
+### Checks before anything runs
+
+The file is checked line by line (type, name, number of selections, empty selections), then
+every selection is evaluated with `gmx select` on the structure file (and index file). Any
+problem stops the script, before the concatenation, with all problems listed at once, e.g.:
+
+```
+✗ distance whole_res: 'resname TRP' matches 24 atom(s); it needs exactly 1 (one atom, or "com of"/"cog of" a group)
+✗ distance typo: gmx select rejected a selection:
+      Selection 'resname TRP and name NEE1' never matches any atoms.
+✗ angle no_group: gmx select rejected a selection:
+      Cannot match 'group "Loop9"', because no such index group can be found.
+```
+
+Selections are evaluated on the structure file; ones that depend on positions (e.g. `within`)
+could match a different number of atoms in later frames.
+
+### Selection tips
+
+| You want | Selection |
+|---|---|
+| an atom by residue name (if that residue occurs once) | `resname SAM and name SD` |
+| an atom by residue number | `resid 36 and name SG` |
+| centre of mass of a residue / of an index group | `com of resname SAM`, `com of group "Loop1"` |
+| a group combined with other conditions | `group "Helix" and name CA` (a bare `"Helix" and ...` is a syntax error) |
+| logic, ranges, several names | `com of ((resname TRP or resname TYR) and not name N CA C O)`, `resid 1 to 10` |
+| wildcards | `name "H*"` (must be quoted) |
+
+- Atom names follow your topology: check them with `grep SAM conf.gro` or try a selection with
+  `gmx select -s md.tpr -n index.ndx -select 'resname SAM and name SD'`.
+- With `-n/--index`, GROMACS' predefined groups (`Protein`, `Backbone`, ...) are only available
+  if the index file contains them (files made with `gmx make_ndx` do).
 
 ## Time Units
 

@@ -53,13 +53,30 @@ set -o pipefail
 #
 # Analysis selection:
 #   --skip <list>               Comma-separated categories to skip: energy,rmsd,gyration,sasa,
-#                              secondary-structure,rmsf ("dssp" is an alias for secondary-structure)
+#                              secondary-structure,rmsf,distance,angle ("dssp" is an alias for
+#                              secondary-structure; distance and angle need --measure)
 #   --only <list>                Comma-separated categories to run exclusively (same names)
 #   --energy-terms <list>       Comma-separated gmx energy term names, one .xvg per term
 #                              (default: Temperature,Pressure,Potential,Total-Energy)
 #   --probe-radius <nm>          SASA solvent probe radius, gmx sasa -probe (default: 0.14)
 #   --dssp-hmode <gromacs|dssp>  gmx dssp -hmode (default: gromacs)
 #   --per-atom                   RMSF per-atom instead of the default per-residue (-res)
+#
+# Distances, angles and dihedrals:
+#   --measure <file>            Measure the distances, angles and dihedrals listed in <file>, one
+#                              .xvg per measurement (categories "distance" and "angle", the latter
+#                              including dihedrals). Format, one measurement per line ('#' starts a
+#                              comment line):
+#                                <type>  <name>  <selection> | <selection> [| ...]
+#                              e.g.
+#                                distance  SAM_C36  resname SAM and name SD | resid 36 and name SG
+#                                angle     hinge    resid 10 and name CA | com of group "Helix" | resid 90 and name CA
+#                                dihedral  chi1_W6  resid 6 and name N | resid 6 and name CA | resid 6 and name CB | resid 6 and name CG
+#                              type: distance (2 selections), angle (3) or dihedral (4); name: letters,
+#                              digits, _ . - (used in the file name, e.g. distance_SAM_C36.xvg).
+#                              Selections use GROMACS selection syntax (see 'gmx help selections'),
+#                              with groups from -n/--index; each must match exactly one atom or be a
+#                              "com of"/"cog of" a group. All are checked with gmx select first.
 #
 # Output:
 #   --output-dir <dir>          Where .xvg/.dat/log files are written
@@ -153,6 +170,7 @@ dssp_hmode="gromacs"
 per_residue=true
 skip_concat=false
 concat_only=false
+measure_file=""
 xvg_format="xmgrace"
 gmx_bin="gmx"
 dry_run=false
@@ -217,6 +235,9 @@ while [[ $# -gt 0 ]]; do
             skip_concat=true; shift ;;
         --concat-only)
             concat_only=true; shift ;;
+        --measure)
+            [[ -z "$2" || "$2" == --* ]] && { echo "Error: $1 requires a value"; exit 1; }
+            measure_file="$2"; shift 2 ;;
         --xvg-format)
             [[ -z "$2" || "$2" == --* ]] && { echo "Error: $1 requires a value"; exit 1; }
             xvg_format="$2"; shift 2 ;;
@@ -271,7 +292,7 @@ if [[ -n "${index_file}" ]] && [[ ! -f "${index_file}" ]]; then
 fi
 
 # Validate and normalize --skip/--only categories (one per line via mapfile)
-valid_categories=(energy rmsd gyration sasa secondary-structure rmsf)
+valid_categories=(energy rmsd gyration sasa secondary-structure rmsf distance angle)
 normalize_categories() {
     local raw="$1"
     IFS=',' read -ra parts <<< "${raw}"
@@ -305,6 +326,57 @@ if [[ -n "${only_list}" ]]; then
         mapfile -t only_categories <<< "${normalized}"
     fi
 fi
+
+# Read the --measure file into measure_types/_names/_sels (selections of one measurement
+# joined by $'\x1f'). Strict: any malformed line stops the script with its line number.
+measure_types=(); measure_names=(); measure_sels=()
+if [[ -n "${measure_file}" ]]; then
+    if [[ ! -f "${measure_file}" ]]; then
+        echo "Error: Measurements file '${measure_file}' not found"
+        exit 1
+    fi
+    measure_error() { echo "Error: ${measure_file}, line ${lineno}: $*" >&2; exit 1; }
+    lineno=0
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        lineno=$((lineno + 1))
+        line="${line%$'\r'}"
+        [[ "${line}" =~ ^[[:space:]]*(#|$) ]] && continue
+        read -r m_type m_name m_rest <<< "${line}"
+        case "${m_type}" in
+            distance) m_nsel=2 ;;
+            angle)    m_nsel=3 ;;
+            dihedral) m_nsel=4 ;;
+            *) measure_error "unknown type '${m_type}' (use distance, angle or dihedral)" ;;
+        esac
+        [[ "${m_name}" =~ ^[A-Za-z0-9_.-]+$ ]] \
+            || measure_error "invalid name '${m_name}' (use letters, digits, _ . - only)"
+        for n in "${measure_names[@]}"; do
+            [[ "${n}" == "${m_name}" ]] && measure_error "name '${m_name}' is used twice"
+        done
+        # Empty parts ("a | | b", or a leading/trailing |) would be dropped silently by read below
+        [[ "|${m_rest}|" =~ \|[[:space:]]*\| ]] \
+            && measure_error "empty selection (check the | separators)"
+        IFS='|' read -ra m_parts <<< "${m_rest}"
+        m_joined=""
+        for i in "${!m_parts[@]}"; do
+            m_part="${m_parts[i]#"${m_parts[i]%%[![:space:]]*}"}"   # trim leading spaces
+            m_part="${m_part%"${m_part##*[![:space:]]}"}"           # trim trailing spaces
+            [[ -n "${m_part}" ]] || measure_error "empty selection (check the | separators)"
+            m_joined+="${m_joined:+$'\x1f'}${m_part}"
+        done
+        [[ ${#m_parts[@]} -eq ${m_nsel} ]] \
+            || measure_error "$( [[ ${m_type} == angle ]] && echo an || echo a ) ${m_type} needs ${m_nsel} selections separated by |, found ${#m_parts[@]}"
+        measure_types+=("${m_type}"); measure_names+=("${m_name}"); measure_sels+=("${m_joined}")
+    done < "${measure_file}"
+    [[ ${#measure_types[@]} -gt 0 ]] || { echo "Error: No measurements found in '${measure_file}'"; exit 1; }
+    unset -f measure_error
+fi
+for c in "${only_categories[@]}"; do
+    if [[ ( "${c}" == distance || "${c}" == angle ) && -z "${measure_file}" ]]; then
+        echo "Error: --only ${c} needs --measure <file> with the measurements to make"
+        exit 1
+    fi
+done
 
 should_run() {
     local name="$1"
@@ -460,6 +532,7 @@ if [[ "${concat_only}" == true ]]; then
     echo "Analyses:        none (--concat-only)"
 else
     echo "Energy terms:    ${energy_terms}"
+    [[ -n "${measure_file}" ]] && echo "Measurements:    ${#measure_types[@]} from ${measure_file}"
 fi
 echo "Output dir:      ${output_dir}"
 echo "===================================="
@@ -660,6 +733,16 @@ postprocess_energy_xvg() {
     run_cmd "Remove temporary gmx energy output" rm -f "${stats_file}"
 }
 
+# Sets the '@ title' of an .xvg file (e.g. a measurement's name instead of gmx's generic
+# "Distance"). Runs through run_cmd, so it is logged to --save-script and honors --dry-run.
+set_xvg_title() {
+    local xvg="$1" title="$2"
+    run_cmd "Set title of $(basename "${xvg}") to '${title}'" \
+        awk -v title="${title}" -v out="${xvg}.tmp" \
+            '/^@ +title / { print "@    title \"" title "\"" > out; next } { print > out }' "${xvg}" &&
+    run_cmd "Replace $(basename "${xvg}") with the processed file" mv "${xvg}.tmp" "${xvg}"
+}
+
 # Source GROMACS if not already available (skip check in dry-run mode)
 if [[ "${dry_run}" == false ]] && ! command -v "${gmx_bin%% *}" &> /dev/null; then
     if [[ -f /programs/gromacs-2025.2/bin/GMXRC.bash ]]; then
@@ -667,6 +750,61 @@ if [[ "${dry_run}" == false ]] && ! command -v "${gmx_bin%% *}" &> /dev/null; th
     else
         echo "Error: GROMACS not found. Please source GMXRC.bash manually or add gmx to PATH."
         exit 1
+    fi
+fi
+
+# --- Check the --measure selections before doing any work ------------------------
+# Each selection must give exactly one position (one atom, or "com of"/"cog of" a group).
+# One gmx select call per measurement, on the structure file (+ index): its -os output has
+# one column per selection with the number of positions it matches.
+if [[ ${#measure_types[@]} -gt 0 ]] && [[ "${concat_only}" == false ]] && { should_run distance || should_run angle; }; then
+    if ! command -v "${gmx_bin%% *}" &> /dev/null; then
+        echo ""
+        echo "Note: gmx not available, measurement selections not checked (dry run)"
+    else
+        echo ""
+        echo "--- Checking ${#measure_types[@]} measurement(s) in ${measure_file} ---"
+        size_xvg="$(mktemp --suffix=.xvg)"
+        select_err="$(mktemp)"
+        failed=0
+        for i in "${!measure_types[@]}"; do
+            IFS=$'\x1f' read -ra m_parts <<< "${measure_sels[i]}"
+            rm -f "${size_xvg}"
+            "${gmx_bin}" select -s "${structure_file}" "${index_flag[@]}" -select "${m_parts[@]}" \
+                -os "${size_xvg}" -xvg none -quiet > /dev/null 2> "${select_err}" || true
+            # First data line: time, then one count per selection
+            counts=()
+            [[ -s "${size_xvg}" ]] && read -ra counts <<< "$(grep -v '^[@#]' "${size_xvg}" | head -n 1)"
+            if [[ ${#counts[@]} -ne $(( ${#m_parts[@]} + 1 )) ]]; then
+                echo "✗ ${measure_types[i]} ${measure_names[i]}: gmx select rejected a selection:"
+                # GROMACS' explanation sits between a heading ("Error in user input",
+                # "Inconsistency in user input", "Fatal error") and "For more information"
+                reason="$(sed -n '/in user input:\|Fatal error/,/For more information/p' "${select_err}" \
+                    | grep -vE '^[[:space:]]*$|in user input:|Fatal error|For more information|Invalid command-line options|In command-line option')"
+                if [[ -z "${reason}" ]]; then
+                    reason="$(grep -vE '^[[:space:]]*$|^-+$|^(Program|Source file|Function|website):' "${select_err}" | tail -n 5)"
+                fi
+                echo "${reason}" | sed 's/^[[:space:]]*/      /'
+                failed=1
+                continue
+            fi
+            for j in "${!m_parts[@]}"; do
+                count="${counts[j + 1]}"
+                if ! [[ "${count}" =~ ^[0-9]+(\.0+)?$ ]]; then
+                    echo "✗ ${measure_types[i]} ${measure_names[i]}: unexpected gmx select output '${count}'"
+                    failed=1
+                elif [[ "${count%%.*}" -ne 1 ]]; then
+                    echo "✗ ${measure_types[i]} ${measure_names[i]}: '${m_parts[j]}' matches ${count%%.*} atom(s); it needs exactly 1 (one atom, or \"com of\"/\"cog of\" a group)"
+                    failed=1
+                fi
+            done
+        done
+        rm -f "${size_xvg}" "${select_err}"
+        if [[ "${failed}" -ne 0 ]]; then
+            echo "Error: Fix the measurements in ${measure_file} (nothing has been run)"
+            exit 1
+        fi
+        echo "✓ All selections valid"
     fi
 fi
 
@@ -777,6 +915,32 @@ if should_run rmsf; then
     [[ "${per_residue}" == true ]] && cmd+=(-res)
     run_piped_cmd "RMS fluctuations (${group})" "${group}" "${cmd[@]}" || true
 fi
+
+# --- 8. Distances, angles and dihedrals (--measure) ------------------------------
+for i in "${!measure_types[@]}"; do
+    m_type="${measure_types[i]}"; m_name="${measure_names[i]}"
+    if [[ "${m_type}" == distance ]]; then
+        should_run distance || continue
+    else
+        should_run angle || continue
+    fi
+    IFS=$'\x1f' read -ra m_parts <<< "${measure_sels[i]}"
+    m_selection="${m_parts[0]}"
+    for m_part in "${m_parts[@]:1}"; do m_selection+=" plus ${m_part}"; done
+    out="${output_dir}/${m_type}_${m_name}.xvg"
+    if [[ "${m_type}" == distance ]]; then
+        set_time_flags distance
+        cmd=("${gmx_bin}" distance -s "${structure_file}" -f "${concat_xtc}" -select "${m_selection}" \
+             -oall "${out}" -xvg "${xvg_format}" "${index_flag[@]}" "${time_flags[@]}")
+    else
+        set_time_flags gangle
+        cmd=("${gmx_bin}" gangle -s "${structure_file}" -f "${concat_xtc}" -g1 "${m_type}" -group1 "${m_selection}" \
+             -oall "${out}" -xvg "${xvg_format}" "${index_flag[@]}" "${time_flags[@]}")
+    fi
+    if run_cmd "${m_type^} ${m_name}" "${cmd[@]}"; then
+        set_xvg_title "${out}" "${m_name} (${m_type})" || true
+    fi
+done
 
 echo ""
 echo "=== Analysis complete ==="
