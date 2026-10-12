@@ -68,6 +68,17 @@ set -o pipefail
 #   --probe-radius <nm>          SASA solvent probe radius, gmx sasa -probe (default: 0.14)
 #   --dssp-hmode <gromacs|dssp>  gmx dssp -hmode (default: gromacs)
 #   --per-atom                   RMSF per-atom instead of the default per-residue (-res)
+#                              The RMSF step also writes rmsf_bfactors.pdb: the structure with
+#                              B-factors from the MD (gmx rmsf -oq), e.g. for coloring in PyMOL.
+#
+# Comparison with crystal B-factors:
+#   --bfactors <file>          Compare the MD C-alpha RMSF with the C-alpha B-factors of a crystal
+#                              structure: a PDB file (one chain; residue numbers as in the
+#                              topology) or a list of "residue B-factor" lines. Writes
+#                              rmsf_calpha.xvg and rmsf_vs_bfactors.xvg (both curves, with the
+#                              Pearson correlation), converting B to RMSF = sqrt(3B/(8 pi^2))
+#   --bfactor-scale <none|mean|zscore>  none: crystal B converted to RMSF (nm); mean: crystal
+#                              curve scaled to the MD mean (default); zscore: both as z-scores
 #
 # Distances, angles and dihedrals:
 #   --measure <file>            Measure the distances, angles and dihedrals listed in <file>, one
@@ -188,6 +199,8 @@ per_residue=true
 skip_concat=false
 concat_only=false
 measure_file=""
+bfactors_file=""
+bfactor_scale=""
 xvg_format="xmgrace"
 gmx_bin="gmx"
 dry_run=false
@@ -255,6 +268,12 @@ while [[ $# -gt 0 ]]; do
         --measure)
             [[ -z "$2" || "$2" == --* ]] && { echo "Error: $1 requires a value"; exit 1; }
             measure_file="$2"; shift 2 ;;
+        --bfactors)
+            [[ -z "$2" || "$2" == --* ]] && { echo "Error: $1 requires a value"; exit 1; }
+            bfactors_file="$2"; shift 2 ;;
+        --bfactor-scale)
+            [[ -z "$2" || "$2" == --* ]] && { echo "Error: $1 requires a value"; exit 1; }
+            bfactor_scale="$2"; shift 2 ;;
         --xvg-format)
             [[ -z "$2" || "$2" == --* ]] && { echo "Error: $1 requires a value"; exit 1; }
             xvg_format="$2"; shift 2 ;;
@@ -408,6 +427,36 @@ for c in "${only_categories[@]}"; do
         exit 1
     fi
 done
+
+# --bfactors: check the options and read the B-factor file now, before any work
+script_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+bfactors_tool="${script_dir}/bfactors_vs_rmsf.py"
+if [[ -n "${bfactor_scale}" && -z "${bfactors_file}" ]]; then
+    echo "Error: --bfactor-scale needs --bfactors <file>"
+    exit 1
+fi
+bfactor_scale="${bfactor_scale:-mean}"
+if [[ -n "${bfactors_file}" ]]; then
+    case "${bfactor_scale}" in
+        none|mean|zscore) ;;
+        *) echo "Error: Unknown --bfactor-scale '${bfactor_scale}' (use none, mean or zscore)"; exit 1 ;;
+    esac
+    if [[ ${#only_categories[@]} -gt 0 ]] && [[ " ${only_categories[*]} " != *" rmsf "* ]]; then
+        echo "Error: --bfactors compares with the RMSF analysis: include rmsf in --only"
+        exit 1
+    fi
+    for c in "${skip_categories[@]}"; do
+        if [[ "${c}" == rmsf ]]; then
+            echo "Error: --bfactors compares with the RMSF analysis, which --skip rmsf leaves out"
+            exit 1
+        fi
+    done
+    if ! command -v python3 &> /dev/null; then
+        echo "Error: --bfactors needs python3"
+        exit 1
+    fi
+    python3 "${bfactors_tool}" --check "${bfactors_file}" || exit 1
+fi
 
 should_run() {
     local name="$1"
@@ -981,9 +1030,26 @@ if should_run rmsf; then
     out="${output_dir}/rmsf.xvg"
     # rmsf's x-axis is residue/atom index, not time; -b/-e/-dt only select the frames to average over
     set_time_flags rmsf range-only
-    cmd=("${gmx_bin}" rmsf -s "${structure_file}" -f "${traj_xtc}" -o "${out}" -xvg "${xvg_format}" "${index_flag[@]}" "${time_flags[@]}")
+    cmd=("${gmx_bin}" rmsf -s "${structure_file}" -f "${traj_xtc}" -o "${out}" -xvg "${xvg_format}" "${index_flag[@]}" "${time_flags[@]}"
+         -oq "${output_dir}/rmsf_bfactors.pdb")
     [[ "${per_residue}" == true ]] && cmd+=(-res)
     run_piped_cmd "RMS fluctuations (${group})" "${group}" "${cmd[@]}" || true
+
+    # Comparison with crystal B-factors: per-residue C-alpha RMSF, then bfactors_vs_rmsf.py
+    if [[ -n "${bfactors_file}" ]]; then
+        out_ca="${output_dir}/rmsf_calpha.xvg"
+        out_cmp="${output_dir}/rmsf_vs_bfactors.xvg"
+        cmd=("${gmx_bin}" rmsf -s "${structure_file}" -f "${traj_xtc}" -o "${out_ca}" -res -xvg "${xvg_format}" "${index_flag[@]}" "${time_flags[@]}")
+        if run_piped_cmd "RMS fluctuations (C-alpha, for the B-factor comparison)" "C-alpha" "${cmd[@]}"; then
+            if run_cmd "Compare with crystal B-factors (${bfactors_file}, scale: ${bfactor_scale})" \
+                    python3 "${bfactors_tool}" "${out_ca}" "${bfactors_file}" -o "${out_cmp}" --scale "${bfactor_scale}"; then
+                # Show the correlation and any unmatched residues (the tool's output went to the log)
+                if [[ "${dry_run}" == false ]]; then
+                    tail -n 8 "${log_file}" | grep -E '^(Note|Warning|Pearson)' | sed 's/^/    /' || true
+                fi
+            fi
+        fi
+    fi
 fi
 
 # --- 8. Distances, angles and dihedrals (--measure) ------------------------------

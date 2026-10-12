@@ -41,7 +41,7 @@ analysis is written to its own clearly named `.xvg` file in one output directory
 | 4 | `gyration` | `gmx gyrate` | `gyration_radius.xvg` |
 | 5 | `sasa` | `gmx sasa` | `sasa.xvg` |
 | 6 | `secondary-structure` (alias `dssp`) | `gmx dssp` | `secondary_structure.dat`, `secondary_structure_counts.xvg` |
-| 7 | `rmsf` | `gmx rmsf` | `rmsf.xvg` (per residue by default) |
+| 7 | `rmsf` | `gmx rmsf` | `rmsf.xvg` (per residue by default), `rmsf_bfactors.pdb` (structure with B-factors from the MD); with `--bfactors` also `rmsf_calpha.xvg` and `rmsf_vs_bfactors.xvg` |
 | 8 | `distance`, `angle` (only with `--measure`) | `gmx distance`, `gmx gangle` | one file per measurement: `distance_<name>.xvg`, `angle_<name>.xvg`, `dihedral_<name>.xvg` |
 
 Energy file names are the term name in lower case with `-` replaced by `_`
@@ -109,6 +109,8 @@ gmx_analysis.sh ../run2/md.xtc --only rmsd,rmsf
 | `--probe-radius <nm>` | `0.14` | SASA solvent probe radius (`gmx sasa -probe`) |
 | `--dssp-hmode <gromacs\|dssp>` | `gromacs` | `gmx dssp -hmode` |
 | `--per-atom` | off | RMSF per atom instead of the default per residue (`-res`) |
+| `--bfactors <file>` | - | Compare the MD C-alpha RMSF with crystal B-factors (PDB file or `residue B` list), see [Comparison with Crystal B-factors](#comparison-with-crystal-b-factors---bfactors) |
+| `--bfactor-scale <none\|mean\|zscore>` | `mean` | How the crystal curve is compared with the MD (see below) |
 | `--measure <file>` | - | Distances, angles and dihedrals to measure, see [Distances, Angles and Dihedrals](#distances-angles-and-dihedrals---measure) |
 | `--output-dir <dir>` | `<basename>_<replica>_analysis` (single run: `<basename>_analysis`) | Where `.xvg`/`.dat`/log files are written |
 | `--xvg-format <xmgrace\|xmgr\|none>` | `xmgrace` | Passed as `-xvg` to every tool that supports it |
@@ -191,6 +193,59 @@ could match a different number of atoms in later frames.
 - With `-n/--index`, GROMACS' predefined groups (`Protein`, `Backbone`, ...) are only available
   if the index file contains them (files made with `gmx make_ndx` do).
 
+## Comparison with Crystal B-factors (`--bfactors`)
+
+Compares the per-residue C-alpha RMSF of the MD with the C-alpha B-factors of a crystal
+structure, on the same plot:
+
+```bash
+gmx_analysis.sh 2ckd 0 --only rmsf --bfactors 2ckd.pdb                     # scaled to the MD mean
+gmx_analysis.sh 2ckd 0 --only rmsf --bfactors 2ckd.pdb --bfactor-scale zscore
+```
+
+The isotropic B-factor and the fluctuations are related by B = 8π²/3 · RMSF², so the crystal
+values are converted with **RMSF = √(3B / 8π²)** (B in Å², then Å → nm). This is the same
+relation `gmx rmsf -oq` uses to write `rmsf_bfactors.pdb`.
+
+Output, in addition to `rmsf.xvg`:
+
+| File | Contents |
+|------|----------|
+| `rmsf_calpha.xvg` | MD RMSF of the C-alpha atoms, per residue |
+| `rmsf_vs_bfactors.xvg` | residue, MD RMSF, RMSF from the crystal B-factors; the subtitle gives the Pearson correlation and the number of residues compared |
+
+**`--bfactor-scale`**:
+- `mean` (default): the crystal curve is scaled so its average equals the MD average. Crystal
+  B-factors also contain static disorder, lattice and refinement effects, while crystal packing
+  damps surface loops, so absolute values rarely agree; the shapes are what is compared.
+- `none`: crystal B converted to RMSF, both in nm, unscaled.
+- `zscore`: both curves as z-scores (mean 0, standard deviation 1).
+
+The Pearson correlation doesn't depend on the scale.
+
+**The B-factor file** is a PDB file or a plain list with one `residue B-factor` pair per line.
+From a PDB file, the C-alpha atoms are read. Requirements:
+- **one chain**, and **residue numbers as in the topology**: residues are paired by number.
+  Unmatched residues on either side are listed and left out; an error is given if (almost)
+  nothing matches.
+- alternative conformations: the one with the highest occupancy is used.
+- not allowed: several MODELs (NMR ensembles, whose B-factors are meaningless) and insertion
+  codes.
+
+The file is read and checked before anything runs. The tool also **warns when several residues
+share exactly the lowest B-factor**, e.g. 16 residues at 2.00 Å² in 2ckd.pdb. That is usually a
+lower limit set during refinement, not real motion, and it flattens the crystal curve there.
+
+The comparison uses the C-alpha group, which `gmx rmsf` takes from the topology, or from the
+index file if `-n` is given (files made with `gmx make_ndx` contain it).
+
+On its own, the comparison step is `bfactors_vs_rmsf.py`, which also works on existing results:
+
+```bash
+bfactors_vs_rmsf.py rmsf_calpha.xvg 2ckd.pdb -o rmsf_vs_bfactors.xvg --scale none
+bfactors_vs_rmsf.py --check 2ckd.pdb          # only read and check the B-factor file
+```
+
 ## Time Units
 
 Two separate options control time:
@@ -259,6 +314,7 @@ All written to `--output-dir` (default `<basename>_<replica>_analysis/`):
 | `<basename>_<replica>_concat.xtc` / `.edr` | Concatenated trajectory and energy files |
 | `*.xvg` | One file per analysis (see [Pipeline](#pipeline)) |
 | `secondary_structure.dat` | Per-residue DSSP string for every frame |
+| `rmsf_bfactors.pdb` | Structure with B-factors computed from the MD RMSF (`gmx rmsf -oq`), e.g. to color by flexibility in PyMOL |
 | `<basename>_<replica>_analysis.log` | Full stdout/stderr of every gmx command |
 | `gmx_analysis_commands.sh` | Reproducibility script (see `--save-script`) |
 
