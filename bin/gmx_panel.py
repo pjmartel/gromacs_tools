@@ -23,10 +23,12 @@ from __future__ import annotations
 
 import argparse
 import base64
+import errno
 import io
 import os
 import re
 import socket
+import subprocess
 import sys
 from datetime import datetime
 from functools import partial
@@ -450,6 +452,53 @@ class PanelHandler(BaseHTTPRequestHandler):
 # Entry point
 # ---------------------------------------------------------------------------
 
+_DEFAULT_PORT = 8080
+_PORT_TRIES = 20   # without --port: try 8080, 8081, ... up to this many ports
+
+
+def describe_port_user(port: int) -> str:
+    """Return " by process <pid> (<command>)" for the program listening on *port*, or "" if
+    it can't be found (ss shows the process only for your own programs)."""
+    try:
+        out = subprocess.run(["ss", "-H", "-ltnp", f"sport = :{port}"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    match = re.search(r"pid=(\d+)", out)
+    if not match:
+        return ""
+    pid = match.group(1)
+    try:
+        argv = Path(f"/proc/{pid}/cmdline").read_bytes().decode(errors="replace").split("\0")
+        # Shorten absolute paths to their last part: "python -u gmx_panel.py --dir run1"
+        cmd = " ".join(os.path.basename(a) if a.startswith("/") else a for a in argv if a)
+    except OSError:
+        cmd = ""
+    if len(cmd) > 100:
+        cmd = cmd[:97] + "..."
+    return f" by process {pid}" + (f" ({cmd})" if cmd else "")
+
+
+def start_server(host: str, port: int | None, handler_factory) -> HTTPServer:
+    """Start the HTTP server. With an explicit *port*, use exactly that port (exit with a
+    message saying which program holds it, if in use); otherwise start at _DEFAULT_PORT and
+    take the next free port."""
+    explicit = port is not None
+    first = port if explicit else _DEFAULT_PORT
+    for candidate in ([first] if explicit else range(first, first + _PORT_TRIES)):
+        try:
+            return HTTPServer((host, candidate), handler_factory)
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:
+                raise
+            holder = describe_port_user(candidate)
+            if explicit:
+                sys.exit(f"Error: port {candidate} is already in use{holder}.\n"
+                         f"Stop that program, or choose another port with --port.")
+            print(f"Port {candidate} is already in use{holder}; trying {candidate + 1}.")
+    sys.exit(f"Error: ports {first}-{first + _PORT_TRIES - 1} are all in use; choose one with --port.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="gmx_panel",
@@ -492,8 +541,9 @@ Examples:
              "relative to --dir; overrides auto-scan)",
     )
     parser.add_argument(
-        "--port", "-p", type=int, default=8080,
-        help="Port to serve the dashboard on (default: 8080)",
+        "--port", "-p", type=int, default=None,
+        help="Port to serve the dashboard on (default: %d, or the next free port if it is "
+             "in use; an explicitly given port is used or the panel stops)" % _DEFAULT_PORT,
     )
     parser.add_argument(
         "--host", type=str, default="0.0.0.0",
@@ -566,12 +616,13 @@ Examples:
         hostname = "localhost"
 
     handler_factory = partial(PanelHandler, xvg_files, args)
-    server = HTTPServer((args.host, args.port), handler_factory)
+    server = start_server(args.host, args.port, handler_factory)
+    port = server.server_address[1]
 
     print(f"\nDashboard available at:")
-    print(f"  http://localhost:{args.port}/")
+    print(f"  http://localhost:{port}/")
     if hostname != "localhost":
-        print(f"  http://{hostname}:{args.port}/")
+        print(f"  http://{hostname}:{port}/")
     if args.refresh:
         print(f"  (auto-refresh every {args.refresh}s)")
     print("\nPress Ctrl+C to stop.\n")

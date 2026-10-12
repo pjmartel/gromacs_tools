@@ -45,7 +45,7 @@ Then open `http://localhost:8080/` in a browser. Stop the server with `Ctrl+C`.
 |--------|---------|-------------|
 | `-d, --dir <dir>` | `.` | Directory to scan for `*.xvg` files |
 | `-f, --files <file> [...]` | - | Explicit list of XVG files to show, in this order. Names are resolved relative to `--dir`; absolute paths are used as is. Disables auto-scan |
-| `-p, --port <port>` | `8080` | Port to serve the dashboard on |
+| `-p, --port <port>` | `8080`, or the next free port | Port to serve the dashboard on. Without `--port`, a port in use is skipped (8081, 8082, …); an explicitly given port is used, or the panel stops with a message |
 | `--host <addr>` | `0.0.0.0` | Interface to bind to (`0.0.0.0` = all interfaces) |
 | `--title <text>` | `GROMACS Analysis Dashboard` | Page title |
 | `-s, --style <style>` | `lines` | Plot style passed to `plot_xvg`: `dots`, `lines` or `lines+dots` |
@@ -198,8 +198,17 @@ python bin/gmx_panel.py --figsize 10 5 --dpi 120
 Point `--dir` at the directory that contains the `.xvg` files (e.g. the `--output-dir` of
 `gmx_analysis.sh`), or list them with `--files`.
 
-### "Address already in use"
-Another process (or a previous dashboard) is using the port. Pick another one with `--port`.
+### Port already in use
+Usually an earlier dashboard is still running (in another terminal, screen window or the
+background). The panel tells you which program holds the port:
+
+```
+Port 8080 is already in use by process 12345 (python gmx_panel.py --dir run1); trying 8081.
+```
+
+Without `--port` it then simply uses the next free port and prints its address; with an
+explicit `--port` it stops instead. To stop the old dashboard: `kill 12345` (or Ctrl+C in its
+terminal). To see what listens on a port yourself: `ss -ltnp | grep ':8080 '`.
 
 ### A card shows "Error rendering plot"
 The file could not be parsed or plotted by `plot_xvg`. The error message is shown on the
