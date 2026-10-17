@@ -86,6 +86,48 @@ python bin/gmx_prepare.py protein.pdb --cation K --anion CL
 python bin/gmx_prepare.py protein.pdb --cation NA --anion CL
 ```
 
+### Ionic Strength
+
+By default, only enough counter-ions are added to neutralize the system. With
+`--ionic-strength`, `--cation`/`--anion` pairs are added for a target ionic strength, in mol/kg
+(molal), the neutralizing ions included:
+
+```bash
+# Physiological ionic strength with NaCl
+python bin/gmx_prepare.py protein.pdb --ionic-strength 0.145
+
+# KCl instead
+python bin/gmx_prepare.py protein.pdb --ionic-strength 0.15 --cation K --anion CL
+```
+
+How the ion counts are found:
+- After solvation, the number of water molecules (all `SOL` lines of the topology's
+  `[ molecules ]` section) and the net charge (as reported by `grompp`) are read.
+- The numbers of cations and anions are chosen so the system is exactly neutral and the
+  ionic strength I = ½ · (number of ions) / (mass of the remaining water) is as close as possible
+  to the target. Each ion replaces one water molecule, which is taken into account.
+- The counts are passed to `genion` (`-np`/`-nn`), and a final `grompp` run checks that the
+  system is neutral.
+
+The output shows the result:
+
+```
+🧂 Ions for ionic strength 0.145 mol/kg (molal):
+  Water molecules:  3,401, net charge before ions: +1
+  Adding:           8 NA + 9 CL (replacing 17 waters, 3,384 left)
+  Ionic strength:   0.1394 mol/kg
+```
+
+Notes:
+- **Molal instead of molar:** molality (mol per kg of water) avoids computing the solvent
+  volume; at low ionic strengths it is very close to molarity.
+- **Monovalent ions only** (Na⁺, K⁺, Cl⁻, ...). With other ions the final charge check fails.
+- **Small boxes** give coarse steps: with ~3,400 waters one ion pair changes I by about
+  0.016 mol/kg. If neutralizing alone already exceeds the target (a highly charged protein in a
+  small box), the result is reported with a warning.
+- `--ionic-strength` always neutralizes, so it can't be combined with `--no-neutral`. In a
+  `--dry-run`, the counts appear as placeholders `N_POS`/`N_NEG`.
+
 ### Handling PDB Files with Hydrogens
 
 ```bash
@@ -165,6 +207,7 @@ python bin/gmx_prepare.py protein.pdb \
 | `-pname, --cation` | `NA` | Cation type for neutralization |
 | `-nname, --anion` | `CL` | Anion type for neutralization |
 | `--no-neutral` | `False` | Do not add neutralizing ions |
+| `--ionic-strength` | - | Target ionic strength in mol/kg (molal), neutralizing ions included; see [Ionic Strength](#ionic-strength) |
 | `--ignore-hydrogens` | `False` | Ignore H atoms in PDB (pass -ignh to pdb2gmx) |
 | `--dry-run` | `False` | Generate commands without executing (preview mode) |
 | `-v, --verbose` | `False` | Verbose output (show detailed progress) |

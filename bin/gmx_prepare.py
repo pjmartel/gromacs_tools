@@ -9,6 +9,7 @@ import subprocess
 import sys
 import os
 import logging
+import math
 import re
 from pathlib import Path
 from datetime import datetime
@@ -467,6 +468,121 @@ def get_solvent_group_number(tpr_file):
         logger.error("Error determining solvent group number.")
     return None
 
+# Molar mass of water (kg/mol), for converting a water count to kg of solvent
+M_H2O = 0.0180153
+
+
+def ion_counts(n_water, q, I, M=M_H2O):
+    """
+    Number of monovalent ions needed for neutrality and a target ionic strength.
+
+    Molalities approximate molarities here (no box volume needed); for low ionic strengths
+    the difference is small.
+
+    Parameters
+    ----------
+    n_water : int
+        Number of water molecules in the system before any are replaced.
+    q : int
+        Net charge of the solute (e.g. the protein), in elementary charges.
+    I : float
+        Target ionic strength, in mol/kg (molal). Neutralizing counterions
+        are included in this value.
+    M : float, optional
+        Molar mass of water in kg/mol. Default 0.0180153.
+
+    Returns
+    -------
+    dict
+        Keys:
+        ``S``        total ions added (= water molecules replaced)
+        ``n_pos``    monovalent cations to add
+        ``n_neg``    monovalent anions to add
+        ``rem_water`` water molecules remaining
+        ``I_actual`` resulting ionic strength, mol/kg
+        ``error``    abs(I_actual - I), mol/kg
+
+    Raises
+    ------
+    ValueError
+        If no configuration satisfies neutrality with non-negative ion counts
+        and at least one remaining water molecule.
+
+    Examples
+    --------
+    >>> r = ion_counts(18000, -24, 0.145)
+    >>> r['n_pos'], r['n_neg']
+    (59, 35)
+    """
+    S_ideal = 2 * I * n_water * M / (1 + 2 * I * M)
+    qa = abs(q)
+
+    # Valid S values satisfy S >= |q| and S ≡ q (mod 2).
+    lo = math.floor(S_ideal)
+    if (lo - q) % 2:
+        lo -= 1
+    candidates = [qa] if lo < qa else [lo, lo + 2]
+
+    options = []
+    for S in candidates:
+        n_pos, n_neg = (S - q) // 2, (S + q) // 2
+        rem = n_water - S
+        if n_pos >= 0 and n_neg >= 0 and rem > 0:
+            I_actual = 0.5 * S / (rem * M)
+            options.append({
+                "S": S, "n_pos": n_pos, "n_neg": n_neg, "rem_water": rem,
+                "I_actual": I_actual, "error": abs(I_actual - I),
+            })
+
+    if not options:
+        raise ValueError("No valid ion configuration for these inputs.")
+    return min(options, key=lambda o: o["error"])
+
+
+def count_molecules(top_file, name):
+    """Total count of molecule type *name* in the [ molecules ] section of *top_file*.
+
+    Strict: sums every line for *name* (e.g. crystal waters and added solvent can both be
+    SOL), and raises ValueError if the section or the molecule is missing or a count is invalid.
+    """
+    total, found, in_section = 0, False, False
+    with open(top_file) as f:
+        for lineno, raw in enumerate(f, 1):
+            line = raw.split(";", 1)[0].strip()
+            if not line:
+                continue
+            if line.startswith("["):
+                in_section = line.replace(" ", "") == "[molecules]"
+                continue
+            if in_section:
+                parts = line.split()
+                if parts[0] == name:
+                    if len(parts) != 2 or not parts[1].isdigit():
+                        raise ValueError(f"{top_file}, line {lineno}: invalid molecule count: {raw.strip()}")
+                    total += int(parts[1])
+                    found = True
+    if not found:
+        raise ValueError(f"no '{name}' molecules in the [ molecules ] section of {top_file}")
+    return total
+
+
+def read_net_charge(grompp_log):
+    """Net charge of the system from grompp's output, as an integer.
+
+    grompp reports 'System has non-zero total charge: <q>' only for charged systems; without
+    that note the system is neutral. Raises ValueError for a non-integer charge.
+    """
+    with open(grompp_log) as f:
+        text = f.read()
+    matches = re.findall(r"System has non-zero total charge:\s*(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)", text)
+    if not matches:
+        return 0
+    q = float(matches[-1])
+    if abs(q - round(q)) > 1e-3:
+        raise ValueError(f"the net charge reported by grompp ({q}) is not a whole number; check the topology")
+    return int(round(q))
+
+
 def automate_gromacs(args):
     """Automate GROMACS preparation steps for MD simulations.
 
@@ -521,6 +637,8 @@ def automate_gromacs(args):
         logger.info(f"  Box distance:   {args.box_distance} nm")
         logger.info(f"  Ions:           {args.cation}/{args.anion}")
         logger.info(f"  Neutralize:     {'No' if args.no_neutral else 'Yes'}")
+        if args.ionic_strength is not None:
+            logger.info(f"  Ionic strength: {args.ionic_strength} mol/kg (counts computed after solvation)")
     else:
         if skip_pdb2gmx:
             logger.info(f"Mode: Using existing topology and structure")
@@ -616,15 +734,66 @@ def automate_gromacs(args):
             logger.error("❌ Could not detect SOL group in index (from make_ndx). Aborting.")
             return False
 
-    # Build genion command with optional neutralization
-    neutral_flag = "" if getattr(args, "no_neutral", False) else " -neutral"
+    # Ion counts: neutralize only (-neutral), or reach --ionic-strength with explicit counts
+    if args.ionic_strength is None:
+        neutral_flag = "" if getattr(args, "no_neutral", False) else " -neutral"
+        ion_flags = neutral_flag
+        genion_description = "Add ions and neutralize (genion)"
+    elif args.dry_run:
+        ion_flags = " -np N_POS -nn N_NEG"
+        genion_description = f"Add ions for {args.ionic_strength} mol/kg ionic strength (genion)"
+        logger.info("[DRY RUN] Using placeholders N_POS/N_NEG for the ion counts (computed from the "
+                    "water count and net charge after solvation)")
+        log_command_to_script("", "NOTE: Replace N_POS/N_NEG below with the ion counts gmx_prepare.py computes")
+    else:
+        try:
+            n_water = count_molecules(topology_file, "SOL")
+            charge = read_net_charge(grompp_log)
+            counts = ion_counts(n_water, charge, args.ionic_strength)
+        except (OSError, ValueError) as e:
+            logger.error(f"❌ Cannot compute the ion counts: {e}")
+            return False
+        logger.info("")
+        logger.info(f"🧂 Ions for ionic strength {args.ionic_strength} mol/kg (molal):")
+        logger.info(f"  Water molecules:  {n_water:,}, net charge before ions: {charge:+d}")
+        logger.info(f"  Adding:           {counts['n_pos']} {args.cation} + {counts['n_neg']} {args.anion} "
+                    f"(replacing {counts['S']} waters, {counts['rem_water']:,} left)")
+        logger.info(f"  Ionic strength:   {counts['I_actual']:.4f} mol/kg")
+        if args.ionic_strength > 0 and counts["error"] > 0.1 * args.ionic_strength:
+            logger.warning(f"⚠️  The ionic strength reached ({counts['I_actual']:.4f} mol/kg) differs from the "
+                           f"target by more than 10%" +
+                           (": neutralizing the net charge alone exceeds it (small box?)"
+                            if counts["n_pos"] == 0 or counts["n_neg"] == 0 else ""))
+        ion_flags = f" -np {counts['n_pos']} -nn {counts['n_neg']}"
+        genion_description = f"Add ions for {args.ionic_strength} mol/kg ionic strength (genion)"
+
     genion_cmd = (
         f"echo {solvent_group_number} | gmx genion -s {tpr_file} -o {ions_output} -p {topology_file} "
-        f"-pname {args.cation} -nname {args.anion}{neutral_flag}"
+        f"-pname {args.cation} -nname {args.anion}{ion_flags}"
     )
-    if not run_gromacs_command(genion_cmd, "Add ions and neutralize (genion)", genion_log, 
+    if not run_gromacs_command(genion_cmd, genion_description, genion_log,
                                dry_run=args.dry_run, step_info=f"[{current_step}/{total_steps}]"):
         return False
+
+    # With explicit ion counts, confirm with grompp that the final system is neutral
+    if args.ionic_strength is not None and not args.dry_run:
+        check_log = f"{stem}_charge_check.log"
+        check_cmd = f"gmx grompp -f minimal.mdp -c {ions_output} -p {topology_file} -o {stem}_charge_check.tpr"
+        if not run_gromacs_command(check_cmd, "Check that the system is neutral (grompp)", check_log):
+            return False
+        try:
+            final_charge = read_net_charge(check_log)
+        except (OSError, ValueError) as e:
+            logger.error(f"❌ Cannot check the final charge: {e}")
+            return False
+        if final_charge != 0:
+            logger.error(f"❌ The system still has a net charge of {final_charge:+d} after adding ions "
+                         f"(see {check_log}); are --cation/--anion monovalent?")
+            return False
+        logger.info("✓ Final system is neutral")
+        for temp_file in [f"{stem}_charge_check.tpr"]:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
 
     # Cleanup temporary files (skip in dry-run mode)
     if not args.dry_run:
@@ -729,6 +898,11 @@ Examples:
                        help="Anion type (default: CL)")
     parser.add_argument("--no-neutral", action="store_true", 
                        help="Do not add neutralizing ions (omit -neutral in genion)")
+    parser.add_argument("--ionic-strength", type=float, default=None, metavar="I",
+                       help="Add enough --cation/--anion pairs (monovalent) for this ionic strength in "
+                            "mol/kg (molal, e.g. 0.145), the neutralizing ions included, instead of only "
+                            "neutralizing. The counts are computed from the number of waters and the net "
+                            "charge after solvation")
     parser.add_argument("--ignore-hydrogens", action="store_true",
                        help="Ignore hydrogen atoms in input PDB (pass -ignh to pdb2gmx)")
     parser.add_argument("--dry-run", action="store_true", 
@@ -750,6 +924,14 @@ Examples:
     logger = logging.getLogger(__name__)
     
     # Validate input arguments
+    if args.ionic_strength is not None:
+        if args.ionic_strength < 0 or not math.isfinite(args.ionic_strength):
+            logger.error(f"❌ --ionic-strength must be zero or positive, got {args.ionic_strength}")
+            sys.exit(1)
+        if args.no_neutral:
+            logger.error("❌ --ionic-strength always neutralizes the system: don't combine it with --no-neutral")
+            sys.exit(1)
+
     skip_pdb2gmx = args.topology and args.structure
     
     if skip_pdb2gmx:
