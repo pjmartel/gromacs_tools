@@ -37,6 +37,7 @@ python bin/plot_xvg.py file.xvg
 | **gmx_extract.sh** | Extract, clean up (PBC/center/fit) and convert a trajectory for visualization | [docs/gmx_extract.md](docs/gmx_extract.md) |
 | **gmx_analysis.sh** | Concatenate production segments and run standard analyses (energy, RMSD, Rg, SASA, DSSP, RMSF) | [docs/gmx_analysis.md](docs/gmx_analysis.md) |
 | **gmx_panel.py** | Web dashboard serving all XVG analysis plots in a directory | [docs/gmx_panel.md](docs/gmx_panel.md) |
+| **gmx_monitor.py** | Live web panel of a running simulation: state, progress, speed, time left, temperature/pressure/energy graphs (from the mdrun logs) | [docs/gmx_monitor.md](docs/gmx_monitor.md) |
 | **bfactors_vs_rmsf.py** | Compare MD C-alpha RMSF with crystal B-factors (also used by `gmx_analysis.sh --bfactors`) | [docs/gmx_analysis.md](docs/gmx_analysis.md#comparison-with-crystal-b-factors---bfactors) |
 
 ## 💡 Quick Usage Examples
