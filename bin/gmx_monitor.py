@@ -7,12 +7,13 @@ and .partNNNN logs of gmx_continue_extend.sh / a single mdrun) and serves a page
 refreshes itself: state, progress of the segment and of the whole run, speed (ns/day), time
 left and finish time, and graphs of temperature, pressure, energies, conserved-energy drift,
 constraint rmsd and speed over the simulation. With --edr it also plots the box size, volume
-and density from the .edr files (through gmx energy).
+and density from the .edr files (through gmx energy); with --mindist the distance of the protein
+to its periodic image, against the cutoff, and its size against the box (gmx mindist -pi).
 
 Uses only the Python standard library: runs with any python3 >= 3.8, no packages needed.
 
 Usage:
-  gmx_monitor.py <stem> [--dir DIR] [--end NS] [--edr] [--refresh S] [--port PORT] [--once]
+  gmx_monitor.py <stem> [--dir DIR] [--end NS] [--edr] [--mindist] [--refresh S] [--port PORT] [--once]
 """
 from __future__ import annotations
 
@@ -39,7 +40,8 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 _MDRUN_HEADER = re.compile(r"^\s*:-\) GROMACS - gmx mdrun, (\S+) \(-:\s*$")
-_PARAM = re.compile(r"^   (nsteps|dt|tinit|init-step|nstlog|tcoupl|pcoupl)\s+= (\S+)\s*$")
+_PARAM = re.compile(r"^   (nsteps|dt|tinit|init-step|nstlog|tcoupl|pcoupl|rvdw|rcoulomb)\s+= (\S+)\s*$")
+_PME_OPTIMAL = re.compile(r"^\s+optimal pme grid .*, coulomb cutoff (\d+(?:\.\d+)?)\s*$")
 _REF_T = re.compile(r"^   ref-t:\s+(.+?)\s*$")
 _REF_P_ROW = re.compile(r"^      ref-p\[\s*(\d)\]=\{\s*(\S+),\s*(\S+),\s*(\S+)\}\s*$")
 _NSTEPS_OVERRIDE = re.compile(r"^Overriding nsteps with value passed on the command line: (-?\d+) steps")
@@ -117,6 +119,7 @@ class MdLog:
         self.checkpoints: list[tuple[datetime, int]] = []
         self.finished: datetime | None = None
         self.ns_per_day: float | None = None
+        self.coulomb_tuned: float | None = None  # Coulomb cutoff chosen by the PME tuning
         self.drift: float | None = None          # kJ/mol/ps per atom, reported at the end
         self.issues: dict[str, int] = {}
         self.fatal: str | None = None
@@ -181,6 +184,14 @@ class MdLog:
         return start + nsteps * dt
 
     @property
+    def cutoff(self) -> float | None:
+        """The largest non-bonded cutoff (nm): rvdw, rcoulomb, or the Coulomb cutoff the PME
+        tuning chose."""
+        values = [v for v in (self.param_float("rvdw"), self.param_float("rcoulomb"),
+                              self.coulomb_tuned) if v is not None]
+        return max(values) if values else None
+
+    @property
     def ref_p(self) -> float | None:
         if len(self._ref_p) == 3:
             return sum(self._ref_p.values()) / 3
@@ -199,6 +210,10 @@ class MdLog:
         if m:
             # the last value counts: an extended run (convert-tpr) prints a new nsteps
             self.params[m.group(1)] = m.group(2)
+            return
+        m = _PME_OPTIMAL.match(line)
+        if m:
+            self.coulomb_tuned = float(m.group(1))
             return
         m = _NSTEPS_OVERRIDE.match(line)
         if m:
@@ -580,6 +595,166 @@ class EdrReader:
 
 
 # ---------------------------------------------------------------------------
+# Distance to the periodic image (gmx mindist -pi)
+# ---------------------------------------------------------------------------
+
+def mindist_due(reader: "MindistReader", segment) -> bool:
+    """True if *segment* still has frames for the reader to compute (used by --once)."""
+    xtc, tpr, finished, t_now = segment
+    if xtc in reader._complete or t_now is None or not xtc.exists() or not tpr.exists():
+        return False
+    rows = reader._rows.get(xtc, [])
+    return not rows or finished or t_now >= rows[-1][0] + reader.dt_ps * 1.05
+
+
+def gmx_error_message(stderr: str) -> str:
+    """The message of a GROMACS error: the lines after its "Fatal error:" / "Error in user
+    input:" heading, up to the dashed line (else the last line of the output)."""
+    lines = stderr.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith(("Fatal error", "Error in user input", "Inconsistency in user input")):
+            message = []
+            for follow in lines[i + 1:]:
+                if follow.startswith("-----") or follow.startswith("For more information"):
+                    break
+                if follow.strip():
+                    message.append(follow.strip())
+            return " ".join(message)[:300] or line.strip()
+    rest = [l.strip() for l in lines if l.strip()]
+    return rest[-1][:300] if rest else "no error message"
+
+
+class MindistReader:
+    """Runs gmx mindist -pi on the run's trajectories in a background thread, one frame per
+    `dt_ps`: a first pass over each segment's trajectory, then only the frames added since
+    (gmx seeks to -b quickly in an .xtc, so this stays cheap as the trajectory grows)."""
+
+    COLUMNS = ["min per.", "max int.", "box1", "box2", "box3"]
+
+    def __init__(self, gmx: str, group: str, dt_ps: float, index: Path | None = None):
+        self.gmx = gmx
+        self.group = group
+        self.index = index
+        self.dt_ps = dt_ps
+        self.status = "waiting for the first calculation"
+        self.error: str | None = None
+        self._rows: dict[Path, list[tuple[float, ...]]] = {}     # trajectory -> rows
+        self._complete: set[Path] = set()                         # finished segments, all read
+        self._lock = threading.Lock()
+        self._running = False
+
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    def maybe_refresh(self, segments):
+        """segments: [(xtc, tpr, finished, sim time reached by its log in ps)]. Starts a background
+        calculation if one of them has at least dt_ps of new trajectory."""
+        todo = []
+        for xtc, tpr, finished, t_now in segments:
+            if xtc in self._complete or t_now is None:
+                continue
+            rows = self._rows.get(xtc, [])
+            begin = rows[-1][0] + self.dt_ps if rows else None
+            # the frame at `begin` is written once the log is past it (one more frame of margin)
+            if begin is None or t_now >= begin + 0.05 * self.dt_ps or finished:
+                todo.append((xtc, tpr, finished, begin))
+        if not todo:
+            return
+        with self._lock:
+            if self._running:
+                return
+            self._running = True
+        threading.Thread(target=self._refresh, args=(todo,), daemon=True).start()
+
+    def _refresh(self, todo):
+        try:
+            for xtc, tpr, finished, begin in todo:
+                if not xtc.exists() or not tpr.exists():
+                    self.status = f"waiting for {xtc.name if not xtc.exists() else tpr.name}"
+                    continue
+                self.status = f"computing {xtc.name}" + (f" from {begin / 1000:g} ns" if begin else "")
+                rows = self._run(xtc, tpr, begin)
+                if rows is None:
+                    return            # error: reported in self.error, tried again next time
+                old = self._rows.setdefault(xtc, [])
+                old.extend(r for r in rows if not old or r[0] > old[-1][0])
+                if finished:
+                    self._complete.add(xtc)
+            n = sum(len(r) for r in self._rows.values())
+            self.error = None
+            self.status = f"{n} frame(s), one per {self.dt_ps / 1000:g} ns, updated {datetime.now():%H:%M:%S}"
+        except Exception as exc:     # never let a gmx problem stop the monitor
+            self.error = f"{exc}"
+        finally:
+            with self._lock:
+                self._running = False
+
+    def _run(self, xtc: Path, tpr: Path, begin: float | None):
+        command = [self.gmx, "mindist", "-s", str(tpr.resolve()), "-f", str(xtc.resolve()),
+                   "-pi", "-od", "mindist.xvg", "-dt", f"{self.dt_ps:g}"]
+        if begin is not None:
+            command += ["-b", f"{begin:g}"]
+        if self.index is not None:
+            command += ["-n", str(self.index.resolve())]
+        if shutil.which("nice"):
+            command = ["nice", "-n", "19"] + command    # never slow down the simulation
+        with tempfile.TemporaryDirectory(prefix="gmx_monitor_") as tmp:
+            try:
+                run = subprocess.run(command, input=self.group + "\n", capture_output=True,
+                                     text=True, cwd=tmp, timeout=7200)
+            except (OSError, subprocess.SubprocessError) as exc:
+                self.error = f"cannot run {self.gmx} mindist: {exc}"
+                return None
+            out = Path(tmp) / "mindist.xvg"
+            if run.returncode != 0 or not out.exists():
+                if f"No such group '{self.group}'" in run.stdout:
+                    groups = re.findall(r"^Group\s+\d+ \(\s*(.+?)\) has", run.stderr, re.M)
+                    source = self.index.name if self.index is not None else tpr.name
+                    self.error = (f"no group '{self.group}' in {source} (--mindist-group); groups: "
+                                  + ", ".join(groups))
+                    return None
+                if begin is not None and "doesn't exist" in gmx_error_message(run.stderr):
+                    return []      # no frame at -b yet (still in mdrun's output buffer), or all read
+                self.error = f"gmx mindist failed on {xtc.name}: {gmx_error_message(run.stderr)}"
+                return None
+            return self._parse(out)
+
+    def _parse(self, path: Path):
+        """Rows (time ps, min per., max int., box1, box2, box3), checked against the legends."""
+        legends: dict[int, str] = {}
+        rows = []
+        with open(path) as fh:
+            for line in fh:
+                m = re.match(r'^@ s(\d+) legend "(.*)"\s*$', line)
+                if m:
+                    legends[int(m.group(1))] = m.group(2)
+                elif line.strip() and line[0] not in "#@":
+                    fields = line.split()
+                    if len(fields) != len(self.COLUMNS) + 1:
+                        continue
+                    try:
+                        rows.append(tuple(float(v) for v in fields))
+                    except ValueError:
+                        continue
+        if [legends.get(i) for i in range(len(self.COLUMNS))] != self.COLUMNS:
+            self.error = f"unexpected gmx mindist output (legends {sorted(legends.values())})"
+            return None
+        return rows
+
+    def series(self, xtcs: list[Path]) -> list[tuple[float, ...]]:
+        """The rows of *xtcs*, joined in order (a later trajectory replaces overlapping times)."""
+        out: list[tuple[float, ...]] = []
+        for xtc in xtcs:
+            rows = self._rows.get(xtc, [])
+            if out and rows:
+                while out and out[-1][0] >= rows[0][0]:
+                    out.pop()
+            out.extend(rows)
+        return out
+
+
+# ---------------------------------------------------------------------------
 # The run: all logs together, status, speed, time left
 # ---------------------------------------------------------------------------
 
@@ -642,13 +817,15 @@ class Run:
     BETWEEN_SEGMENTS_S = 600   # after a segment finished: "waiting for the next one" this long
     RATE_WINDOW_S = 900        # current speed: over the last 15 min
     PRESSURE_AVG_FRAMES = 50
+    MINDIST_MARGIN = 1.2       # warn when closer to the periodic image than 1.2 x the cutoff
 
     def __init__(self, directory: Path, stem: str, end_ns: float | None, edr: EdrReader | None,
-                 max_points: int):
+                 max_points: int, mindist: MindistReader | None = None):
         self.directory = directory
         self.stem = stem
         self.end_override = end_ns * 1000 if end_ns is not None else None
         self.edr = edr
+        self.mindist = mindist
         self.max_points = max_points
         self.logs: dict[Path, MdLog] = {}
         self.order: list[Path] = []
@@ -678,6 +855,8 @@ class Run:
                 self.samples.append((current.mtime, t))
         if self.edr:
             self.edr.maybe_refresh(self.edr_paths())
+        if self.mindist:
+            self.mindist.maybe_refresh(self.mindist_segments())
 
     @property
     def current(self) -> MdLog | None:
@@ -685,6 +864,19 @@ class Run:
 
     def edr_paths(self) -> list[Path]:
         return [p.with_suffix(".edr") for p in self.order if p.with_suffix(".edr").exists()]
+
+    def mindist_segments(self):
+        """[(xtc, tpr, finished, sim time reached in ps)] per log: <log name>.xtc and .tpr
+        (.partNNNN logs have no .tpr of their own: <stem>.tpr)."""
+        out = []
+        for path in self.order:
+            log = self.logs[path]
+            tpr = path.with_suffix(".tpr")
+            if not tpr.exists():
+                tpr = self.directory / f"{self.stem}.tpr"
+            out.append((path.with_suffix(".xtc"), tpr, log.finished is not None,
+                        log.times[-1] if log.times else None))
+        return out
 
     # -- whole run series --
     def merged(self) -> tuple[list[float], dict[str, list[float]], list[float]]:
@@ -836,6 +1028,34 @@ class Run:
         bad = sum(self.logs[p].bad_frames for p in self.order)
         if bad:
             issues["energy frames not understood (skipped)"] = bad
+        # distance to the periodic image
+        mindist = None
+        if self.mindist:
+            rows = self.mindist.series([x for x, _, _, _ in self.mindist_segments()])
+            cutoff = log.cutoff
+            limit = cutoff * self.MINDIST_MARGIN if cutoff else None
+            if cutoff and rows:
+                under = [r for r in rows if r[1] < cutoff]
+                close = [r for r in rows if cutoff <= r[1] < limit]
+                if under:
+                    issues[f"closer to its periodic image than the cutoff ({cutoff:g} nm), first at "
+                           f"{under[0][0] / 1000:g} ns; frames"] = len(under)
+                if close:
+                    issues[f"closer to its periodic image than {self.MINDIST_MARGIN:g} x the cutoff "
+                           f"({limit:.2f} nm), first at {close[0][0] / 1000:g} ns; frames"] = len(close)
+            mi = decimate(len(rows), self.max_points)
+            lowest = min(rows, key=lambda r: r[1]) if rows else None
+            mindist = {
+                "status": self.mindist.status, "error": self.mindist.error, "group": self.mindist.group,
+                "cutoff": cutoff, "limit": limit,
+                "lowest": lowest[1] if lowest else None, "lowest_ns": lowest[0] / 1000 if lowest else None,
+                "t": [round(rows[i][0] / 1000, 6) for i in mi],
+                "min": [_num(rows[i][1]) for i in mi], "maxint": [_num(rows[i][2]) for i in mi],
+                "box1": [_num(rows[i][3]) for i in mi], "box2": [_num(rows[i][4]) for i in mi],
+                "box3": [_num(rows[i][5]) for i in mi],
+            }
+            if self.mindist.error:
+                issues[self.mindist.error] = None
         # conserved-energy drift of the current log
         drift_fit = linear_slope(log.times, log.cols["Conserved En."])
         out.update({
@@ -888,6 +1108,8 @@ class Run:
             for term in EDR_TERMS:
                 if term in data:
                     out["edr"][term] = [_num(data[term][i]) for i in ei]
+        if mindist is not None:
+            out["mindist"] = mindist
         return out
 
 
@@ -931,8 +1153,17 @@ def text_status(snap: dict) -> str:
         f"  speed     : {num(rate['now'], '.1f')} ns/day now, {num(rate['avg'], '.1f')} average",
         f"  GROMACS {snap['version']} on {snap['host']}, {snap['natoms']} atoms, dt {num(snap['dt_fs'], 'g')} fs",
     ]
+    md = snap.get("mindist")
+    if md:
+        if md["t"]:
+            lines.append(f"  image     : {md['group']} {md['min'][-1]:.3f} nm from its periodic image now, lowest "
+                         f"{md['lowest']:.3f} nm at {md['lowest_ns']:g} ns (cutoff {num(md['cutoff'], 'g')} nm, "
+                         f"warning below {num(md['limit'], '.2f')} nm)")
+        else:
+            lines.append(f"  image     : {md['error'] or md['status']}")
     if snap["issues"]:
-        lines.append("  issues    : " + ", ".join(f"{k}: {v}" for k, v in snap["issues"].items()))
+        lines.append("  issues    : " + ", ".join(k if v is None else f"{k}: {v}"
+                                                   for k, v in snap["issues"].items()))
     return "\n".join(lines)
 
 
@@ -1074,8 +1305,11 @@ function draw(c) {
   g.textAlign = "right"; g.fillText("ns", W - R, H - B + 6);
   g.setLineDash([3, 3]); g.strokeStyle = css("--ref");
   for (const b of (d.boundaries || [])) if (b > xlo && b < xhi) { g.beginPath(); g.moveTo(X(b), T); g.lineTo(X(b), H - B); g.stroke(); }
-  for (const r of (d.refs || [])) if (r.y !== null) { g.beginPath(); g.moveTo(L, Y(r.y)); g.lineTo(W - R, Y(r.y)); g.stroke(); }
-  g.setLineDash([]);
+  for (const r of (d.refs || [])) if (r.y !== null && r.y !== undefined) {
+    g.setLineDash(r.dash || [3, 3]); g.strokeStyle = css(r.color || "--ref"); g.lineWidth = r.width || 1;
+    g.beginPath(); g.moveTo(L, Y(r.y)); g.lineTo(W - R, Y(r.y)); g.stroke();
+  }
+  g.setLineDash([]); g.lineWidth = 1;
   // series
   g.save(); g.beginPath(); g.rect(L, T, W - L - R, H - T - B); g.clip();
   for (const s of d.series) {
@@ -1095,6 +1329,11 @@ function draw(c) {
   for (const s of d.series.filter(s => s.name)) {
     g.fillStyle = css(s.color); g.fillRect(lx, T + 8, 12, 3); g.fillStyle = css("--text");
     g.fillText(s.name, lx + 16, T + 10); lx += 26 + g.measureText(s.name).width;
+  }
+  for (const r of (d.refs || []).filter(r => r.name && r.y !== null && r.y !== undefined)) {
+    g.strokeStyle = css(r.color || "--ref"); g.setLineDash(r.dash || [3, 3]); g.lineWidth = r.width || 1;
+    g.beginPath(); g.moveTo(lx, T + 10); g.lineTo(lx + 14, T + 10); g.stroke(); g.setLineDash([]); g.lineWidth = 1;
+    g.fillStyle = css("--text"); g.fillText(r.name, lx + 18, T + 10); lx += 28 + g.measureText(r.name).width;
   }
   // hover readout
   if (c.hover !== null && c.hover >= L && c.hover <= W - R) {
@@ -1141,7 +1380,7 @@ function render(s) {
   document.getElementById("totbar").style.width = (100 * (totp || 0)) + "%";
   document.getElementById("totpct").textContent = pct(totp);
   const iss = Object.entries(s.issues || {});
-  document.getElementById("issues").textContent = iss.length ? "⚠ " + iss.map(([k, v]) => `${k}: ${v}`).join(" · ") : "";
+  document.getElementById("issues").textContent = iss.length ? "⚠ " + iss.map(([k, v]) => v === null ? k : `${k}: ${v}`).join(" · ") : "";
   const S = s.series, common = { x: S.t, boundaries: s.boundaries, shadeFrom: s.boundaries.length ? s.current_start_ns : null };
   const last = a => a.length ? a[a.length - 1] : null;
   const set = (id, title, unit, data) => { const c = chart(id, title, unit); c.data = Object.assign({}, common, data); draw(c); };
@@ -1154,6 +1393,24 @@ function render(s) {
   set("constr", "Constraint rmsd", "", { series: [{ y: S.constr, color: "--accent3" }], info: `now ${last(S.constr) === null ? "-" : (+last(S.constr)).toExponential(2)}` });
   const sp = chart("speed", "Speed", "ns/day");
   sp.data = { x: s.speed.t, series: [{ y: s.speed.v, color: "--accent3", dots: true }], boundaries: s.boundaries, info: `now ${fmt(r.now, 1)} ns/day` }; draw(sp);
+  if (s.mindist) {
+    const M = s.mindist, mc = { x: M.t, boundaries: s.boundaries };
+    const md = chart("mindist", `Distance to periodic image (${M.group})`, "nm");
+    md.data = Object.assign({}, mc, {
+      series: [{ y: M.min, color: "--accent", dots: M.t.length <= 60 }],
+      refs: [{ y: M.cutoff, color: "--bad", dash: [6, 4], width: 1.5, name: `cutoff ${fmt(M.cutoff, 3)} nm` },
+             { y: M.limit, color: "--warn", dash: [3, 3], width: 1.5, name: `1.2 × cutoff` }],
+      info: M.error ? "⚠ " + M.error
+        : (M.t.length ? `now ${fmt(last(M.min), 2)} nm · lowest ${fmt(M.lowest, 2)} nm at ${fmt(M.lowest_ns, 1)} ns` : M.status) });
+    draw(md);
+    const same = M.box1.every((v, i) => v === M.box2[i] && v === M.box3[i]);
+    const boxes = same ? [{ name: "box", y: M.box1, color: "--accent" }]
+      : [{ name: "box 1", y: M.box1, color: "--accent" }, { name: "box 2", y: M.box2, color: "--accent3" }, { name: "box 3", y: M.box3, color: "--ref" }];
+    const sz = chart("size", `${M.group} size vs box`, "nm");
+    sz.data = Object.assign({}, mc, { series: [{ name: "largest internal distance", y: M.maxint, color: "--accent2" }].concat(boxes),
+      info: M.t.length ? `now ${fmt(last(M.maxint), 2)} of ${fmt(last(M.box1), 2)} nm` : "" });
+    draw(sz);
+  }
   if (s.edr) {
     const E = s.edr, ec = { x: E.t, boundaries: s.boundaries };
     const eset = (id, title, unit, series, info) => { const c = chart(id, title, unit); c.data = Object.assign({}, ec, { series, info }); draw(c); };
@@ -1279,6 +1536,7 @@ Examples:
   %(prog)s MnMT4_apo_0 --dir ~/projects/MnMT4/apo/run0
   %(prog)s md_0 --end 1000               # the whole run is 1000 ns
   %(prog)s md_0 --edr                    # also box, volume and density (gmx energy)
+  %(prog)s md_0 --mindist                # also distance to the periodic image (gmx mindist -pi)
   %(prog)s md_0 --once                   # print the status in the terminal and exit
 """)
     parser.add_argument("stem", help="<basename>_<replica> of the run, e.g. md_0")
@@ -1291,7 +1549,17 @@ Examples:
                         help="also plot box size, volume and density from the .edr files (gmx energy)")
     parser.add_argument("--edr-interval", type=float, default=60,
                         help="seconds between .edr reads (default: 60)")
-    parser.add_argument("--gmx", default="gmx", help="GROMACS executable for --edr (default: gmx)")
+    parser.add_argument("--mindist", action="store_true",
+                        help="also plot the distance to the periodic image and the size vs the box "
+                             "(gmx mindist -pi on the trajectories)")
+    parser.add_argument("--mindist-dt", type=float, default=1.0,
+                        help="--mindist: one frame per this many ns (default: 1)")
+    parser.add_argument("--mindist-group", default="Protein",
+                        help="--mindist: index group (default: Protein)")
+    parser.add_argument("--mindist-index", default=None,
+                        help="--mindist: index file with the group (default: the .tpr's default groups)")
+    parser.add_argument("--gmx", default="gmx",
+                        help="GROMACS executable for --edr and --mindist (default: gmx)")
     parser.add_argument("--max-points", type=int, default=2000,
                         help="points per graph; longer runs are thinned out (default: 2000)")
     parser.add_argument("--port", "-p", type=int, default=None,
@@ -1311,14 +1579,21 @@ Examples:
     if args.refresh < 1:
         parser.error("--refresh must be at least 1 s")
 
-    edr = None
-    if args.edr:
-        if not shutil.which(args.gmx):
-            print(f"Warning: '{args.gmx}' not found: --edr disabled (source GMXRC, or use --gmx).",
-                  file=sys.stderr)
-        else:
+    if args.mindist_dt <= 0:
+        parser.error("--mindist-dt must be positive")
+    edr = mindist = None
+    if (args.edr or args.mindist) and not shutil.which(args.gmx):
+        print(f"Warning: '{args.gmx}' not found: --edr/--mindist disabled (source GMXRC, or use --gmx).",
+              file=sys.stderr)
+    else:
+        if args.edr:
             edr = EdrReader(args.gmx, args.edr_interval)
-    run = Run(directory, args.stem, args.end, edr, args.max_points)
+        if args.mindist:
+            index = Path(args.mindist_index).expanduser() if args.mindist_index else None
+            if index is not None and not index.is_file():
+                parser.error(f"--mindist-index: file not found: {index}")
+            mindist = MindistReader(args.gmx, args.mindist_group, args.mindist_dt * 1000, index)
+    run = Run(directory, args.stem, args.end, edr, args.max_points, mindist)
     run.update()
 
     if args.once:
@@ -1328,6 +1603,17 @@ Examples:
             for _ in range(600):
                 time.sleep(0.5)
                 if not edr._running:
+                    break
+        if mindist:  # and for gmx mindist (the first pass over a long run takes minutes)
+            print(f"Computing the distance to the periodic image (gmx mindist -pi, one frame per "
+                  f"{args.mindist_dt:g} ns)...")
+            while True:
+                mindist.maybe_refresh(run.mindist_segments())
+                time.sleep(0.5)
+                while mindist.running:
+                    time.sleep(0.5)
+                if mindist.error or not any(
+                        mindist_due(mindist, seg) for seg in run.mindist_segments()):
                     break
         snap = run.snapshot()
         print(text_status(snap))
