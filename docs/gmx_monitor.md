@@ -17,7 +17,8 @@ from anywhere on your network (e.g. over Tailscale).
 ## Features
 
 - ✅ **Status at a glance**: running / finished / between segments / stopped / **stalled?** /
-  **error**, also shown in the browser tab title (`md_0 47.3% · 3 h 12 min left`)
+  **error**, and the machine the run is on, also in the browser tab title
+  (`md_0 @ marvin 47.3% · 3 h 12 min left`)
 - ✅ **Progress and time left**: bars for the segment and the whole run, speed now (last 15 min)
   and on average, time left and finish time for the segment and the whole run
 - ✅ **Graphs of the whole run** (segment boundaries marked, current segment shaded):
@@ -28,6 +29,8 @@ from anywhere on your network (e.g. over Tailscale).
 - ✅ **Problems in the log**: LINCS/SETTLE warnings, atoms that moved too far, NaN energies, and the
   message of a fatal error
 - ✅ **Box, volume and density** from the `.edr` files with `--edr` (through `gmx energy`)
+- ✅ **RMSD** with `--rms` (through `gmx rms`): of the backbone (or any group), from the start of
+  the run (or any reference structure)
 - ✅ **Distance to the periodic image** with `--mindist` (through `gmx mindist -pi`): is the protein
   closer to its own image than the cutoff? Plotted against the cutoff and 1.2 × the cutoff, with
   a warning below them; and the protein's size against the box
@@ -42,7 +45,7 @@ from anywhere on your network (e.g. over Tailscale).
 ### Basic Syntax
 
 ```bash
-gmx_monitor.py <stem> [--dir DIR] [--end NS] [--edr] [--mindist] [--refresh S] [--port PORT] [--once]
+gmx_monitor.py <stem> [--dir DIR] [--end NS] [--edr] [--mindist] [--rms] [--refresh S] [--port PORT] [--once]
 ```
 
 `<stem>` is `<basename>_<replica>`, as given to the continuation scripts (`md 0` → `md_0`). Then
@@ -63,7 +66,12 @@ open `http://localhost:8090/` (or the host-name URL it prints) in a browser. Sto
 | `--mindist-dt <ns>` | `1` | `--mindist`: one frame per this many ns |
 | `--mindist-group <name>` | `Protein` | `--mindist`: index group: one of the `.tpr`'s default groups, or of `--mindist-index` |
 | `--mindist-index <file>` | - | `--mindist`: index file (`.ndx`) with the group, e.g. protein and ligand together |
-| `--gmx <exe>` | `gmx` | GROMACS executable for `--edr` and `--mindist` |
+| `--rms` | off | Also plot the RMSD (see [RMSD](#rmsd---rms)) |
+| `--rms-dt <ns>` | `1` | `--rms`: one frame per this many ns |
+| `--rms-group <name>` | `Backbone` | `--rms`: group fitted and measured: one of the default groups, or of `--rms-index` |
+| `--rms-ref <file>` | the first segment's `.tpr` | `--rms`: reference structure (`.tpr`, `.gro` or `.pdb` with the same atoms as the trajectory) |
+| `--rms-index <file>` | - | `--rms`: index file (`.ndx`) with the group |
+| `--gmx <exe>` | `gmx` | GROMACS executable for `--edr`, `--mindist` and `--rms` |
 | `--max-points <n>` | `2000` | Points per graph; longer runs are thinned out evenly |
 | `-p, --port <port>` | `8090`, or the next free port | Port of the panel. Without `--port`, a port in use is skipped (8091, 8092, …); an explicitly given port is used, or the monitor stops with a message saying which program holds it |
 | `--host <addr>` | `0.0.0.0` | Interface to listen on (`0.0.0.0` = all interfaces) |
@@ -82,7 +90,10 @@ open `http://localhost:8090/` (or the host-name URL it prints) in a browser. Sto
 Only real mdrun logs are read: a file must start with the `GROMACS - gmx mdrun` header. The
 combined output log that `gmx_continue_grompp.sh` writes as `<stem>.log` (it starts with
 `gmx grompp`) is therefore ignored. With `--edr`, each log's `.edr` has the same name; with
-`--mindist`, its `.xtc` and `.tpr` (`.partNNNN` logs use `<stem>.tpr`).
+`--mindist` and `--rms`, its `.xtc` and `.tpr` (`.partNNNN` logs use `<stem>.tpr`).
+
+The machine shown next to the run's name is the one mdrun runs on (from the log's `Hardware
+detected on host …`), or the monitor's own machine while there is no log yet.
 
 ### What is read from the log
 
@@ -146,6 +157,17 @@ on `PATH` (source `GMXRC`) or given with `--gmx`. A constant-volume run has none
 and the panel says so. `gmx energy` runs in a temporary folder, so it leaves no backup files
 (`#…#`) next to the run.
 
+### RMSD (`--rms`)
+
+With `--rms`, `gmx rms` fits the group (`Backbone` by default) of each frame to a reference
+structure and computes its RMSD (nm), one frame per `--rms-dt` ns, in the background like
+`--mindist` below (first pass over the history, then only the new frames, at the lowest
+priority). The reference is the `.tpr` of the run's **first** segment, i.e. the start of the
+production run: each later segment's `.tpr` starts where the previous segment ended, so using it
+would make the RMSD start again from 0 at every segment. Give another one with `--rms-ref`, e.g.
+the crystal structure (it must have the same atoms as the trajectory). The graph's title line
+shows the current and the highest RMSD and the reference.
+
 ### Distance to the Periodic Image (`--mindist`)
 
 With periodic boundary conditions a protein must never come closer to its own periodic image
@@ -204,6 +226,10 @@ gmx_monitor.py MnMT4_apo_0 --dir ~/projects/MnMT4/apo/run0 --edr
 # Also the distance to the periodic image, of the protein (one frame per ns)
 gmx_monitor.py md_0 --mindist
 
+# Also the backbone RMSD from the start of the run, and the C-alpha RMSD from the crystal structure
+gmx_monitor.py md_0 --rms
+gmx_monitor.py md_0 --rms --rms-group C-alpha --rms-ref start_crystal.pdb
+
 # ... of protein and ligand together (a group made with gmx make_ndx), one frame per 2 ns
 gmx_monitor.py md_0 --mindist --mindist-index index.ndx --mindist-group Protein_SAM --mindist-dt 2
 
@@ -217,7 +243,7 @@ ssh marvin 'gmx_monitor.py md_0 --dir ~/projects/MnMT4/apo/run0 --once'
 `--once` prints, for example (a finished 2 ns test run):
 
 ```
-live_0 in /home/martel/projects/TRP_cage/run1  (parts, 1 log file(s))
+live_0 on quark, in /home/martel/projects/TRP_cage/run1  (parts, 1 log file(s))
   state     : finished - finished 2026-10-20 17:51
   time      : 2.000 ns   step 1000000
   segment   : live_0.log  0-2 ns  100.0%  left -  (finish -)
@@ -247,11 +273,12 @@ The speed needs at least 30 s of run (average) or 60 s of observations (now) aft
 `gmx` was not found (a warning is printed at startup: source `GMXRC` or use `--gmx`), the run is at
 constant volume, or the first read is still running (the status is in the page footer).
 
-### `--mindist` shows no graph or an error
+### `--mindist` or `--rms` shows no graph or an error
 
 `gmx` was not found (a warning is printed at startup), the first pass is still running (the
-status is in the graph's title line), or `gmx mindist` failed: its message is listed with the
-problems (a missing group, a trajectory that doesn't match the `.tpr`).
+status is in the graph's title line), or `gmx mindist` / `gmx rms` failed: its message is
+listed with the problems (a missing group, with the groups there are; a trajectory or reference
+that doesn't match the `.tpr`).
 
 ### Port already in use
 
