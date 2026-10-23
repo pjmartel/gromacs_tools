@@ -645,12 +645,97 @@ class TrajectoryReader:
         self.error: str | None = None
         self._rows: dict[Path, list[tuple[float, ...]]] = {}     # trajectory -> rows
         self._complete: set[Path] = set()                         # finished segments, all read
+        self._stat: dict[Path, tuple[int, float]] = {}            # trajectory -> (size, mtime) read
+        self._order: list[Path] = []                              # the run's trajectories, in order
         self._lock = threading.Lock()
         self._running = False
+        self.save_path: Path | None = None                        # --save: results kept here
+        self._loaded = False
 
     @property
     def running(self) -> bool:
         return self._running
+
+    # -- --save: the results as an .xvg (whole run), read back on a restart --
+    XVG_HEADER: list[str] = []      # @ lines of the saved .xvg
+
+    def params(self) -> str:
+        """The options the results depend on (a saved file made with others is not reused)."""
+        index = str(self.index.resolve()) if self.index is not None else "-"
+        return f"tool={self.tool} group={self.group} dt_ps={self.dt_ps:g} index={index}"
+
+    def _load(self):
+        """Read the --save file: the rows of each trajectory that is still the same (a completed
+        one unchanged, a growing one not shorter), so that only the rest is computed."""
+        self._loaded = True
+        path = self.save_path
+        if path is None or not path.exists():
+            return
+        by_name = {x.name: x for x in self._order}
+        blocks, params, current = [], None, None
+        with open(path, errors="replace") as fh:
+            for line in fh:
+                if line.startswith("# gmx_monitor params: "):
+                    params = line[len("# gmx_monitor params: "):].strip()
+                    continue
+                m = re.match(r"^# gmx_monitor segment: (\S+) size=(\d+) mtime=([\d.]+) complete=([01])\s*$", line)
+                if m:
+                    current = [m.group(1), int(m.group(2)), float(m.group(3)), m.group(4) == "1", []]
+                    blocks.append(current)
+                    continue
+                if current is not None and line.strip() and line[0] not in "#@":
+                    current[4].append(line.split())
+        if params != self.params():
+            self.status = (f"{path.name} was made with other options ({params}): computing again")
+            return
+        width = len(self._parse_width())
+        loaded = 0
+        for name, size, mtime, complete, fields in blocks:
+            xtc = by_name.get(name)
+            if xtc is None or not xtc.exists():
+                continue
+            st = xtc.stat()
+            same = (st.st_size, round(st.st_mtime, 3)) == (size, round(mtime, 3))
+            if complete and not same:
+                continue                       # rewritten since (e.g. the segment was run again)
+            if not complete and st.st_size < size:
+                continue                       # shorter than when it was read: not the same file
+            rows = float_rows(fields, width)
+            if not rows:
+                continue
+            self._rows[xtc] = rows
+            self._stat[xtc] = (size, mtime)
+            if complete:
+                self._complete.add(xtc)
+            loaded += len(rows)
+        self.status = f"loaded {loaded} frame(s) from {path.name}"
+
+    def _parse_width(self) -> list[str]:
+        """Names of the columns of a row (time first)."""
+        raise NotImplementedError
+
+    def _save(self):
+        """Write the results of all trajectories to the --save file (a new file replacing the old
+        one, so that an interrupted write never leaves a broken file)."""
+        if self.save_path is None:
+            return
+        lines = [f"# Results of gmx {self.tool}, kept by gmx_monitor.py --save and read back when it",
+                 "# restarts; the '# gmx_monitor' lines are its bookkeeping (other tools ignore them).",
+                 f"# gmx_monitor params: {self.params()}"] + self.XVG_HEADER
+        for xtc in self._order:
+            rows = self._rows.get(xtc)
+            if not rows:
+                continue
+            size, mtime = self._stat.get(xtc, (0, 0.0))
+            lines.append(f"# gmx_monitor segment: {xtc.name} size={size} mtime={mtime:.3f} "
+                         f"complete={1 if xtc in self._complete else 0}")
+            lines += ["  ".join(f"{v:.6g}" if i else f"{v:.3f}" for i, v in enumerate(r)) for r in rows]
+        tmp = self.save_path.with_name(self.save_path.name + ".tmp")
+        try:
+            tmp.write_text("\n".join(lines) + "\n")
+            os.replace(tmp, self.save_path)
+        except OSError as exc:
+            self.error = f"--save: cannot write {self.save_path}: {exc}"
 
     def _command(self, xtc: Path, tpr: Path, out: str) -> list[str]:
         raise NotImplementedError
@@ -664,6 +749,9 @@ class TrajectoryReader:
     def maybe_refresh(self, segments):
         """segments: [(xtc, tpr, finished, sim time reached by its log in ps)]. Starts a background
         calculation if one of them has at least dt_ps of new trajectory."""
+        self._order = [x for x, _, _, _ in segments]
+        if not self._loaded and segments:
+            self._load()
         todo = []
         for xtc, tpr, finished, t_now in segments:
             if xtc in self._complete or t_now is None:
@@ -688,16 +776,21 @@ class TrajectoryReader:
                     self.status = f"waiting for {xtc.name if not xtc.exists() else tpr.name}"
                     continue
                 self.status = f"computing {xtc.name}" + (f" from {begin / 1000:g} ns" if begin else "")
+                st = xtc.stat()
                 rows = self._run(xtc, tpr, begin)
                 if rows is None:
                     return            # error: reported in self.error, tried again next time
+                self._stat[xtc] = (st.st_size, st.st_mtime)
                 old = self._rows.setdefault(xtc, [])
                 old.extend(r for r in rows if not old or r[0] > old[-1][0])
                 if finished:
                     self._complete.add(xtc)
             n = sum(len(r) for r in self._rows.values())
             self.error = None
+            self._save()
             self.status = f"{n} frame(s), one per {self.dt_ps / 1000:g} ns, updated {datetime.now():%H:%M:%S}"
+            if self.save_path is not None:
+                self.status += f", saved in {self.save_path.name}"
         except Exception as exc:     # never let a gmx problem stop the monitor
             self.error = f"gmx {self.tool}: {exc}"
         finally:
@@ -783,6 +876,12 @@ class MindistReader(TrajectoryReader):
 
     tool, option = "mindist", "--mindist-group"
     COLUMNS = ["min per.", "max int.", "box1", "box2", "box3"]
+    XVG_HEADER = ['@    title "Minimum distance to periodic image"',
+                  '@    xaxis  label "Time (ps)"', '@    yaxis  label "Distance (nm)"', "@TYPE xy"] + \
+        [f'@ s{i} legend "{c}"' for i, c in enumerate(COLUMNS)]
+
+    def _parse_width(self):
+        return ["time"] + self.COLUMNS
 
     def _command(self, xtc, tpr, out):
         return ["mindist", "-s", str(tpr.resolve()), "-f", str(xtc.resolve()), "-pi", "-od", out]
@@ -802,6 +901,15 @@ class RmsReader(TrajectoryReader):
     .tpr starts where the previous one ended)."""
 
     tool, option = "rms", "--rms-group"
+    XVG_HEADER = ['@    title "RMSD"', '@    xaxis  label "Time (ps)"', '@    yaxis  label "RMSD (nm)"',
+                  "@TYPE xy"]
+
+    def _parse_width(self):
+        return ["time", "rmsd"]
+
+    def params(self) -> str:
+        reference = self.reference_used
+        return super().params() + f" reference={reference.resolve() if reference else '-'}"
 
     def __init__(self, gmx: str, group: str, dt_ps: float, index: Path | None = None,
                  reference: Path | None = None):
@@ -1656,6 +1764,7 @@ Examples:
   %(prog)s md_0 --edr                    # also box, volume and density (gmx energy)
   %(prog)s md_0 --mindist                # also distance to the periodic image (gmx mindist -pi)
   %(prog)s md_0 --rms                    # also backbone RMSD from the start of the run (gmx rms)
+  %(prog)s md_0 --mindist --rms --save monitor   # keep those in monitor/, reuse them next time
   %(prog)s md_0 --once                   # print the status in the terminal and exit
 """)
     parser.add_argument("stem", help="<basename>_<replica> of the run, e.g. md_0")
@@ -1688,6 +1797,9 @@ Examples:
                              "atoms; default: the .tpr of the run's first segment)")
     parser.add_argument("--rms-index", default=None,
                         help="--rms: index file with the group (default: the default groups)")
+    parser.add_argument("--save", metavar="DIR", default=None,
+                        help="keep the --mindist/--rms results in DIR as <stem>_mindist.xvg and "
+                             "<stem>_rms.xvg, and continue from them on a restart")
     parser.add_argument("--gmx", default="gmx",
                         help="GROMACS executable for --edr, --mindist and --rms (default: gmx)")
     parser.add_argument("--max-points", type=int, default=2000,
@@ -1731,6 +1843,17 @@ Examples:
         if args.mindist:
             mindist = MindistReader(args.gmx, args.mindist_group, args.mindist_dt * 1000,
                                     existing("--mindist-index", args.mindist_index))
+    if args.save:
+        if not (mindist or rms):
+            print("Note: --save keeps the results of --mindist and --rms; neither is on.", file=sys.stderr)
+        save_dir = Path(args.save).expanduser()
+        try:
+            save_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            parser.error(f"--save: cannot create {save_dir}: {exc}")
+        for reader in (mindist, rms):
+            if reader:
+                reader.save_path = save_dir / f"{args.stem}_{reader.tool}.xvg"
     run = Run(directory, args.stem, args.end, edr, args.max_points, mindist, rms)
     run.update()
 
@@ -1746,7 +1869,8 @@ Examples:
                              (rms, "the RMSD (gmx rms)")):
             if not reader:   # wait for the trajectory analyses (a first pass can take minutes)
                 continue
-            print(f"Computing {what}, one frame per {reader.dt_ps / 1000:g} ns...")
+            if reader.running or any(trajectory_due(reader, seg) for seg in run.trajectory_segments()):
+                print(f"Computing {what}, one frame per {reader.dt_ps / 1000:g} ns...")
             while True:
                 run.update()
                 time.sleep(0.5)

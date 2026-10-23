@@ -71,6 +71,7 @@ open `http://localhost:8090/` (or the host-name URL it prints) in a browser. Sto
 | `--rms-group <name>` | `Backbone` | `--rms`: group fitted and measured: one of the default groups, or of `--rms-index` |
 | `--rms-ref <file>` | the first segment's `.tpr` | `--rms`: reference structure (`.tpr`, `.gro` or `.pdb` with the same atoms as the trajectory) |
 | `--rms-index <file>` | - | `--rms`: index file (`.ndx`) with the group |
+| `--save <dir>` | - | Keep the `--mindist`/`--rms` results in `<dir>` (`<stem>_mindist.xvg`, `<stem>_rms.xvg`) and continue from them when the monitor is started again (see [Saving the Results](#saving-the-results---save)) |
 | `--gmx <exe>` | `gmx` | GROMACS executable for `--edr`, `--mindist` and `--rms` |
 | `--max-points <n>` | `2000` | Points per graph; longer runs are thinned out evenly |
 | `-p, --port <port>` | `8090`, or the next free port | Port of the panel. Without `--port`, a port in use is skipped (8091, 8092, …); an explicitly given port is used, or the monitor stops with a message saying which program holds it |
@@ -196,6 +197,29 @@ If `gmx mindist` fails, the panel shows why: e.g. a group that doesn't exist (th
 groups are listed), or an `.xtc` with only part of the system (`compressed-x-grps`) that doesn't
 match the `.tpr`.
 
+### Saving the Results (`--save`)
+
+Everything the monitor computes is kept in memory: `gmx mindist`/`gmx rms` run in a temporary
+folder, which is deleted after their output is read, and the run's folder is never written to.
+Without `--save`, a restarted monitor therefore computes `--mindist` and `--rms` again from the
+start (minutes for a long run; the logs themselves are re-read in seconds).
+
+With `--save DIR`, the results are also kept in `DIR` (created if needed) as ordinary `.xvg` files
+of the whole run: `<stem>_mindist.xvg` and `<stem>_rms.xvg`. They open with `plot_xvg.py`, and
+`gmx_panel.py --dir DIR` shows them. When the monitor starts again with the same `--save DIR`, it
+loads them and computes only what is missing:
+
+- a segment whose trajectory was complete and is unchanged is not read again
+- a segment that was still growing keeps its saved values; the calculation continues after them
+- a completed segment whose trajectory has changed since (e.g. run again) is computed again
+- a file made with other options (group, stride, index, reference) is not used; it is computed
+  again and replaced (the panel says so)
+
+For this the files carry `# gmx_monitor` comment lines with the options and, per segment, the
+trajectory's name, size, modification time and whether it was complete; other tools ignore
+comment lines. Each update writes a new file that replaces the old one, so an interrupted monitor
+never leaves a broken file.
+
 ## Remote Machines
 
 By default the monitor listens on all interfaces, and on startup it prints both a `localhost`
@@ -225,6 +249,9 @@ gmx_monitor.py MnMT4_apo_0 --dir ~/projects/MnMT4/apo/run0 --edr
 
 # Also the distance to the periodic image, of the protein (one frame per ns)
 gmx_monitor.py md_0 --mindist
+
+# Distance to the image and RMSD, kept in monitor/ so that a restart continues from them
+gmx_monitor.py md_0 --mindist --rms --save monitor
 
 # Also the backbone RMSD from the start of the run, and the C-alpha RMSD from the crystal structure
 gmx_monitor.py md_0 --rms
