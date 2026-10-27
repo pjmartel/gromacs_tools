@@ -27,7 +27,7 @@ Creates animated trajectories that visualize the motion captured by specific pri
 ```bash
 # Generate 50-frame movie along PC1
 python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro \
+    -s pca_out/fit.gro -f pca_out/fit.xtc \
     -v pca_out/eigenvectors.trr \
     -o pc1_movie.pdb --pc 1 --nframes 50
 ```
@@ -39,13 +39,13 @@ python bin/gmx_pca_movie.py \
 ```bash
 # PC1 movie (default: 50 frames)
 python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro \
+    -s pca_out/fit.gro -f pca_out/fit.xtc \
     -v pca_out/eigenvectors.trr \
     -o pc1_movie.pdb --pc 1
 
 # PC2 movie with 100 frames
 python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro \
+    -s pca_out/fit.gro -f pca_out/fit.xtc \
     -v pca_out/eigenvectors.trr \
     -o pc2_movie.pdb --pc 2 --nframes 100
 ```
@@ -55,7 +55,7 @@ python bin/gmx_pca_movie.py \
 ```bash
 # Generate only min and max structures (2 frames total)
 python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro \
+    -s pca_out/fit.gro -f pca_out/fit.xtc \
     -v pca_out/eigenvectors.trr \
     -o pc1_extremes.pdb --pc 1 --extremes-only
 ```
@@ -65,13 +65,13 @@ python bin/gmx_pca_movie.py \
 ```bash
 # Larger amplitude (3.0 nm along eigenvector)
 python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro \
+    -s pca_out/fit.gro -f pca_out/fit.xtc \
     -v pca_out/eigenvectors.trr \
     -o pc1_large.pdb --pc 1 --extreme 3.0
 
 # Smaller amplitude (1.0 nm)
 python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro \
+    -s pca_out/fit.gro -f pca_out/fit.xtc \
     -v pca_out/eigenvectors.trr \
     -o pc1_small.pdb --pc 1 --extreme 1.0
 ```
@@ -81,13 +81,13 @@ python bin/gmx_pca_movie.py \
 ```bash
 # XTC format (compressed, smaller files)
 python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro \
+    -s pca_out/fit.gro -f pca_out/fit.xtc \
     -v pca_out/eigenvectors.trr \
     -o pc1_movie.xtc --pc 1
 
 # TRR format (full precision)
 python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro \
+    -s pca_out/fit.gro -f pca_out/fit.xtc \
     -v pca_out/eigenvectors.trr \
     -o pc1_movie.trr --pc 1
 ```
@@ -96,7 +96,7 @@ python bin/gmx_pca_movie.py \
 
 ```bash
 python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro \
+    -s pca_out/fit.gro -f pca_out/fit.xtc \
     -v pca_out/eigenvectors.trr \
     -o movies/pc1.pdb --pc 1 --outdir movies
 ```
@@ -106,14 +106,17 @@ python bin/gmx_pca_movie.py \
 | Option | Default | Description |
 |--------|---------|-------------|
 | `-s, --structure` | Required | Structure file (use `fit.gro` from PCA) |
+| `-f, --trajectory` | Required | The fitted trajectory (use `fit.xtc` from PCA) |
 | `-v, --eigenvec` | Required | Eigenvectors file (`eigenvectors.trr` from PCA) |
+| `-n, --index` | `pca_groups.ndx` next to `-s`, if present | Index with the fit and analysis groups, as written by `gmx_pca.py`. Needed when the PCA was run with `--fit-selection`: `fit.gro` then holds the fitted and the analysed atoms, the eigenvectors only the analysed ones (the movie shows those). Without it (older PCA folders) all atoms of `-s` are used |
 | `-o, --output` | Required | Output trajectory (PDB/XTC/TRR) |
 | `--pc` | `1` | Principal component number |
 | `--nframes` | `50` | Number of interpolated frames |
-| `--extreme` | `2.0` | Extent along eigenvector (nm) |
+| `--extreme` | `2.0` | Informational only: GROMACS chooses the extent along the eigenvector |
 | `--extremes-only` | `False` | Generate only min/max structures |
 | `--outdir` | `.` | Output directory for logs |
 | `--gmx-bin` | `gmx` | GROMACS binary name/path |
+| `--fix-connectivity` | `False` | Rebuild bonds in PDB output (`gmx trjconv -conect`), for viewers |
 
 ## Understanding the Movie
 
@@ -142,15 +145,15 @@ python bin/gmx_pca.py -s topol.tpr -f traj.xtc \
 
 # 2. Generate movies for first 3 PCs
 python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -v pca_out/eigenvectors.trr \
+    -s pca_out/fit.gro -f pca_out/fit.xtc -v pca_out/eigenvectors.trr \
     -o pc1_movie.pdb --pc 1 --nframes 100
 
 python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -v pca_out/eigenvectors.trr \
+    -s pca_out/fit.gro -f pca_out/fit.xtc -v pca_out/eigenvectors.trr \
     -o pc2_movie.pdb --pc 2 --nframes 100
 
 python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -v pca_out/eigenvectors.trr \
+    -s pca_out/fit.gro -f pca_out/fit.xtc -v pca_out/eigenvectors.trr \
     -o pc3_movie.pdb --pc 3 --nframes 100
 
 # 3. Visualize in VMD
@@ -220,7 +223,7 @@ coordset slider #1
 # Visualize top 3 PCs to understand main conformational changes
 for pc in 1 2 3; do
     python bin/gmx_pca_movie.py \
-        -s pca_out/fit.gro -v pca_out/eigenvectors.trr \
+        -s pca_out/fit.gro -f pca_out/fit.xtc -v pca_out/eigenvectors.trr \
         -o pc${pc}_movie.pdb --pc $pc
 done
 ```
@@ -230,12 +233,12 @@ done
 ```bash
 # Wild type PC1
 python bin/gmx_pca_movie.py \
-    -s pca_wt/fit.gro -v pca_wt/eigenvectors.trr \
+    -s pca_wt/fit.gro -f pca_wt/fit.xtc -v pca_wt/eigenvectors.trr \
     -o wt_pc1.pdb --pc 1
 
 # Mutant PC1
 python bin/gmx_pca_movie.py \
-    -s pca_mut/fit.gro -v pca_mut/eigenvectors.trr \
+    -s pca_mut/fit.gro -f pca_mut/fit.xtc -v pca_mut/eigenvectors.trr \
     -o mut_pc1.pdb --pc 1
 
 # Compare in VMD: load both and play side-by-side
@@ -246,7 +249,7 @@ python bin/gmx_pca_movie.py \
 ```bash
 # High quality, smooth 200-frame movie
 python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -v pca_out/eigenvectors.trr \
+    -s pca_out/fit.gro -f pca_out/fit.xtc -v pca_out/eigenvectors.trr \
     -o presentation_pc1.pdb --pc 1 --nframes 200 --extreme 2.5
 ```
 
@@ -255,7 +258,7 @@ python bin/gmx_pca_movie.py \
 ```bash
 # Extract extreme conformations for docking
 python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -v pca_out/eigenvectors.trr \
+    -s pca_out/fit.gro -f pca_out/fit.xtc -v pca_out/eigenvectors.trr \
     -o pc1_extremes.pdb --pc 1 --extremes-only
 
 # Result: 2-frame trajectory (open and closed conformations)
@@ -273,7 +276,7 @@ python bin/gmx_pca_movie.py \
 for pc in {1..5}; do
     echo "Generating PC${pc} movie..."
     python bin/gmx_pca_movie.py \
-        -s pca_out/fit.gro \
+        -s pca_out/fit.gro -f pca_out/fit.xtc \
         -v pca_out/eigenvectors.trr \
         -o movies/pc${pc}_movie.pdb \
         --pc $pc \
@@ -287,11 +290,11 @@ done
 ```bash
 # Generate movie
 python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -v pca_out/eigenvectors.trr \
+    -s pca_out/fit.gro -f pca_out/fit.xtc -v pca_out/eigenvectors.trr \
     -o pc1.xtc --pc 1 --nframes 100
 
 # Extract specific frame (e.g., frame 50 = max extreme)
-gmx trjconv -f pc1.xtc -s pca_out/fit.gro -o pc1_max.pdb -dump 50
+gmx trjconv -f pc1.xtc -s pca_out/fit.gro -f pca_out/fit.xtc -o pc1_max.pdb -dump 50
 ```
 
 ### Multiple Extents
@@ -300,7 +303,7 @@ gmx trjconv -f pc1.xtc -s pca_out/fit.gro -o pc1_max.pdb -dump 50
 # Small, medium, large extent movies
 for extent in 1.0 2.0 3.0; do
     python bin/gmx_pca_movie.py \
-        -s pca_out/fit.gro -v pca_out/eigenvectors.trr \
+        -s pca_out/fit.gro -f pca_out/fit.xtc -v pca_out/eigenvectors.trr \
         -o pc1_extent${extent}.pdb --pc 1 --extreme $extent
 done
 ```

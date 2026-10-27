@@ -27,7 +27,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 class CommandError(RuntimeError):
@@ -145,6 +145,7 @@ def generate_pc_movie(
     nframes: int,
     extreme: float,
     log_dir: Path,
+    index: Optional[Path] = None,
 ) -> None:
     """Generate a trajectory showing motion along a principal component.
     
@@ -180,11 +181,11 @@ def generate_pc_movie(
         "-extr",
         str(out),
     ]
-    
-    # anaeig asks for TWO groups:
-    # 1. The group used for least squares fit in covar (System = 0)
-    # 2. The group corresponding to eigenvectors (System = 0)
-    stdin = "0\n0\n"
+
+    # anaeig asks for TWO groups: the group used for the least squares fit in covar, and the
+    # group of the eigenvectors (both System without an index; fit and analysis from gmx_pca's
+    # pca_groups.ndx, which differ with gmx_pca.py --fit-selection)
+    cmd, stdin = with_groups(cmd, index)
     
     print(f"Generating {nframes}-frame trajectory along PC{pc_num}...")
     print(f"  Extent along eigenvector: determined automatically by GROMACS")
@@ -193,7 +194,15 @@ def generate_pc_movie(
     print(f"Movie trajectory saved to: {out}")
 
 
-def fix_connectivity(gmx: str, s: Path, traj: Path, out: Path, log_dir: Path) -> None:
+def with_groups(cmd: List[str], index: Optional[Path]) -> Tuple[List[str], str]:
+    """anaeig's command and answers for its two group questions (fit group, eigenvector group)."""
+    if index is None:
+        return cmd, "0\n0\n"
+    return cmd + ["-n", str(index)], "0\n1\n"      # pca_groups.ndx: 0 = fit, 1 = analysis
+
+
+def fix_connectivity(gmx: str, s: Path, traj: Path, out: Path, log_dir: Path,
+                     index: Optional[Path] = None) -> None:
     """Fix bond connectivity in PDB output using gmx trjconv -conect.
     
     This helps visualization tools correctly display bonds.
@@ -207,7 +216,14 @@ def fix_connectivity(gmx: str, s: Path, traj: Path, out: Path, log_dir: Path) ->
     
     temp = out.parent / f"{out.stem}_temp.pdb"
     traj.rename(temp)
-    
+
+    if index is not None:
+        # the frames hold only the analysed atoms: a structure with just those
+        analysed = out.parent / f"{out.stem}_analysed.gro"
+        cmd0 = [gmx, "trjconv", "-s", str(s), "-f", str(s), "-n", str(index), "-o", str(analysed)]
+        run_cmd(cmd0, stdin="1\n", comment="Structure of the analysed atoms only")
+        s = analysed
+
     cmd = [
         gmx,
         "trjconv",
@@ -224,6 +240,8 @@ def fix_connectivity(gmx: str, s: Path, traj: Path, out: Path, log_dir: Path) ->
     proc = run_cmd(cmd, stdin="0\n", comment="Fix bond connectivity for visualization")
     (log_dir / "fix_connectivity.log").write_bytes(proc.stdout)
     temp.unlink()
+    if index is not None:
+        s.unlink()
     print(f"  Connectivity fixed in: {out}")
 
 
@@ -236,6 +254,7 @@ def generate_extreme_structures(
     pc_num: int,
     extreme: float,
     log_dir: Path,
+    index: Optional[Path] = None,
 ) -> tuple[Path, Path]:
     """Generate the two extreme structures along a PC.
     
@@ -265,9 +284,9 @@ def generate_extreme_structures(
         "-nframes",
         "2",  # Just the two extremes
     ]
-    
-    # anaeig asks for TWO groups even for -extr
-    stdin = "0\n0\n"
+
+    # anaeig asks for TWO groups even for -extr (see generate_pc_movie)
+    cmd, stdin = with_groups(cmd, index)
     
     print(f"Generating extreme structures for PC{pc_num}...")
     proc = run_cmd(cmd, stdin=stdin, comment=f"Generate extreme structures for PC{pc_num}")
@@ -292,6 +311,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("-s", "--structure", required=True, help="Structure file matching PCA atoms (GRO/PDB, e.g., fit.gro from gmx_pca.py)")
     p.add_argument("-f", "--trajectory", required=True, help="Fitted trajectory file (XTC/TRR, e.g., fit.xtc from gmx_pca.py)")
     p.add_argument("-v", "--eigenvec", required=True, help="Eigenvectors file (TRR from gmx covar, e.g., eigenvectors.trr)")
+    p.add_argument("-n", "--index", default=None,
+                   help="Index with the fit and analysis groups (default: pca_groups.ndx next to the "
+                        "structure, as written by gmx_pca.py, if it exists; needed after "
+                        "gmx_pca.py --fit-selection)")
     
     # Output options
     p.add_argument("-o", "--output", required=True, help="Output trajectory file (PDB/XTC/TRR)")
@@ -346,21 +369,30 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(str(e), file=sys.stderr)
         return 2
     
+    index = Path(args.index).expanduser().resolve() if args.index else s.parent / "pca_groups.ndx"
+    if not index.exists():
+        if args.index:
+            print(f"Error: index file not found: {index}", file=sys.stderr)
+            return 2
+        index = None
+
     print(f"Using GROMACS: {gmx}")
     print(f"Structure: {s}")
     print(f"Trajectory: {f}")
     print(f"Eigenvectors: {v}")
+    if index is not None:
+        print(f"Index groups: {index} (fit, analysis)")
     print()
     
     try:
         if args.extremes_only:
-            generate_extreme_structures(gmx, s, v, f, out, args.pc, args.extreme, log_dir)
+            generate_extreme_structures(gmx, s, v, f, out, args.pc, args.extreme, log_dir, index=index)
         else:
-            generate_pc_movie(gmx, s, v, f, out, args.pc, args.nframes, args.extreme, log_dir)
+            generate_pc_movie(gmx, s, v, f, out, args.pc, args.nframes, args.extreme, log_dir, index=index)
         
         # Optionally fix connectivity for PDB output
         if args.fix_connectivity and out.suffix.lower() == '.pdb':
-            fix_connectivity(gmx, s, out, out, log_dir)
+            fix_connectivity(gmx, s, out, out, log_dir, index=index)
         
         print()
         print("Done! Next steps:")

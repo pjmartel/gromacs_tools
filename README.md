@@ -69,7 +69,8 @@ python bin/gmx_equilibrate.py protein_ions.gro protein.top --dry-run
 python bin/gmx_pca.py -s topol.tpr -f traj.xtc --selection "Backbone"
 
 # Generate PC motion movie
-python bin/gmx_pca_movie.py fit.gro eigenvec.trr --pc 1 --frames 50
+python bin/gmx_pca_movie.py -s pca_out/fit.gro -f pca_out/fit.xtc -v pca_out/eigenvectors.trr \
+    -o pc1_movie.pdb --pc 1 --nframes 50
 ```
 
 ### Plotting XVG Files

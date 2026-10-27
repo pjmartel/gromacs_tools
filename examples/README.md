@@ -89,22 +89,22 @@ python bin/gmx_pca.py -s $TPR -f $TRAJ \
 # 2. Generate movies for top 3 PCs
 for pc in 1 2 3; do
     python bin/gmx_pca_movie.py \
-        -s pca_backbone/fit.gro \
+        -s pca_backbone/fit.gro -f pca_backbone/fit.xtc \
         -v pca_backbone/eigenvectors.trr \
         -o pca_backbone/pc${pc}_movie.pdb \
         --pc $pc --nframes 100
 done
 
-# 3. Custom PC projection plot
-python bin/plot_xvg.py pca_backbone/projection.xvg \
+# 3. Custom PC projection plot (projections.xvg: time, PC1, ..., PC5)
+python bin/plot_xvg.py pca_backbone/projections.xvg --xcol 1 --columns 2 \
     --scatter --colormap viridis --aspect equal \
     --title "PC1 vs PC2" --xlabel "PC1 (nm)" --ylabel "PC2 (nm)" \
     --output pc1_pc2_scatter.pdf --dpi 300
 
 # 4. PC timeseries
-python bin/plot_xvg.py pca_backbone/projection.xvg --columns 1 \
+python bin/plot_xvg.py pca_backbone/projection_pc1.xvg \
     --legends "PC1" --style lines \
-    --title "PC1 Evolution" --xlabel "Frame" --ylabel "PC1 (nm)" \
+    --title "PC1 Evolution" --xlabel "Time (ps)" --ylabel "PC1 (nm)" \
     --output pc1_timeseries.png
 ```
 
@@ -399,7 +399,7 @@ bash bin/gmx_continue_grompp.sh md 0 0 500 100 production.mdp npt 0.002 "MySyste
 python bin/gmx_pca.py -s topol.tpr -f traj.xtc --selection "Backbone"
 
 # Generate PC movie
-python bin/gmx_pca_movie.py -s pca_out/fit.gro -v pca_out/eigenvectors.trr -o pc1.pdb --pc 1
+python bin/gmx_pca_movie.py -s pca_out/fit.gro -f pca_out/fit.xtc -v pca_out/eigenvectors.trr -o pc1.pdb --pc 1
 ```
 
 ## Tips
