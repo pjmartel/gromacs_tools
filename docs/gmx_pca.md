@@ -41,7 +41,12 @@ python bin/gmx_pca.py -s topol.tpr -f traj.xtc \
 The script automatically performs these steps:
 
 1. **Index Generation**: Creates atom selection from GROMACS selection string
-2. **Trajectory Preprocessing**: Centers and fits trajectory to remove rotation/translation
+2. **Trajectory Preprocessing**: makes the selected atoms whole and centres them (PBC
+   treatment, which needs the run's `.tpr`), takes the first frame of that as the reference
+   structure `fit.gro`, and fits the trajectory to it (removes rotation/translation). The
+   reference is taken *after* the PBC treatment: taken from the raw trajectory, it would be
+   split across the box whenever the protein crosses the box edge in the first frame, which
+   silently corrupts the fit and the PCA
 3. **Covariance Analysis**: Computes covariance matrix and eigenvectors
 4. **Projection**: Projects trajectory onto principal components
 5. **Visualization**: Generates plots for analysis
@@ -133,7 +138,7 @@ python bin/plot_xvg.py pca_out/projection.xvg --scatter --colormap viridis
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `-s, --structure` | Required | Structure/topology (TPR/GRO/PDB) |
+| `-s, --structure` | Required | The run input file (`.tpr`): needed to make molecules whole. A GRO/PDB is accepted only with `--pbc no` (trajectory already whole and centred) |
 | `-f, --trajectory` | Required | Trajectory file (XTC/TRR) |
 | `-o, --outdir` | `pca_out` | Output directory |
 | `--selection` | `Backbone` | GROMACS selection string |
@@ -144,29 +149,44 @@ python bin/plot_xvg.py pca_out/projection.xvg --scatter --colormap viridis
 | `--fit` | `rot+trans` | Fitting mode (rot+trans/progressive/none) |
 | `--gmx-bin` | `gmx` | GROMACS binary name/path |
 | `--no-plots` | `False` | Skip matplotlib plotting |
-| `--overwrite` | `False` | Overwrite existing output |
+| `--overwrite` | `False` | Make the index, fitted trajectory and reference again, even when the ones in `--outdir` could be reused (see [Re-running](#re-running-in-the-same-output-folder)) |
 
 ## Output Files
 
 ### GROMACS Outputs
 
+All in `--outdir` (GROMACS runs there, so its own logs stay there too, and it makes no
+`#file.N#` backups: re-running replaces the files).
+
 - `selection.ndx` - Index file with selected atoms
-- `fit.xtc` - Centered and fitted trajectory
-- `fit.gro` - Average structure
+- `fit.xtc` - Whole, centred and fitted trajectory of the selected atoms
+- `fit.gro` - Reference structure: the first frame, whole and centred like `fit.xtc`
+- `preprocessing.json` - The input files and options the three files above were made with
 - `eigenvalues.xvg` - Eigenvalues from covariance analysis
 - `eigenvectors.trr` - Eigenvectors (for projections/movies)
 - `average.pdb` - Average structure
-- `projection.xvg` - Trajectory projected onto PCs
-- `eig.xvg` - Cosine content analysis
-- `rmsf.xvg` - RMSF per atom
-- `comp.xvg` - Comparison data
+- `projection_pc1.xvg`, `projection_pc2.xvg` - Trajectory projected onto PC1 and PC2
+- `rmsf.xvg` - RMSF per atom along eigenvectors `--first` to `--last`
+- `covar.log` - Log of `gmx covar`; `logs/` - output of every GROMACS step
+- `gmx_pca_commands.sh` - The GROMACS commands run (see Features)
 
 ### Generated Plots
 
-- `plot_scree.png` - Scree plot (eigenvalues ranked)
-- `plot_cumulative.png` - Cumulative variance explained
-- `plot_pc1_pc2.png` - PC1 vs PC2 scatter plot
-- `plot_pc1_timeseries.png` - PC1 projection over time
+Each as `.png` and `.pdf`:
+
+- `plot_eigenvalues` - Scree plot (eigenvalues ranked)
+- `plot_cumulative_variance` - Cumulative variance explained
+- `plot_pc1_pc2_scatter` - PC1 vs PC2 scatter plot, coloured by time
+- `plot_pc1_timeseries`, `plot_pc2_timeseries` - PC1 and PC2 projections over time
+
+### Re-running in the Same Output Folder
+
+The index, fitted trajectory and reference structure of an earlier run are reused only if
+they were made from the same structure and trajectory files (same path, size and modification
+time) with the same `--selection`, `--pbc`, `--fit` and centring, as recorded in
+`preprocessing.json`. Otherwise they are made again, with a note saying what changed (e.g.
+"changed since: selection"). `--overwrite` makes them again in any case. The covariance
+analysis, projections and plots are always made again.
 
 ## Generated Plots Explained
 
@@ -284,9 +304,10 @@ Combine with `and`, `or`, `not`:
 - Check your selection string syntax
 - Verify atoms exist in your structure: `gmx select -s topol.tpr -select "your_selection"`
 
-### "Files already exist"
-- Use `--overwrite` flag
-- Or manually delete the output directory
+### "--pbc mol needs a .tpr"
+- Give the run's `.tpr` as `-s`: making molecules whole needs the topology. With a `.gro` or
+  `.pdb`, GROMACS can only warn and leaves molecules broken, which would corrupt the PCA.
+- If the trajectory is already whole and centred, use `--pbc no` (see Pre-processed Trajectory)
 
 ### GROMACS not found
 - Ensure `gmx` is in PATH: `which gmx`

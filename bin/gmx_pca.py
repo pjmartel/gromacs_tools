@@ -32,6 +32,7 @@ Tested with GROMACS 2021+ selection syntax.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -101,6 +102,9 @@ def set_command_script_path(path: Path) -> None:
         f.write("# You can run this independently to get the same results.\n")
         f.write("#\n\n")
         f.write("set -e  # Exit on error\n\n")
+        # the GROMACS commands run in the output folder (their own logs and backups go there)
+        f.write(f"cd '{path.parent}'\n")
+        f.write("export GMX_MAXBACKUP=-1  # no #file.N# backups: the folder belongs to this analysis\n\n")
 
 
 def log_command_to_script(script_path: Path, cmd: List[str], stdin: Optional[str] = None, comment: Optional[str] = None) -> None:
@@ -153,7 +157,9 @@ def run_cmd(cmd: List[str], stdin: Optional[str] = None, cwd: Optional[Path] = N
     proc = subprocess.run(
         cmd,
         input=stdin.encode() if stdin is not None else None,
-        cwd=str(cwd) if cwd else None,
+        cwd=str(cwd) if cwd else (str(_command_script_path.parent) if _command_script_path else None),
+        # no #file.N# backups when an analysis is re-run: the output folder belongs to it
+        env=dict(os.environ, GMX_MAXBACKUP="-1"),
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -184,6 +190,32 @@ def which_gmx(user_bin: Optional[str]) -> str:
     raise FileNotFoundError(
         "No GROMACS binary found. Install GROMACS or provide --gmx-bin or set $GMX_BIN."
     )
+
+
+def file_signature(path: Path) -> dict:
+    """What identifies an input file's contents cheaply: path, size, modification time."""
+    st = path.stat()
+    return {"path": str(path), "size": st.st_size, "mtime": round(st.st_mtime, 3)}
+
+
+def preprocessing_params(s: Path, f: Path, selection: str, pbc: str, center: bool, fit: Optional[str]) -> dict:
+    """Everything the index, fitted trajectory and reference structure depend on."""
+    return {"structure": file_signature(s), "trajectory": file_signature(f), "selection": selection,
+            "pbc": pbc, "center": center, "fit": fit or "none"}
+
+
+def reuse_reason(params_file: Path, params: dict, outputs: List[Path]) -> Optional[str]:
+    """None if the outputs of an earlier run can be reused (all there, made with the same
+    inputs and options); otherwise why not."""
+    missing = [p.name for p in outputs if not p.exists()]
+    if missing:
+        return None if len(missing) == len(outputs) else f"missing {', '.join(missing)}"
+    try:
+        old = json.loads(params_file.read_text())
+    except (OSError, ValueError):
+        return "they were made by an older version without a record of their options"
+    changed = [k for k in params if old.get(k) != params[k]]
+    return f"changed since: {', '.join(changed)}" if changed else ""
 
 
 def ensure_outdir(path: Path) -> None:
@@ -346,32 +378,28 @@ def build_index_with_select(gmx: str, s: Path, selection: str, out_ndx: Path, lo
 def trj_fit_center(gmx: str, s: Path, f: Path, ndx: Path, out_xtc: Path, pbc: str, center: bool, fit: str, log_dir: Path) -> Path:
     """Run trjconv in multiple steps to handle PBC and fitting separately.
     
-    Step 0: Create a structure file with selected atoms only (from original TPR + original traj)
-    Step 1: PBC treatment + centering, output only selected atoms
-    Step 2: Fitting using the structure that matches the filtered trajectory
-    
+    Step a: PBC treatment + centering, output only selected atoms
+    Step b: the first frame of that, as the reference structure (GRO): whole and centred like the
+            trajectory (taken from the raw trajectory, it would be split across the box whenever
+            the protein crosses the box edge in the first frame, which corrupts the fit and PCA)
+    Step c: Fitting using the structure that matches the filtered trajectory
+
     Returns the filtered structure (GRO) that matches the output trajectory atoms.
     """
     temp_xtc = out_xtc.parent / "temp_pbc.xtc"
     out_gro = out_xtc.parent / "fit.gro"
-    
-    # Step 0: Create matching structure file FIRST (from original traj with original TPR)
-    # This extracts first frame with selected atoms only
-    cmd_gro = [gmx, "trjconv", "-s", str(s), "-f", str(f), "-o", str(out_gro), "-n", str(ndx), "-dump", "0"]
-    proc_gro = run_cmd(cmd_gro, stdin="0\n", comment="Step 2a: Extract first frame with selected atoms to create reference structure")
-    (log_dir / "trjconv_gro.log").write_bytes(proc_gro.stdout)
-    
-    # Step 1: PBC treatment, centering, output selected atoms only
-    cmd1 = [gmx, "trjconv", "-s", str(s), "-f", str(f), "-o", str(temp_xtc), "-n", str(ndx), "-pbc", pbc, "-ur", "compact"]
-    if center:
-        cmd1.append("-center")
-    
-    answers1 = ["0"]
-    if center:
-        answers1 = ["0", "0"]
-    stdin1 = "\n".join(answers1) + "\n"
-    proc1 = run_cmd(cmd1, stdin=stdin1, comment="Step 2b: PBC treatment and centering")
+
+    # PBC treatment and centering, output selected atoms only; the reference structure gets
+    # exactly the same treatment (same options, first frame only)
+    treatment = ["-n", str(ndx), "-pbc", pbc, "-ur", "compact"] + (["-center"] if center else [])
+    stdin1 = "0\n0\n" if center else "0\n"
+    cmd1 = [gmx, "trjconv", "-s", str(s), "-f", str(f), "-o", str(temp_xtc)] + treatment
+    proc1 = run_cmd(cmd1, stdin=stdin1, comment="Step 2a: PBC treatment and centering")
     (log_dir / "trjconv_pbc.log").write_bytes(proc1.stdout)
+
+    cmd_gro = [gmx, "trjconv", "-s", str(s), "-f", str(f), "-o", str(out_gro), "-dump", "0"] + treatment
+    proc_gro = run_cmd(cmd_gro, stdin=stdin1, comment="Step 2b: First frame, treated the same way, as the reference structure")
+    (log_dir / "trjconv_gro.log").write_bytes(proc_gro.stdout)
     
     # Step 2: Rotational fit using the matching structure
     if fit:
@@ -379,7 +407,7 @@ def trj_fit_center(gmx: str, s: Path, f: Path, ndx: Path, out_xtc: Path, pbc: st
         # No index needed here since out_gro already has only selected atoms
         # Just need to specify fit group (all atoms = 0 = System) and output group (0)
         stdin2 = "0\n0\n"
-        proc2 = run_cmd(cmd2, stdin=stdin2, comment="Step 2c: Rotational+translational fitting")
+        proc2 = run_cmd(cmd2, stdin=stdin2, comment="Step 2c: Fitting to the reference structure")
         (log_dir / "trjconv_fit.log").write_bytes(proc2.stdout)
         temp_xtc.unlink()
     else:
@@ -524,6 +552,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not f.exists():
         print(f"Error: trajectory file not found: {f}", file=sys.stderr)
         return 2
+    if args.pbc != "no" and s.suffix.lower() != ".tpr":
+        # trjconv -pbc mol/res needs the topology to make molecules whole; with a GRO/PDB it
+        # only warns and the molecules stay broken, which silently corrupts the PCA
+        print(f"Error: --pbc {args.pbc} needs a .tpr as structure (-s), to make molecules whole;"
+              f" {s.name} has no topology. Give the run's .tpr, or use --pbc no if the trajectory"
+              f" is already whole and centred.", file=sys.stderr)
+        return 2
 
     try:
         gmx = which_gmx(args.gmx_bin)
@@ -531,30 +566,30 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(str(e), file=sys.stderr)
         return 2
 
-    # Prepare selection index
     ndx = outdir / "selection.ndx"
-    if ndx.exists() and not args.overwrite:
-        print(f"[skip] Using existing index: {ndx}")
-    else:
-        print(f"[1/5] Building selection index with: {args.selection}")
-        build_index_with_select(gmx, s, args.selection, ndx, log_dir)
-
-    # Fit/center trajectory
     fit_xtc = outdir / "fit.xtc"
     fit_gro = outdir / "fit.gro"
     do_center = not args.no_center
     fit_mode = None if args.fit in ("", "none") else args.fit
 
-    if fit_xtc.exists() and not args.overwrite:
-        print(f"[skip] Using existing fitted trajectory: {fit_xtc}")
-        # Ensure we have the matching structure
-        if not fit_gro.exists():
-            print(f"Warning: {fit_gro} not found, recreating...")
-            cmd_gro = [gmx, "trjconv", "-s", str(s), "-f", str(fit_xtc), "-o", str(fit_gro), "-n", str(ndx), "-dump", "0"]
-            run_cmd(cmd_gro, stdin="0\n")
+    # The index, fitted trajectory and reference structure of an earlier run in this folder are
+    # reused only if they were made from the same files with the same options (recorded in
+    # preprocessing.json); otherwise, or with --overwrite, they are made again
+    params_file = outdir / "preprocessing.json"
+    params = preprocessing_params(s, f, args.selection, args.pbc, do_center, fit_mode)
+    reason = None if args.overwrite else reuse_reason(params_file, params, [ndx, fit_xtc, fit_gro])
+    if reason == "":
+        print(f"[skip] Reusing the index, fitted trajectory and reference structure in {outdir}"
+              f" (same input files and options; --overwrite to make them again)")
     else:
+        if reason:
+            print(f"Note: not reusing the earlier preprocessing in {outdir}: {reason}")
+        params_file.unlink(missing_ok=True)
+        print(f"[1/5] Building selection index with: {args.selection}")
+        build_index_with_select(gmx, s, args.selection, ndx, log_dir)
         print("[2/5] Fitting and centering trajectory (trjconv)...")
         fit_gro = trj_fit_center(gmx, s, f, ndx, fit_xtc, args.pbc, do_center, fit_mode, log_dir)
+        params_file.write_text(json.dumps(params, indent=2) + "\n")
 
     # PCA: covar (use filtered structure that matches the trajectory, NO index needed)
     print("[3/5] Running covariance analysis (covar)...")
