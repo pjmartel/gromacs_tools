@@ -1,4 +1,4 @@
-# gromacs_pca.py
+# gmx_pca.py
 
 Automates Principal Component Analysis (PCA) on GROMACS trajectories with automatic plotting of essential results.
 
@@ -17,7 +17,7 @@ Performs complete PCA workflow from trajectory preprocessing through eigenvector
 - ✅ Customizable PBC and fitting options
 - ✅ Batch processing support
 - ✅ **Command logging** (on by default): every GROMACS command run, plus the exact invocation
-  used, is saved to `<outdir>/gromacs_pca_commands.sh` (override with `--commands-file`); the file from an earlier run is kept as `…_commands.1.sh`, `.2.sh`, … (highest number = most recent)
+  used, is saved to `<outdir>/gmx_pca_commands.sh` (override with `--commands-file`); the file from an earlier run is kept as `…_commands.1.sh`, `.2.sh`, … (highest number = most recent)
 
 ## Requirements
 
@@ -29,10 +29,10 @@ Performs complete PCA workflow from trajectory preprocessing through eigenvector
 
 ```bash
 # Basic PCA on backbone atoms
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc --selection "Backbone"
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc --selection "Backbone"
 
 # Analyze first 5 principal components
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc \
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc \
     --selection "Backbone" --first 1 --last 5
 ```
 
@@ -51,24 +51,24 @@ The script automatically performs these steps:
 ### Basic Usage
 
 ```bash
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc
 ```
 
 ### Custom Selection
 
 ```bash
 # Protein backbone
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc --selection "Backbone"
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc --selection "Backbone"
 
 # C-alpha atoms only
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc --selection "name CA"
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc --selection "name CA"
 
 # Specific residues
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc \
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc \
     --selection "resid 10 to 50 and name CA"
 
 # Binding site region
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc \
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc \
     --selection "resid 15 23 45 67 and sidechain"
 ```
 
@@ -76,46 +76,46 @@ python bin/gromacs_pca.py -s topol.tpr -f traj.xtc \
 
 ```bash
 # Custom output directory
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc -o pca_results
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc -o pca_results
 
 # Overwrite existing output
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc -o pca_out --overwrite
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc -o pca_out --overwrite
 ```
 
 ### Eigenvector Range
 
 ```bash
 # Analyze first 10 PCs
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc --first 1 --last 10
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc --first 1 --last 10
 
 # Analyze only PC1
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc --first 1 --last 1
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc --first 1 --last 1
 ```
 
 ### PBC and Fitting Options
 
 ```bash
 # Different PBC handling
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc --pbc nojump
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc --pbc nojump
 
 # No PBC correction
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc --pbc no
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc --pbc no
 
 # Progressive fitting (for long trajectories)
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc --fit progressive
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc --fit progressive
 
 # No fitting (pre-aligned trajectories)
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc --fit none --no-center
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc --fit none --no-center
 ```
 
 ### Custom GROMACS Binary
 
 ```bash
 # Use specific GROMACS version
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc --gmx-bin gmx_2024
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc --gmx-bin gmx_2024
 
 # Full path to GROMACS
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc \
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc \
     --gmx-bin /usr/local/gromacs/2024/bin/gmx
 ```
 
@@ -123,7 +123,7 @@ python bin/gromacs_pca.py -s topol.tpr -f traj.xtc \
 
 ```bash
 # Skip plotting (only run GROMACS steps)
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc --no-plots
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc --no-plots
 
 # Then use plot_xvg.py for custom plots
 python bin/plot_xvg.py pca_out/projection.xvg --scatter --colormap viridis
@@ -188,7 +188,7 @@ Shows how conformations evolve along PC1 over time. Useful for identifying trans
 
 ```bash
 # 1. Run PCA
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc
 
 # 2. Outputs in pca_out/:
 #    - fit.gro, eigenvectors.trr (for movies)
@@ -200,7 +200,7 @@ python bin/gromacs_pca.py -s topol.tpr -f traj.xtc
 
 ```bash
 # Analyze specific binding pocket
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc \
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc \
     --selection "resid 45 46 47 89 90 91 and sidechain" \
     -o binding_site_pca --first 1 --last 5
 ```
@@ -209,10 +209,10 @@ python bin/gromacs_pca.py -s topol.tpr -f traj.xtc \
 
 ```bash
 # Replica 1
-python bin/gromacs_pca.py -s topol.tpr -f rep1.xtc -o pca_rep1
+python bin/gmx_pca.py -s topol.tpr -f rep1.xtc -o pca_rep1
 
 # Replica 2
-python bin/gromacs_pca.py -s topol.tpr -f rep2.xtc -o pca_rep2
+python bin/gmx_pca.py -s topol.tpr -f rep2.xtc -o pca_rep2
 
 # Compare projections
 python bin/plot_xvg.py pca_rep1/projection.xvg pca_rep2/projection.xvg \
@@ -224,7 +224,7 @@ python bin/plot_xvg.py pca_rep1/projection.xvg pca_rep2/projection.xvg \
 
 ```bash
 # If trajectory already aligned
-python bin/gromacs_pca.py -s aligned.gro -f aligned.xtc \
+python bin/gmx_pca.py -s aligned.gro -f aligned.xtc \
     --fit none --no-center --pbc no
 ```
 
@@ -315,7 +315,7 @@ python bin/plot_xvg.py pca_out/projection.xvg \
 ### PC Movies
 ```bash
 # Generate movie along PC1
-python bin/gromacs_pca_movie.py -s pca_out/fit.gro \
+python bin/gmx_pca_movie.py -s pca_out/fit.gro \
     -v pca_out/eigenvectors.trr -o pc1_movie.pdb --pc 1 --nframes 100
 ```
 

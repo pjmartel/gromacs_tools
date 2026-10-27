@@ -12,7 +12,7 @@ cd gromacs_tools
 export PATH="$PATH:$(pwd)/bin"
 ```
 
-The Python tools that need extra packages (`plot_xvg.py`, `gmx_panel.py`, `gromacs_pca.py`)
+The Python tools that need extra packages (`plot_xvg.py`, `gmx_panel.py`, `gmx_pca.py`)
 declare them in an inline script header ([PEP 723](https://peps.python.org/pep-0723/)). With
 [uv](https://docs.astral.sh/uv/) installed, run them directly (`plot_xvg.py file.xvg`): uv
 creates and caches an environment with their dependencies on first use, so no virtual or
@@ -30,8 +30,8 @@ python bin/plot_xvg.py file.xvg
 |------|---------|---------------|
 | **gmx_prepare.py** | Automate system preparation pipeline (pdb2gmx, solvate, ions) | [docs/gmx_prepare.md](docs/gmx_prepare.md) |
 | **gmx_equilibrate.py** | Automated equilibration pipeline (EM → NVT → NPT) with restraints | [docs/gmx_equilibrate.md](docs/gmx_equilibrate.md) |
-| **gromacs_pca.py** | Principal component analysis workflow with automatic plotting | [docs/gromacs_pca.md](docs/gromacs_pca.md) |
-| **gromacs_pca_movie.py** | Generate trajectory movies along principal components | [docs/gromacs_pca_movie.md](docs/gromacs_pca_movie.md) |
+| **gmx_pca.py** | Principal component analysis workflow with automatic plotting | [docs/gmx_pca.md](docs/gmx_pca.md) |
+| **gmx_pca_movie.py** | Generate trajectory movies along principal components | [docs/gmx_pca_movie.md](docs/gmx_pca_movie.md) |
 | **plot_xvg.py** | Versatile XVG plotting tool with extensive customization | [docs/plot_xvg.md](docs/plot_xvg.md) |
 | **gmx_continue_grompp.sh** | Intelligent MD simulation continuation with crash recovery | [docs/md_continuation.md](docs/md_continuation.md) |
 | **gmx_extract.sh** | Extract, clean up (PBC/center/fit) and convert a trajectory for visualization | [docs/gmx_extract.md](docs/gmx_extract.md) |
@@ -66,10 +66,10 @@ python bin/gmx_equilibrate.py protein_ions.gro protein.top --dry-run
 ### PCA Analysis
 ```bash
 # Full PCA workflow with automatic plotting
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc --selection "Backbone"
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc --selection "Backbone"
 
 # Generate PC motion movie
-python bin/gromacs_pca_movie.py fit.gro eigenvec.trr --pc 1 --frames 50
+python bin/gmx_pca_movie.py fit.gro eigenvec.trr --pc 1 --frames 50
 ```
 
 ### Plotting XVG Files

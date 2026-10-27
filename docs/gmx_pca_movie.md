@@ -1,4 +1,4 @@
-# gromacs_pca_movie.py
+# gmx_pca_movie.py
 
 Generate trajectory movies showing conformational changes along principal components.
 
@@ -14,7 +14,7 @@ Creates animated trajectories that visualize the motion captured by specific pri
 - ✅ Compatible with all molecular viewers
 - ✅ Multiple output formats (PDB, XTC, TRR)
 - ✅ **Command logging** (on by default): every GROMACS command run, plus the exact invocation
-  used, is saved to `<outdir>/gromacs_pca_movie_commands.sh` (override with `--commands-file`); the file from an earlier run is kept as `…_commands.1.sh`, `.2.sh`, … (highest number = most recent)
+  used, is saved to `<outdir>/gmx_pca_movie_commands.sh` (override with `--commands-file`); the file from an earlier run is kept as `…_commands.1.sh`, `.2.sh`, … (highest number = most recent)
 
 ## Requirements
 
@@ -26,7 +26,7 @@ Creates animated trajectories that visualize the motion captured by specific pri
 
 ```bash
 # Generate 50-frame movie along PC1
-python bin/gromacs_pca_movie.py \
+python bin/gmx_pca_movie.py \
     -s pca_out/fit.gro \
     -v pca_out/eigenvectors.trr \
     -o pc1_movie.pdb --pc 1 --nframes 50
@@ -38,13 +38,13 @@ python bin/gromacs_pca_movie.py \
 
 ```bash
 # PC1 movie (default: 50 frames)
-python bin/gromacs_pca_movie.py \
+python bin/gmx_pca_movie.py \
     -s pca_out/fit.gro \
     -v pca_out/eigenvectors.trr \
     -o pc1_movie.pdb --pc 1
 
 # PC2 movie with 100 frames
-python bin/gromacs_pca_movie.py \
+python bin/gmx_pca_movie.py \
     -s pca_out/fit.gro \
     -v pca_out/eigenvectors.trr \
     -o pc2_movie.pdb --pc 2 --nframes 100
@@ -54,7 +54,7 @@ python bin/gromacs_pca_movie.py \
 
 ```bash
 # Generate only min and max structures (2 frames total)
-python bin/gromacs_pca_movie.py \
+python bin/gmx_pca_movie.py \
     -s pca_out/fit.gro \
     -v pca_out/eigenvectors.trr \
     -o pc1_extremes.pdb --pc 1 --extremes-only
@@ -64,13 +64,13 @@ python bin/gromacs_pca_movie.py \
 
 ```bash
 # Larger amplitude (3.0 nm along eigenvector)
-python bin/gromacs_pca_movie.py \
+python bin/gmx_pca_movie.py \
     -s pca_out/fit.gro \
     -v pca_out/eigenvectors.trr \
     -o pc1_large.pdb --pc 1 --extreme 3.0
 
 # Smaller amplitude (1.0 nm)
-python bin/gromacs_pca_movie.py \
+python bin/gmx_pca_movie.py \
     -s pca_out/fit.gro \
     -v pca_out/eigenvectors.trr \
     -o pc1_small.pdb --pc 1 --extreme 1.0
@@ -80,13 +80,13 @@ python bin/gromacs_pca_movie.py \
 
 ```bash
 # XTC format (compressed, smaller files)
-python bin/gromacs_pca_movie.py \
+python bin/gmx_pca_movie.py \
     -s pca_out/fit.gro \
     -v pca_out/eigenvectors.trr \
     -o pc1_movie.xtc --pc 1
 
 # TRR format (full precision)
-python bin/gromacs_pca_movie.py \
+python bin/gmx_pca_movie.py \
     -s pca_out/fit.gro \
     -v pca_out/eigenvectors.trr \
     -o pc1_movie.trr --pc 1
@@ -95,7 +95,7 @@ python bin/gromacs_pca_movie.py \
 ### Custom Output Directory
 
 ```bash
-python bin/gromacs_pca_movie.py \
+python bin/gmx_pca_movie.py \
     -s pca_out/fit.gro \
     -v pca_out/eigenvectors.trr \
     -o movies/pc1.pdb --pc 1 --outdir movies
@@ -137,19 +137,19 @@ The animation goes: min → average → max → average → min (full cycle)
 
 ```bash
 # 1. Run PCA analysis
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc \
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc \
     --selection "Backbone" -o pca_out
 
 # 2. Generate movies for first 3 PCs
-python bin/gromacs_pca_movie.py \
+python bin/gmx_pca_movie.py \
     -s pca_out/fit.gro -v pca_out/eigenvectors.trr \
     -o pc1_movie.pdb --pc 1 --nframes 100
 
-python bin/gromacs_pca_movie.py \
+python bin/gmx_pca_movie.py \
     -s pca_out/fit.gro -v pca_out/eigenvectors.trr \
     -o pc2_movie.pdb --pc 2 --nframes 100
 
-python bin/gromacs_pca_movie.py \
+python bin/gmx_pca_movie.py \
     -s pca_out/fit.gro -v pca_out/eigenvectors.trr \
     -o pc3_movie.pdb --pc 3 --nframes 100
 
@@ -219,7 +219,7 @@ coordset slider #1
 ```bash
 # Visualize top 3 PCs to understand main conformational changes
 for pc in 1 2 3; do
-    python bin/gromacs_pca_movie.py \
+    python bin/gmx_pca_movie.py \
         -s pca_out/fit.gro -v pca_out/eigenvectors.trr \
         -o pc${pc}_movie.pdb --pc $pc
 done
@@ -229,12 +229,12 @@ done
 
 ```bash
 # Wild type PC1
-python bin/gromacs_pca_movie.py \
+python bin/gmx_pca_movie.py \
     -s pca_wt/fit.gro -v pca_wt/eigenvectors.trr \
     -o wt_pc1.pdb --pc 1
 
 # Mutant PC1
-python bin/gromacs_pca_movie.py \
+python bin/gmx_pca_movie.py \
     -s pca_mut/fit.gro -v pca_mut/eigenvectors.trr \
     -o mut_pc1.pdb --pc 1
 
@@ -245,7 +245,7 @@ python bin/gromacs_pca_movie.py \
 
 ```bash
 # High quality, smooth 200-frame movie
-python bin/gromacs_pca_movie.py \
+python bin/gmx_pca_movie.py \
     -s pca_out/fit.gro -v pca_out/eigenvectors.trr \
     -o presentation_pc1.pdb --pc 1 --nframes 200 --extreme 2.5
 ```
@@ -254,7 +254,7 @@ python bin/gromacs_pca_movie.py \
 
 ```bash
 # Extract extreme conformations for docking
-python bin/gromacs_pca_movie.py \
+python bin/gmx_pca_movie.py \
     -s pca_out/fit.gro -v pca_out/eigenvectors.trr \
     -o pc1_extremes.pdb --pc 1 --extremes-only
 
@@ -272,7 +272,7 @@ python bin/gromacs_pca_movie.py \
 
 for pc in {1..5}; do
     echo "Generating PC${pc} movie..."
-    python bin/gromacs_pca_movie.py \
+    python bin/gmx_pca_movie.py \
         -s pca_out/fit.gro \
         -v pca_out/eigenvectors.trr \
         -o movies/pc${pc}_movie.pdb \
@@ -286,7 +286,7 @@ done
 
 ```bash
 # Generate movie
-python bin/gromacs_pca_movie.py \
+python bin/gmx_pca_movie.py \
     -s pca_out/fit.gro -v pca_out/eigenvectors.trr \
     -o pc1.xtc --pc 1 --nframes 100
 
@@ -299,7 +299,7 @@ gmx trjconv -f pc1.xtc -s pca_out/fit.gro -o pc1_max.pdb -dump 50
 ```bash
 # Small, medium, large extent movies
 for extent in 1.0 2.0 3.0; do
-    python bin/gromacs_pca_movie.py \
+    python bin/gmx_pca_movie.py \
         -s pca_out/fit.gro -v pca_out/eigenvectors.trr \
         -o pc1_extent${extent}.pdb --pc 1 --extreme $extent
 done
@@ -340,7 +340,7 @@ done
 ## Troubleshooting
 
 ### "Error: eigenvectors file not found"
-- Ensure you've run `gromacs_pca.py` first
+- Ensure you've run `gmx_pca.py` first
 - Check path to `eigenvectors.trr`
 
 ### "Error: atoms mismatch"
@@ -367,7 +367,7 @@ done
 
 ## See Also
 
-- [gromacs_pca.md](gromacs_pca.md) - For running PCA analysis
+- [gmx_pca.md](gmx_pca.md) - For running PCA analysis
 - [plot_xvg.md](plot_xvg.md) - For plotting PC projections
 - GROMACS `gmx anaeig` documentation - For understanding interpolation
 

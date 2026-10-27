@@ -527,7 +527,7 @@ bash bin/gmx_continue_grompp.sh md 0 0 500 100 \
      mdp_templates/charmm36/production/md_npt.mdp equil_npt2
 
 # 4. Analysis
-python bin/gromacs_pca.py -s md_0.tpr -f md_0.xtc
+python bin/gmx_pca.py -s md_0.tpr -f md_0.xtc
 ```
 
 ### Resuming Failed Equilibration

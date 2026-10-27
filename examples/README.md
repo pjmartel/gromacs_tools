@@ -81,14 +81,14 @@ TRAJ="md_complete.xtc"
 TPR="npt.tpr"
 
 # 1. Run PCA on backbone
-python bin/gromacs_pca.py -s $TPR -f $TRAJ \
+python bin/gmx_pca.py -s $TPR -f $TRAJ \
     --selection "Backbone" \
     --first 1 --last 5 \
     -o pca_backbone
 
 # 2. Generate movies for top 3 PCs
 for pc in 1 2 3; do
-    python bin/gromacs_pca_movie.py \
+    python bin/gmx_pca_movie.py \
         -s pca_backbone/fit.gro \
         -v pca_backbone/eigenvectors.trr \
         -o pca_backbone/pc${pc}_movie.pdb \
@@ -396,10 +396,10 @@ bash bin/gmx_continue_grompp.sh md 0 0 500 100 production.mdp npt 0.002 "MySyste
 ### PCA
 ```bash
 # Full PCA workflow
-python bin/gromacs_pca.py -s topol.tpr -f traj.xtc --selection "Backbone"
+python bin/gmx_pca.py -s topol.tpr -f traj.xtc --selection "Backbone"
 
 # Generate PC movie
-python bin/gromacs_pca_movie.py -s pca_out/fit.gro -v pca_out/eigenvectors.trr -o pc1.pdb --pc 1
+python bin/gmx_pca_movie.py -s pca_out/fit.gro -v pca_out/eigenvectors.trr -o pc1.pdb --pc 1
 ```
 
 ## Tips
