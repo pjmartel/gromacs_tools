@@ -15,18 +15,18 @@ GROMACS PCA automation script
 This script automates a typical Principal Component Analysis (PCA) workflow
 for MD trajectories using GROMACS tools and produces Matplotlib plots.
 
-Pipeline (default):
-1) Build an index using a GROMACS selection (default: Backbone)
-2) Fit and center the trajectory on the selected atoms (gmx trjconv)
-3) Compute covariance matrix and eigenvectors (gmx covar)
-4) Analyze eigenvectors and project trajectory (gmx anaeig)
-5) Parse .xvg outputs and generate plots
+Pipeline:
+1) Index groups from GROMACS selections: the atoms analysed (--selection), the atoms used for
+   fitting (--fit-selection, default the same) and both together
+2) PBC treatment and centring of those atoms (gmx trjconv); the first frame, treated the same
+   way, as the reference structure; fitting of the trajectory to it
+3) Covariance matrix and eigenvectors (gmx covar), fitting on the fit atoms
+4) Projections on PCs --first to --last and RMSF along them (gmx anaeig, one pass)
+5) Variance per PC (terminal table and variance.xvg) and plots
 
 Requirements:
 - GROMACS in PATH (gmx) or provide --gmx-bin
 - Python packages: numpy, matplotlib
-
-Tested with GROMACS 2021+ selection syntax.
 """
 
 from __future__ import annotations
@@ -34,12 +34,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -48,7 +49,7 @@ try:
     import matplotlib
     matplotlib.use("Agg")  # headless-safe backend
     import matplotlib.pyplot as plt
-except Exception as e:
+except Exception:
     plt = None  # defer error until we actually try to plot
 
 
@@ -56,8 +57,18 @@ class CommandError(RuntimeError):
     pass
 
 
+class AnalysisError(RuntimeError):
+    """An input or GROMACS output that doesn't match what this script expects."""
+
+
 # Global variable to store the command log script path
 _command_script_path: Optional[Path] = None
+
+# Index groups of the reduced structure (fit.gro / fit.xtc), in pca_groups.ndx
+GROUP_FIT, GROUP_ANALYSIS, GROUP_ALL = 0, 1, 2
+
+SCREE_PCS = 25          # PCs shown in the scree and cumulative-variance plots
+TABLE_PCS = 10          # PCs listed in the terminal (at least up to --last)
 
 
 def backup_existing_file(path: Path) -> Optional[Path]:
@@ -83,6 +94,7 @@ def backup_existing_file(path: Path) -> Optional[Path]:
     path.rename(backup)
     return backup
 
+
 def set_command_script_path(path: Path) -> None:
     """Set the global path for logging commands."""
     global _command_script_path
@@ -99,7 +111,8 @@ def set_command_script_path(path: Path) -> None:
         f.write(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write("#\n")
         f.write("# This script reproduces all GROMACS commands executed by the Python script.\n")
-        f.write("# You can run this independently to get the same results.\n")
+        f.write("# You can run this independently to get the same results (the index of the\n")
+        f.write("# reduced structure, pca_groups.ndx, is written by gmx_pca.py itself).\n")
         f.write("#\n\n")
         f.write("set -e  # Exit on error\n\n")
         # the GROMACS commands run in the output folder (their own logs and backups go there)
@@ -107,53 +120,32 @@ def set_command_script_path(path: Path) -> None:
         f.write("export GMX_MAXBACKUP=-1  # no #file.N# backups: the folder belongs to this analysis\n\n")
 
 
+def shell_quote(arg: str) -> str:
+    """An argument as the shell needs it (quoted if it contains anything special)."""
+    return arg if re.fullmatch(r"[\w@%+=:,./-]+", arg) else "'" + arg.replace("'", "'\\''") + "'"
+
+
 def log_command_to_script(script_path: Path, cmd: List[str], stdin: Optional[str] = None, comment: Optional[str] = None) -> None:
-    """Append a command to the reproducibility script.
-    
-    Args:
-        script_path: Path to the shell script file
-        cmd: Command tokens
-        stdin: Input to be piped to the command
-        comment: Optional comment describing the step
-    """
+    """Append a command to the reproducibility script."""
     with script_path.open("a", encoding="utf-8") as f:
         if comment:
             f.write(f"\n# {comment}\n")
-        
-        # Build the command string
-        cmd_str = " ".join(f"'{arg}'" if " " in arg else arg for arg in cmd)
-        
+        cmd_str = " ".join(shell_quote(arg) for arg in cmd)
         if stdin:
-            # Use heredoc for multi-line input or echo for simple input
             stdin_clean = stdin.rstrip()
             if "\n" in stdin_clean:
-                # Use heredoc for multiple lines
                 f.write(f"{cmd_str} <<'EOF'\n{stdin_clean}\nEOF\n")
             else:
-                # Use echo for single line
-                f.write(f"echo '{stdin_clean}' | {cmd_str}\n")
+                f.write(f"echo {shell_quote(stdin_clean)} | {cmd_str}\n")
         else:
             f.write(f"{cmd_str}\n")
 
 
 def run_cmd(cmd: List[str], stdin: Optional[str] = None, cwd: Optional[Path] = None, comment: Optional[str] = None) -> subprocess.CompletedProcess:
-    """Run a command and raise on non-zero return code. Capture stdout/stderr.
-
-    Args:
-        cmd: List of command tokens
-        stdin: Optional string to feed to stdin (e.g., group selections "0\n0\n")
-        cwd: Working directory
-        comment: Optional comment for the command log
-    Returns:
-        CompletedProcess
-    Raises:
-        CommandError on failure
-    """
-    # Log to reproducibility script if path is set
-    global _command_script_path
+    """Run a command (logged to the command script) and raise CommandError on a non-zero
+    return code. stdout and stderr are captured together."""
     if _command_script_path:
         log_command_to_script(_command_script_path, cmd, stdin, comment)
-    
     proc = subprocess.run(
         cmd,
         input=stdin.encode() if stdin is not None else None,
@@ -170,14 +162,7 @@ def run_cmd(cmd: List[str], stdin: Optional[str] = None, cwd: Optional[Path] = N
 
 
 def which_gmx(user_bin: Optional[str]) -> str:
-    """Find the GROMACS binary to use (gmx or gmx_mpi).
-
-    Priority:
-    1) --gmx-bin argument
-    2) $GMX_BIN env var
-    3) 'gmx' in PATH
-    4) 'gmx_mpi' in PATH
-    """
+    """Find the GROMACS binary to use: --gmx-bin, $GMX_BIN, gmx or gmx_mpi on PATH."""
     candidates: List[Optional[str]] = [
         user_bin,
         os.environ.get("GMX_BIN"),
@@ -185,7 +170,7 @@ def which_gmx(user_bin: Optional[str]) -> str:
         shutil.which("gmx_mpi"),
     ]
     for c in candidates:
-        if c and shutil.which(c) or (c and Path(c).exists() and os.access(c, os.X_OK)):
+        if c and (shutil.which(c) or (Path(c).exists() and os.access(c, os.X_OK))):
             return c
     raise FileNotFoundError(
         "No GROMACS binary found. Install GROMACS or provide --gmx-bin or set $GMX_BIN."
@@ -198,15 +183,16 @@ def file_signature(path: Path) -> dict:
     return {"path": str(path), "size": st.st_size, "mtime": round(st.st_mtime, 3)}
 
 
-def preprocessing_params(s: Path, f: Path, selection: str, pbc: str, center: bool, fit: Optional[str]) -> dict:
+def preprocessing_params(s: Path, f: Path, selection: str, fit_selection: str, pbc: str,
+                         center: bool, fit: Optional[str]) -> dict:
     """Everything the index, fitted trajectory and reference structure depend on."""
     return {"structure": file_signature(s), "trajectory": file_signature(f), "selection": selection,
-            "pbc": pbc, "center": center, "fit": fit or "none"}
+            "fit_selection": fit_selection, "pbc": pbc, "center": center, "fit": fit or "none"}
 
 
 def reuse_reason(params_file: Path, params: dict, outputs: List[Path]) -> Optional[str]:
-    """None if the outputs of an earlier run can be reused (all there, made with the same
-    inputs and options); otherwise why not."""
+    """None if there is nothing to reuse; "" if the outputs of an earlier run can be reused
+    (all there, made with the same inputs and options); otherwise why not."""
     missing = [p.name for p in outputs if not p.exists()]
     if missing:
         return None if len(missing) == len(outputs) else f"missing {', '.join(missing)}"
@@ -222,330 +208,401 @@ def ensure_outdir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def parse_xvg(xvg_path: Path) -> np.ndarray:
-    """Parse a GROMACS .xvg file into a numpy array.
+# ---------------------------------------------------------------------------
+# Index groups
+# ---------------------------------------------------------------------------
 
-    Ignores lines starting with '@' and '#'.
-    Returns an (N, M) float array.
-    """
-    data: List[List[float]] = []
-    with xvg_path.open("r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line[0] in ("@", "#"):
-                continue
-            # Split on whitespace; tolerate multiple spaces/tabs
-            parts = line.split()
+def read_ndx(path: Path) -> List[Tuple[str, List[int]]]:
+    """Groups of an index file, in order: [(name, [atom numbers])]."""
+    groups: List[Tuple[str, List[int]]] = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.fullmatch(r"\[\s*(.*?)\s*\]", line)
+        if m:
+            groups.append((m.group(1), []))
+        elif groups:
             try:
-                row = [float(x) for x in parts]
+                groups[-1][1].extend(int(v) for v in line.split())
             except ValueError:
-                # skip any non-numeric line silently
-                continue
-            data.append(row)
-    if not data:
-        raise ValueError(f"No numeric data parsed from {xvg_path}")
-    return np.array(data, dtype=float)
-
-
-def plot_eigenvalues(eigvals: np.ndarray, out: Path) -> None:
-    if plt is None:
-        raise RuntimeError("Matplotlib not available to create plots.")
-    # eigvals expected shape (N, 2?) or 1D; robustly handle columns
-    vals = eigvals[:, -1] if eigvals.ndim == 2 and eigvals.shape[1] > 1 else eigvals.squeeze()
-    idx = np.arange(1, len(vals) + 1)
-    plt.figure(figsize=(6, 4))
-    plt.plot(idx, vals, marker='o')
-    plt.xlabel('Principal Component')
-    plt.ylabel('Eigenvalue (variance)')
-    plt.title('Scree plot (Eigenvalues)')
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(out.with_suffix('.png'), dpi=200)
-    plt.savefig(out.with_suffix('.pdf'))
-    plt.close()
-
-
-def plot_cumulative_variance(eigvals: np.ndarray, out: Path) -> None:
-    if plt is None:
-        raise RuntimeError("Matplotlib not available to create plots.")
-    vals = eigvals[:, -1] if eigvals.ndim == 2 and eigvals.shape[1] > 1 else eigvals.squeeze()
-    total = np.sum(vals)
-    if total <= 0:
-        total = 1.0
-    frac = vals / total
-    cum = np.cumsum(frac)
-    idx = np.arange(1, len(vals) + 1)
-    plt.figure(figsize=(6, 4))
-    plt.plot(idx, cum, marker='o')
-    plt.xlabel('Number of PCs')
-    plt.ylabel('Cumulative variance explained')
-    plt.title('Cumulative variance')
-    plt.ylim(0, 1.05)
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(out.with_suffix('.png'), dpi=200)
-    plt.savefig(out.with_suffix('.pdf'))
-    plt.close()
-
-
-def plot_pc_scatter(proj: np.ndarray, out: Path, color_by_time: bool = True) -> None:
-    if plt is None:
-        raise RuntimeError("Matplotlib not available to create plots.")
-    # Expect columns: time, PC1, PC2, ... (or possibly just PC1, PC2 without time)
-    # Handle various cases
-    if proj.shape[1] < 2:
-        raise ValueError(f"Projection file must have at least 2 columns for scatter plot, got {proj.shape[1]}")
-    
-    if proj.shape[1] == 2:
-        # Only 2 columns: could be (time, PC1) or (PC1, PC2)
-        # Check if first column looks like time (monotonically increasing, reasonable range)
-        col0_increasing = np.all(np.diff(proj[:, 0]) >= 0)
-        col0_range = proj[-1, 0] - proj[0, 0]
-        
-        if col0_increasing and col0_range > 10:
-            # Likely (time, PC1) - cannot make PC1 vs PC2 scatter
-            raise ValueError("Projection file has only time and PC1. Need both PC1 and PC2 for scatter plot.")
+                raise AnalysisError(f"unexpected line in {path.name}: {line[:60]}")
         else:
-            # Treat as (PC1, PC2)
-            pc1 = proj[:, 0]
-            pc2 = proj[:, 1]
-            t = np.arange(len(pc1))
-    elif proj.shape[1] >= 3:
-        # Has time column and at least PC1, PC2
-        t = proj[:, 0]
-        pc1 = proj[:, 1]
-        pc2 = proj[:, 2]
-    else:
-        raise ValueError(f"Cannot create scatter plot from {proj.shape[1]} columns")
-    
-    plt.figure(figsize=(5, 5))
-    if color_by_time and proj.shape[1] >= 3:
-        sc = plt.scatter(pc1, pc2, c=t, cmap='viridis', s=10, linewidths=0, alpha=0.8)
-        cbar = plt.colorbar(sc)
-        cbar.set_label('Time (ps)')
-    else:
-        plt.scatter(pc1, pc2, s=10, linewidths=0, alpha=0.8)
-    plt.xlabel('PC1')
-    plt.ylabel('PC2')
-    plt.title('PC1 vs PC2 projection')
-    plt.tight_layout()
-    plt.savefig(out.with_suffix('.png'), dpi=200)
-    plt.savefig(out.with_suffix('.pdf'))
-    plt.close()
+            raise AnalysisError(f"{path.name} does not start with a group name")
+    return groups
 
 
-def plot_pc_timeseries(proj: np.ndarray, out: Path, pc_label: str = "PC1") -> None:
-    if plt is None:
-        raise RuntimeError("Matplotlib not available to create plots.")
-    
-    if proj.shape[1] < 1:
-        raise ValueError(f"Projection file must have at least 1 column, got {proj.shape[1]}")
-    
-    # Projection file from gmx anaeig -proj typically has format:
-    # Column 0: time (ps)
-    # Column 1: PC projection value
-    
-    # So: time is X-axis, PC value is Y-axis
-    if proj.shape[1] == 1:
-        # Only one column - treat as PC values, use frame index as time
-        t = np.arange(len(proj))
-        pc_val = proj[:, 0]
-        xlabel = 'Frame'
-    else:
-        # Multiple columns: column 0 is time, column 1 is PC value
-        t = proj[:, 0]
-        pc_val = proj[:, 1]
-        xlabel = 'Time (ps)'
-    
-    plt.figure(figsize=(6, 3.5))
-    plt.plot(t, pc_val, lw=1)
-    plt.xlabel(xlabel)
-    plt.ylabel(f'{pc_label} projection')
-    plt.title(f'{pc_label} projection over time')
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(out.with_suffix('.png'), dpi=200)
-    plt.savefig(out.with_suffix('.pdf'))
-    plt.close()
+def write_ndx(path: Path, groups: List[Tuple[str, List[int]]]) -> None:
+    with path.open("w") as fh:
+        for name, atoms in groups:
+            fh.write(f"[ {name} ]\n")
+            for i in range(0, len(atoms), 15):
+                fh.write(" ".join(f"{a:>4d}" for a in atoms[i:i + 15]) + "\n")
 
 
-def build_index_with_select(gmx: str, s: Path, selection: str, out_ndx: Path, log_dir: Path) -> None:
-    cmd = [gmx, "select", "-s", str(s), "-select", selection, "-on", str(out_ndx)]
-    proc = run_cmd(cmd, comment=f"Step 1: Build selection index for '{selection}'")
+def build_index(gmx: str, s: Path, selection: str, fit_selection: str, full_ndx: Path,
+                pca_ndx: Path, log_dir: Path) -> Tuple[int, int, int]:
+    """Index groups for the whole system (selection.ndx: all = analysed and fitted atoms
+    together, analysis, fit) and for the reduced structure, which holds only those atoms
+    (pca_groups.ndx: fit, analysis, all, as positions in it). Returns the numbers of atoms
+    (all, analysis, fit).
+
+    gmx select evaluates the two selections separately (as written: a default group name such as
+    Backbone is valid on its own, but not inside an expression like "... or Backbone"); their
+    union is made here, from the atom numbers."""
+    raw_ndx = full_ndx.with_name("select_out.ndx")
+    cmd = [gmx, "select", "-s", str(s), "-select", selection, fit_selection, "-on", str(raw_ndx)]
+    proc = run_cmd(cmd, comment="Step 1: Index groups of the analysed and of the fitted atoms "
+                                "(gmx_pca.py then writes selection.ndx and pca_groups.ndx from them)")
     (log_dir / "select.log").write_bytes(proc.stdout)
+    groups = read_ndx(raw_ndx)
+    if len(groups) != 2:
+        raise AnalysisError(f"gmx select wrote {len(groups)} groups to {raw_ndx.name}, expected 2")
+    (_, analysis), (_, fit) = groups
+    for name, atoms in (("--selection", analysis), ("--fit-selection", fit)):
+        if not atoms:
+            raise AnalysisError(f"{name} selects no atoms")
+    every = sorted(set(analysis) | set(fit))
+    position = {atom: i + 1 for i, atom in enumerate(every)}
+    write_ndx(full_ndx, [("all", every), ("analysis", analysis), ("fit", fit)])
+    write_ndx(pca_ndx, [("fit", [position[a] for a in fit]),
+                        ("analysis", [position[a] for a in analysis]),
+                        ("all", list(range(1, len(every) + 1)))])
+    return len(every), len(analysis), len(fit)
 
 
-def trj_fit_center(gmx: str, s: Path, f: Path, ndx: Path, out_xtc: Path, pbc: str, center: bool, fit: str, log_dir: Path) -> Path:
-    """Run trjconv in multiple steps to handle PBC and fitting separately.
-    
-    Step a: PBC treatment + centering, output only selected atoms
-    Step b: the first frame of that, as the reference structure (GRO): whole and centred like the
-            trajectory (taken from the raw trajectory, it would be split across the box whenever
-            the protein crosses the box edge in the first frame, which corrupts the fit and PCA)
-    Step c: Fitting using the structure that matches the filtered trajectory
+# ---------------------------------------------------------------------------
+# Trajectory preprocessing
+# ---------------------------------------------------------------------------
 
-    Returns the filtered structure (GRO) that matches the output trajectory atoms.
+def trj_fit_center(gmx: str, s: Path, f: Path, full_ndx: Path, pca_ndx: Path, out_xtc: Path,
+                   pbc: str, center: bool, fit: Optional[str], log_dir: Path) -> Path:
+    """Make the selected atoms whole and centred (PBC treatment), take the first frame of that
+    as the reference structure (fit.gro), and fit the trajectory to it.
+
+    The reference gets exactly the same treatment as the trajectory (same options, first frame
+    only): taken from the raw trajectory, it would be split across the box whenever the protein
+    crosses the box edge in the first frame, which corrupts the fit and the PCA.
+
+    --pbc nojump: first -pbc whole, then -pbc nojump (atoms never jump across the box edge
+    between frames; needs whole molecules in the first frame, hence the first pass).
+    Returns the reference structure, with only the selected atoms (analysed and fitted).
     """
-    temp_xtc = out_xtc.parent / "temp_pbc.xtc"
     out_gro = out_xtc.parent / "fit.gro"
+    temps: List[Path] = []
+    try:
+        # centring is on the fitted atoms (the stable part), output is all selected atoms
+        # (selection.ndx: 0 = all, 1 = analysis, 2 = fit)
+        center_opts = ["-center"] if center else []
+        center_answer = "2\n" if center else ""
+        if pbc == "nojump":
+            whole_xtc = out_xtc.parent / "temp_whole.xtc"
+            whole_gro = out_xtc.parent / "temp_whole.gro"
+            temps += [whole_xtc, whole_gro]
+            whole = ["-n", str(full_ndx), "-pbc", "whole"]
+            run_log(log_dir, "trjconv_whole.log", run_cmd(
+                [gmx, "trjconv", "-s", str(s), "-f", str(f), "-o", str(whole_xtc)] + whole,
+                stdin="0\n", comment="Step 2a: Make molecules whole (selected atoms)"))
+            run_log(log_dir, "trjconv_whole_gro.log", run_cmd(
+                [gmx, "trjconv", "-s", str(s), "-f", str(f), "-o", str(whole_gro), "-dump", "0"] + whole,
+                stdin="0\n", comment="Step 2a: The first frame, whole, as structure for the next step"))
+            source, source_s = whole_xtc, whole_gro
+            treatment = ["-n", str(pca_ndx), "-pbc", "nojump"] + center_opts
+            stdin1 = (f"{GROUP_FIT}\n" if center else "") + f"{GROUP_ALL}\n"
+            step = "Step 2b: No jumps across the box edge between frames"
+        else:
+            source, source_s = f, s
+            treatment = ["-n", str(full_ndx), "-pbc", pbc, "-ur", "compact"] + center_opts
+            stdin1 = center_answer + "0\n"
+            step = "Step 2a: PBC treatment and centring"
+        temp_xtc = out_xtc.parent / "temp_pbc.xtc"
+        temps.append(temp_xtc)
+        run_log(log_dir, "trjconv_pbc.log", run_cmd(
+            [gmx, "trjconv", "-s", str(source_s), "-f", str(source), "-o", str(temp_xtc)] + treatment,
+            stdin=stdin1, comment=step))
+        run_log(log_dir, "trjconv_gro.log", run_cmd(
+            [gmx, "trjconv", "-s", str(source_s), "-f", str(source), "-o", str(out_gro), "-dump", "0"] + treatment,
+            stdin=stdin1, comment="Step 2c: First frame, treated the same way, as the reference structure"))
 
-    # PBC treatment and centering, output selected atoms only; the reference structure gets
-    # exactly the same treatment (same options, first frame only)
-    treatment = ["-n", str(ndx), "-pbc", pbc, "-ur", "compact"] + (["-center"] if center else [])
-    stdin1 = "0\n0\n" if center else "0\n"
-    cmd1 = [gmx, "trjconv", "-s", str(s), "-f", str(f), "-o", str(temp_xtc)] + treatment
-    proc1 = run_cmd(cmd1, stdin=stdin1, comment="Step 2a: PBC treatment and centering")
-    (log_dir / "trjconv_pbc.log").write_bytes(proc1.stdout)
-
-    cmd_gro = [gmx, "trjconv", "-s", str(s), "-f", str(f), "-o", str(out_gro), "-dump", "0"] + treatment
-    proc_gro = run_cmd(cmd_gro, stdin=stdin1, comment="Step 2b: First frame, treated the same way, as the reference structure")
-    (log_dir / "trjconv_gro.log").write_bytes(proc_gro.stdout)
-    
-    # Step 2: Rotational fit using the matching structure
-    if fit:
-        cmd2 = [gmx, "trjconv", "-s", str(out_gro), "-f", str(temp_xtc), "-o", str(out_xtc), "-fit", fit]
-        # No index needed here since out_gro already has only selected atoms
-        # Just need to specify fit group (all atoms = 0 = System) and output group (0)
-        stdin2 = "0\n0\n"
-        proc2 = run_cmd(cmd2, stdin=stdin2, comment="Step 2c: Fitting to the reference structure")
-        (log_dir / "trjconv_fit.log").write_bytes(proc2.stdout)
-        temp_xtc.unlink()
-    else:
-        # No fitting, just rename temp to final
-        temp_xtc.rename(out_xtc)
-        (log_dir / "trjconv_fit.log").write_text("Skipped (no fitting requested)\n")
-    
+        if fit:
+            # fit group, output group: positions in the reduced structure (pca_groups.ndx)
+            run_log(log_dir, "trjconv_fit.log", run_cmd(
+                [gmx, "trjconv", "-s", str(out_gro), "-f", str(temp_xtc), "-o", str(out_xtc),
+                 "-n", str(pca_ndx), "-fit", fit],
+                stdin=f"{GROUP_FIT}\n{GROUP_ALL}\n", comment="Step 2d: Fitting to the reference structure"))
+        else:
+            temp_xtc.rename(out_xtc)
+            (log_dir / "trjconv_fit.log").write_text("Skipped (no fitting requested)\n")
+    finally:
+        for t in temps:
+            if t.exists():
+                t.unlink()
     return out_gro
 
 
-def run_covar(gmx: str, s: Path, f: Path, out_dir: Path, log_dir: Path) -> Tuple[Path, Path, Path]:
+def run_log(log_dir: Path, name: str, proc: subprocess.CompletedProcess) -> subprocess.CompletedProcess:
+    (log_dir / name).write_bytes(proc.stdout)
+    return proc
+
+
+# ---------------------------------------------------------------------------
+# PCA
+# ---------------------------------------------------------------------------
+
+def run_covar(gmx: str, s: Path, f: Path, pca_ndx: Path, out_dir: Path, log_dir: Path) -> Tuple[Path, Path, Path, float]:
+    """gmx covar, fitting on the fit group, analysing the analysis group. Returns the outputs
+    and the trace of the covariance matrix (nm^2) from its output."""
     ev_xvg = out_dir / "eigenvalues.xvg"
     ev_trr = out_dir / "eigenvectors.trr"
     avg_pdb = out_dir / "average.pdb"
-    cmd = [
-        gmx,
-        "covar",
-        "-s",
-        str(s),
-        "-f",
-        str(f),
-        "-o",
-        str(ev_xvg),
-        "-v",
-        str(ev_trr),
-        "-av",
-        str(avg_pdb),
-    ]
-    # covar asks for analysis and fitting groups; since we already filtered,
-    # we use group 0 (System, which is all atoms in the filtered structure)
-    proc = run_cmd(cmd, stdin="0\n0\n", comment="Step 3: Compute covariance matrix and eigenvectors")
-    (log_dir / "covar.log").write_bytes(proc.stdout)
-    return ev_xvg, ev_trr, avg_pdb
+    cmd = [gmx, "covar", "-s", str(s), "-f", str(f), "-n", str(pca_ndx),
+           "-o", str(ev_xvg), "-v", str(ev_trr), "-av", str(avg_pdb)]
+    # covar asks for the fit group first, then the analysis group
+    proc = run_cmd(cmd, stdin=f"{GROUP_FIT}\n{GROUP_ANALYSIS}\n",
+                   comment="Step 3: Covariance matrix and eigenvectors")
+    (log_dir / "covar_run.log").write_bytes(proc.stdout)
+    traces = re.findall(r"^Trace of the covariance matrix: (\S+) \(nm\^2\)\s*$",
+                        proc.stdout.decode(errors="replace"), re.M)
+    if len(traces) != 1:
+        raise AnalysisError("could not read the trace of the covariance matrix from gmx covar's output")
+    return ev_xvg, ev_trr, avg_pdb, float(traces[0])
 
 
-def run_anaeig(gmx: str, s: Path, f: Path, eig_trr: Path, out_dir: Path, first: int, last: int, log_dir: Path) -> Tuple[Path, Path, Path, Path]:
-    proj_xvg = out_dir / "projection.xvg"
-    proj_pc1_xvg = out_dir / "projection_pc1.xvg"
-    proj_pc2_xvg = out_dir / "projection_pc2.xvg"
-    eig_xvg = out_dir / "eig.xvg"
+def read_eigenvalues(path: Path) -> np.ndarray:
+    """Eigenvalues (nm^2), checked: two columns, PCs numbered 1, 2, 3, ..."""
+    rows = []
+    for line in path.read_text().splitlines():
+        if not line.strip() or line.lstrip()[0] in "#@":
+            continue
+        fields = line.split()
+        if len(fields) != 2:
+            raise AnalysisError(f"unexpected line in {path.name}: {line.strip()[:60]}")
+        rows.append((float(fields[0]), float(fields[1])))
+    if not rows:
+        raise AnalysisError(f"no eigenvalues in {path.name}")
+    index = [r[0] for r in rows]
+    if index != [float(i) for i in range(1, len(rows) + 1)]:
+        raise AnalysisError(f"the eigenvalues in {path.name} are not numbered 1, 2, 3, ...")
+    return np.array([r[1] for r in rows])
+
+
+def write_variance(eigenvalues: np.ndarray, trace: float, out: Path) -> Tuple[np.ndarray, np.ndarray]:
+    """variance.xvg: for each PC its eigenvalue, % of the total variance and cumulative %.
+    The total is the sum of the eigenvalues, checked against covar's trace of the covariance
+    matrix. Returns (percent, cumulative percent)."""
+    total = float(eigenvalues.sum())
+    if total <= 0:
+        raise AnalysisError("the eigenvalues add up to zero: no fluctuations in the selection?")
+    if abs(total - trace) > 1e-3 * max(abs(trace), 1e-12):
+        print(f"  Warning: the eigenvalues add up to {total:.6g} nm^2 but gmx covar reports a trace "
+              f"of {trace:.6g} nm^2; the percentages use the sum of the eigenvalues.")
+    percent = 100.0 * eigenvalues / total
+    cumulative = np.cumsum(percent)
+    with out.open("w") as fh:
+        fh.write("# Variance per principal component, from eigenvalues.xvg (written by gmx_pca.py)\n")
+        fh.write(f"# total variance (sum of the eigenvalues) = {total:.6g} nm^2; gmx covar trace = {trace:.6g} nm^2\n")
+        fh.write('@    title "Variance per principal component"\n')
+        fh.write('@    xaxis  label "PC"\n')
+        fh.write('@    yaxis  label "Variance"\n')
+        fh.write("@TYPE xy\n")
+        fh.write('@ s0 legend "eigenvalue (nm^2)"\n')
+        fh.write('@ s1 legend "variance (%)"\n')
+        fh.write('@ s2 legend "cumulative (%)"\n')
+        for i, (ev, p, c) in enumerate(zip(eigenvalues, percent, cumulative), 1):
+            fh.write(f"{i:6d}  {ev:12.6g}  {p:9.4f}  {c:9.4f}\n")
+    return percent, cumulative
+
+
+def print_variance_table(eigenvalues: np.ndarray, percent: np.ndarray, cumulative: np.ndarray, last: int) -> None:
+    n = min(len(eigenvalues), max(TABLE_PCS, last))
+    print(f"  {'PC':>4}  {'eigenvalue (nm^2)':>17}  {'variance':>9}  {'cumulative':>10}")
+    for i in range(n):
+        print(f"  {i + 1:>4}  {eigenvalues[i]:>17.5g}  {percent[i]:>8.2f}%  {cumulative[i]:>9.2f}%")
+    if n < len(eigenvalues):
+        print(f"  ... {len(eigenvalues)} PCs in all: see variance.xvg")
+
+
+def run_anaeig(gmx: str, s: Path, f: Path, eig_trr: Path, pca_ndx: Path, out_dir: Path,
+               first: int, last: int, log_dir: Path) -> Tuple[Dict[int, Path], Path]:
+    """One gmx anaeig pass: projections on PCs first..last and the RMSF along them. The
+    projections, written by anaeig as one block per PC, are split into projection_pc<N>.xvg
+    files (one per PC, e.g. for plot_xvg.py --xy-correlation) and projections.xvg (time and
+    all PCs as columns). Returns ({PC: file}, rmsf file)."""
+    proj_raw = out_dir / "temp_projections.xvg"
     rmsf_xvg = out_dir / "rmsf.xvg"
-    comp_xvg = out_dir / "comp.xvg"
-    
-    # Run anaeig for PC1 separately
-    cmd_pc1 = [
-        gmx,
-        "anaeig",
-        "-s",
-        str(s),
-        "-f",
-        str(f),
-        "-v",
-        str(eig_trr),
-        "-first",
-        "1",
-        "-last",
-        "1",
-        "-proj",
-        str(proj_pc1_xvg),
-    ]
-    proc1 = run_cmd(cmd_pc1, stdin="0\n0\n", comment="Step 4a: Project trajectory on PC1")
-    (log_dir / "anaeig_pc1.log").write_bytes(proc1.stdout)
-    
-    # Run anaeig for PC2 separately
-    cmd_pc2 = [
-        gmx,
-        "anaeig",
-        "-s",
-        str(s),
-        "-f",
-        str(f),
-        "-v",
-        str(eig_trr),
-        "-first",
-        "2",
-        "-last",
-        "2",
-        "-proj",
-        str(proj_pc2_xvg),
-    ]
-    proc2 = run_cmd(cmd_pc2, stdin="0\n0\n", comment="Step 4b: Project trajectory on PC2")
-    (log_dir / "anaeig_pc2.log").write_bytes(proc2.stdout)
-    
-    # Run anaeig for RMSF (full range)
-    cmd_rmsf = [
-        gmx,
-        "anaeig",
-        "-s",
-        str(s),
-        "-f",
-        str(f),
-        "-v",
-        str(eig_trr),
-        "-first",
-        str(first),
-        "-last",
-        str(last),
-        "-rmsf",
-        str(rmsf_xvg),
-    ]
-    proc_rmsf = run_cmd(cmd_rmsf, stdin="0\n0\n", comment=f"Step 4c: Compute RMSF for PC{first}-PC{last}")
-    (log_dir / "anaeig_rmsf.log").write_bytes(proc_rmsf.stdout)
-    
-    # Return PC1 projection as the main one (for backward compat)
-    return proj_pc1_xvg, eig_xvg, rmsf_xvg, comp_xvg
+    cmd = [gmx, "anaeig", "-s", str(s), "-f", str(f), "-v", str(eig_trr), "-n", str(pca_ndx),
+           "-first", str(first), "-last", str(last), "-proj", str(proj_raw), "-rmsf", str(rmsf_xvg)]
+    # anaeig asks for the group used for fitting in covar, then the group of the eigenvectors
+    try:
+        proc = run_cmd(cmd, stdin=f"{GROUP_FIT}\n{GROUP_ANALYSIS}\n",
+                       comment=f"Step 4: Projections on PC{first}-PC{last} and RMSF along them")
+        (log_dir / "anaeig.log").write_bytes(proc.stdout)
+        blocks = read_projection_blocks(proj_raw)
+    finally:
+        if proj_raw.exists():
+            proj_raw.unlink()
+    expected = list(range(first, last + 1))
+    if [b[0] for b in blocks] != expected:
+        raise AnalysisError(f"gmx anaeig wrote projections on vectors {[b[0] for b in blocks]}, "
+                            f"expected {expected}")
+    times = blocks[0][1][:, 0]
+    for pc, data in blocks:
+        if data.shape[0] != len(times) or not np.allclose(data[:, 0], times):
+            raise AnalysisError(f"the projection on PC{pc} has other times than the one on PC{first}")
+    files = {}
+    for pc, data in blocks:
+        path = out_dir / f"projection_pc{pc}.xvg"
+        with path.open("w") as fh:
+            fh.write(f"# Projection of the trajectory on PC{pc} (from gmx anaeig, written by gmx_pca.py)\n")
+            fh.write(f'@    title "Projection on PC{pc}"\n')
+            fh.write('@    xaxis  label "Time (ps)"\n')
+            fh.write(f'@    yaxis  label "PC{pc} (nm)"\n')
+            fh.write("@TYPE xy\n")
+            for t, v in data:
+                fh.write(f"{t:12.4f}  {v:12.6f}\n")
+        files[pc] = path
+    with (out_dir / "projections.xvg").open("w") as fh:
+        fh.write("# Projections of the trajectory on the PCs (from gmx anaeig, written by gmx_pca.py)\n")
+        fh.write('@    title "Projections on the principal components"\n')
+        fh.write('@    xaxis  label "Time (ps)"\n')
+        fh.write('@    yaxis  label "Projection (nm)"\n')
+        fh.write("@TYPE xy\n")
+        for i, (pc, _) in enumerate(blocks):
+            fh.write(f'@ s{i} legend "PC{pc}"\n')
+        for row in range(len(times)):
+            fh.write(f"{times[row]:12.4f}" + "".join(f"  {data[row, 1]:12.6f}" for _, data in blocks) + "\n")
+    return files, rmsf_xvg
 
+
+def read_projection_blocks(path: Path) -> List[Tuple[int, np.ndarray]]:
+    """The blocks of an anaeig -proj file: [(eigenvector number, array of (time, value))]. Each
+    block has its own '@' header with 'yaxis label "vec N"' and ends with '&'."""
+    blocks: List[Tuple[int, np.ndarray]] = []
+    vec: Optional[int] = None
+    rows: List[Tuple[float, float]] = []
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        m = re.match(r'^@\s+yaxis\s+label\s+"vec (\d+)"\s*$', stripped)
+        if m:
+            vec = int(m.group(1))
+            continue
+        if stripped.startswith("@"):
+            continue
+        if stripped == "&":
+            if vec is None or not rows:
+                raise AnalysisError(f"a block in {path.name} has no 'vec' label or no data")
+            blocks.append((vec, np.array(rows)))
+            vec, rows = None, []
+            continue
+        fields = stripped.split()
+        if len(fields) != 2:
+            raise AnalysisError(f"unexpected line in {path.name}: {stripped[:60]}")
+        rows.append((float(fields[0]), float(fields[1])))
+    if rows:                       # a last block without '&'
+        if vec is None:
+            raise AnalysisError(f"a block in {path.name} has no 'vec' label")
+        blocks.append((vec, np.array(rows)))
+    if not blocks:
+        raise AnalysisError(f"no projections in {path.name}")
+    return blocks
+
+
+# ---------------------------------------------------------------------------
+# Plots
+# ---------------------------------------------------------------------------
+
+def save(fig_path: Path) -> None:
+    plt.tight_layout()
+    plt.savefig(fig_path.with_suffix(".png"), dpi=200)
+    plt.savefig(fig_path.with_suffix(".pdf"))
+    plt.close()
+
+
+def plot_variance(percent: np.ndarray, cumulative: np.ndarray, out_dir: Path) -> None:
+    n = min(len(percent), SCREE_PCS)
+    idx = np.arange(1, n + 1)
+    shown = "" if n == len(percent) else f" (first {n} of {len(percent)} PCs)"
+    plt.figure(figsize=(6, 4))
+    plt.plot(idx, percent[:n], marker="o")
+    plt.xlabel("Principal component")
+    plt.ylabel("Variance (%)")
+    plt.title("Scree plot" + shown)
+    plt.grid(True, alpha=0.3)
+    save(out_dir / "plot_eigenvalues")
+    plt.figure(figsize=(6, 4))
+    plt.plot(idx, cumulative[:n], marker="o")
+    plt.xlabel("Number of PCs")
+    plt.ylabel("Cumulative variance (%)")
+    plt.title("Cumulative variance" + shown)
+    plt.ylim(0, 105)
+    plt.grid(True, alpha=0.3)
+    save(out_dir / "plot_cumulative_variance")
+
+
+def plot_projections(projections: Dict[int, Path], out_dir: Path) -> None:
+    data = {pc: np.loadtxt(path, comments=("#", "@")) for pc, path in projections.items()}
+    for pc, d in data.items():
+        plt.figure(figsize=(6, 3.5))
+        plt.plot(d[:, 0], d[:, 1], lw=1)
+        plt.xlabel("Time (ps)")
+        plt.ylabel(f"PC{pc} (nm)")
+        plt.title(f"Projection on PC{pc} over time")
+        plt.grid(True, alpha=0.3)
+        save(out_dir / f"plot_pc{pc}_timeseries")
+    pcs = sorted(data)
+    if len(pcs) >= 2:
+        a, b = pcs[0], pcs[1]
+        plt.figure(figsize=(5, 5))
+        sc = plt.scatter(data[a][:, 1], data[b][:, 1], c=data[a][:, 0], cmap="viridis", s=10,
+                         linewidths=0, alpha=0.8)
+        plt.colorbar(sc).set_label("Time (ps)")
+        plt.xlabel(f"PC{a} (nm)")
+        plt.ylabel(f"PC{b} (nm)")
+        plt.title(f"PC{a} vs PC{b} projection")
+        save(out_dir / f"plot_pc{a}_pc{b}_scatter")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(description="Automate GROMACS PCA and produce plots.")
-    p.add_argument("-s", "--structure", required=True, help="Structure/topology file (TPR recommended; can be TPR/GRO/PDB)")
+    p.add_argument("-s", "--structure", required=True,
+                   help="The run input file (.tpr), needed to make molecules whole; a GRO/PDB only with --pbc no")
     p.add_argument("-f", "--trajectory", required=True, help="Trajectory file (XTC/TRR)")
     p.add_argument("-o", "--outdir", default="pca_out", help="Output directory (default: pca_out)")
-    p.add_argument("--selection", default="Backbone", help="GROMACS selection text to define atoms (default: Backbone)")
-    p.add_argument("--first", type=int, default=1, help="First eigenvector index to analyze (default: 1)")
-    p.add_argument("--last", type=int, default=2, help="Last eigenvector index to analyze (default: 2)")
-    p.add_argument("--pbc", default="mol", choices=["no", "mol", "res", "atom"], help="PBC handling for trjconv (default: mol)")
+    p.add_argument("--selection", default="Backbone",
+                   help="GROMACS selection of the atoms analysed: the PCA is of their coordinates (default: Backbone)")
+    p.add_argument("--fit-selection", default=None,
+                   help="GROMACS selection of the atoms used for fitting and centring (default: --selection), "
+                        "e.g. fit on the protein's backbone and analyse a ligand, a loop or the N-terminus")
+    p.add_argument("--first", type=int, default=1, help="First PC projected and plotted (default: 1)")
+    p.add_argument("--last", type=int, default=2, help="Last PC projected and plotted (default: 2)")
+    p.add_argument("--pbc", default="mol", choices=["no", "mol", "res", "atom", "nojump"],
+                   help="PBC treatment (default: mol). nojump: molecules made whole, then no jumps across "
+                        "the box edge between frames (for long runs)")
     p.add_argument("--no-center", action="store_true", help="Do not center trajectory")
     p.add_argument("--fit", default="rot+trans", choices=["", "none", "rot+trans", "progressive"], help="Fitting mode for trjconv (default: rot+trans). Use 'none' or '' to disable.")
     p.add_argument("--gmx-bin", default=None, help="GROMACS binary to use (e.g., gmx or full path)")
     p.add_argument("--no-plots", action="store_true", help="Skip plotting (still runs GROMACS steps)")
-    p.add_argument("--overwrite", action="store_true", help="Overwrite existing outputs if present")
+    p.add_argument("--overwrite", action="store_true",
+                   help="Make the index, fitted trajectory and reference again, even when the ones in --outdir could be reused")
     p.add_argument("--commands-file", default="gmx_pca_commands.sh", help="Output file for command logging, relative to --outdir (default: gmx_pca_commands.sh)")
 
     args = p.parse_args(argv)
+    fit_selection = args.fit_selection or args.selection
+    if args.first < 1 or args.last < args.first:
+        p.error(f"--first and --last must satisfy 1 <= first <= last (got {args.first}, {args.last})")
 
     # Resolve paths
     s = Path(args.structure).expanduser().resolve()
     f = Path(args.trajectory).expanduser().resolve()
     outdir = Path(args.outdir).expanduser().resolve()
-    ensure_outdir(outdir)
-    log_dir = outdir / "logs"
-    ensure_outdir(log_dir)
-    
-    # Initialize command logging script
-    command_script = outdir / args.commands_file
-    set_command_script_path(command_script)
 
-    # Basic checks
+    # Basic checks (before anything is written)
     if not s.exists():
         print(f"Error: structure file not found: {s}", file=sys.stderr)
         return 2
@@ -553,109 +610,88 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"Error: trajectory file not found: {f}", file=sys.stderr)
         return 2
     if args.pbc != "no" and s.suffix.lower() != ".tpr":
-        # trjconv -pbc mol/res needs the topology to make molecules whole; with a GRO/PDB it
-        # only warns and the molecules stay broken, which silently corrupts the PCA
+        # trjconv -pbc mol/res/whole needs the topology to make molecules whole; with a GRO/PDB
+        # it only warns and the molecules stay broken, which silently corrupts the PCA
         print(f"Error: --pbc {args.pbc} needs a .tpr as structure (-s), to make molecules whole;"
               f" {s.name} has no topology. Give the run's .tpr, or use --pbc no if the trajectory"
               f" is already whole and centred.", file=sys.stderr)
         return 2
-
     try:
         gmx = which_gmx(args.gmx_bin)
     except FileNotFoundError as e:
         print(str(e), file=sys.stderr)
         return 2
 
-    ndx = outdir / "selection.ndx"
+    ensure_outdir(outdir)
+    log_dir = outdir / "logs"
+    ensure_outdir(log_dir)
+    command_script = outdir / args.commands_file
+    set_command_script_path(command_script)
+
+    full_ndx = outdir / "selection.ndx"
+    pca_ndx = outdir / "pca_groups.ndx"
     fit_xtc = outdir / "fit.xtc"
     fit_gro = outdir / "fit.gro"
     do_center = not args.no_center
     fit_mode = None if args.fit in ("", "none") else args.fit
 
-    # The index, fitted trajectory and reference structure of an earlier run in this folder are
-    # reused only if they were made from the same files with the same options (recorded in
-    # preprocessing.json); otherwise, or with --overwrite, they are made again
-    params_file = outdir / "preprocessing.json"
-    params = preprocessing_params(s, f, args.selection, args.pbc, do_center, fit_mode)
-    reason = None if args.overwrite else reuse_reason(params_file, params, [ndx, fit_xtc, fit_gro])
-    if reason == "":
-        print(f"[skip] Reusing the index, fitted trajectory and reference structure in {outdir}"
-              f" (same input files and options; --overwrite to make them again)")
-    else:
-        if reason:
-            print(f"Note: not reusing the earlier preprocessing in {outdir}: {reason}")
-        params_file.unlink(missing_ok=True)
-        print(f"[1/5] Building selection index with: {args.selection}")
-        build_index_with_select(gmx, s, args.selection, ndx, log_dir)
-        print("[2/5] Fitting and centering trajectory (trjconv)...")
-        fit_gro = trj_fit_center(gmx, s, f, ndx, fit_xtc, args.pbc, do_center, fit_mode, log_dir)
-        params_file.write_text(json.dumps(params, indent=2) + "\n")
+    try:
+        # The index, fitted trajectory and reference structure of an earlier run in this folder
+        # are reused only if they were made from the same files with the same options (recorded
+        # in preprocessing.json); otherwise, or with --overwrite, they are made again
+        params_file = outdir / "preprocessing.json"
+        params = preprocessing_params(s, f, args.selection, fit_selection, args.pbc, do_center, fit_mode)
+        reason = None if args.overwrite else reuse_reason(params_file, params, [full_ndx, pca_ndx, fit_xtc, fit_gro])
+        if reason == "":
+            print(f"[skip] Reusing the index, fitted trajectory and reference structure in {outdir}"
+                  f" (same input files and options; --overwrite to make them again)")
+            groups = read_ndx(pca_ndx)
+            n_analysis, n_fit = len(groups[GROUP_ANALYSIS][1]), len(groups[GROUP_FIT][1])
+        else:
+            if reason:
+                print(f"Note: not reusing the earlier preprocessing in {outdir}: {reason}")
+            if params_file.exists():
+                params_file.unlink()
+            print(f"[1/5] Index groups: analysed '{args.selection}', fitted '{fit_selection}'")
+            n_all, n_analysis, n_fit = build_index(gmx, s, args.selection, fit_selection, full_ndx, pca_ndx, log_dir)
+            print(f"      {n_analysis} atoms analysed, {n_fit} fitted, {n_all} kept")
+            print(f"[2/5] PBC treatment ({args.pbc}), centring and fitting (trjconv)...")
+            fit_gro = trj_fit_center(gmx, s, f, full_ndx, pca_ndx, fit_xtc, args.pbc, do_center, fit_mode, log_dir)
+            params_file.write_text(json.dumps(params, indent=2) + "\n")
 
-    # PCA: covar (use filtered structure that matches the trajectory, NO index needed)
-    print("[3/5] Running covariance analysis (covar)...")
-    ev_xvg, ev_trr, avg_pdb = run_covar(gmx, fit_gro, fit_xtc, outdir, log_dir)
+        print("[3/5] Covariance analysis (covar)...")
+        ev_xvg, ev_trr, avg_pdb, trace = run_covar(gmx, fit_gro, fit_xtc, pca_ndx, outdir, log_dir)
+        eigenvalues = read_eigenvalues(ev_xvg)
+        if args.last > len(eigenvalues):
+            raise AnalysisError(f"--last {args.last}, but there are only {len(eigenvalues)} PCs "
+                                f"(at most 3 x {n_analysis} atoms, and fewer than the number of frames)")
+        percent, cumulative = write_variance(eigenvalues, trace, outdir / "variance.xvg")
+        print("  Variance per principal component (all PCs in variance.xvg):")
+        print_variance_table(eigenvalues, percent, cumulative, args.last)
 
-    # PCA: anaeig (use filtered structure that matches the trajectory, NO index needed)
-    print("[4/5] Analyzing eigenvectors and projecting (anaeig)...")
-    proj_xvg, eig_xvg, rmsf_xvg, comp_xvg = run_anaeig(
-        gmx, fit_gro, fit_xtc, ev_trr, outdir, args.first, args.last, log_dir
-    )
+        print(f"[4/5] Projections on PC{args.first}-PC{args.last} and RMSF (anaeig)...")
+        projections, rmsf_xvg = run_anaeig(gmx, fit_gro, fit_xtc, ev_trr, pca_ndx, outdir,
+                                           args.first, args.last, log_dir)
+    except (CommandError, AnalysisError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
 
-    # Plotting
     if args.no_plots:
         print("[5/5] Skipping plotting as requested (--no-plots)")
-        return 0
-
-    if plt is None:
+    elif plt is None:
         print("Matplotlib not available; cannot create plots. Install matplotlib or use --no-plots.", file=sys.stderr)
         return 3
-
-    print("[5/5] Parsing XVG files and generating plots...")
-    try:
-        eig_data = parse_xvg(ev_xvg)
-        plot_eigenvalues(eig_data, outdir / "plot_eigenvalues")
-        plot_cumulative_variance(eig_data, outdir / "plot_cumulative_variance")
-    except Exception as e:
-        print(f"Warning: failed eigenvalue plots: {e}")
-
-    try:
-        proj_pc1_data = parse_xvg(outdir / "projection_pc1.xvg")
-        proj_pc2_data = parse_xvg(outdir / "projection_pc2.xvg")
-        print(f"  PC1 projection shape: {proj_pc1_data.shape}")
-        print(f"  PC2 projection shape: {proj_pc2_data.shape}")
-        print(f"  PC1 range: {proj_pc1_data[:, 1].min():.3f} to {proj_pc1_data[:, 1].max():.3f}")
-        print(f"  PC2 range: {proj_pc2_data[:, 1].min():.3f} to {proj_pc2_data[:, 1].max():.3f}")
-        
-        # Verify they have the same number of frames
-        if proj_pc1_data.shape[0] != proj_pc2_data.shape[0]:
-            print(f"  ERROR: PC1 has {proj_pc1_data.shape[0]} frames but PC2 has {proj_pc2_data.shape[0]} frames!")
-            raise ValueError("PC1 and PC2 projections have different numbers of frames")
-        
-        # Verify time columns match
-        if not np.allclose(proj_pc1_data[:, 0], proj_pc2_data[:, 0]):
-            print("  Warning: Time columns don't match between PC1 and PC2!")
-        
-        # Combine PC1 and PC2 for scatter plot: columns = [time, PC1, PC2]
-        combined_proj = np.column_stack([proj_pc1_data[:, 0], proj_pc1_data[:, 1], proj_pc2_data[:, 1]])
-        print(f"  Combined data shape for scatter: {combined_proj.shape}")
-        print(f"  First few rows of combined [time, PC1, PC2]:")
-        print(f"{combined_proj[:3]}")
-        
-        plot_pc_scatter(combined_proj, outdir / "plot_pc1_pc2_scatter", color_by_time=True)
-        plot_pc_timeseries(proj_pc1_data, outdir / "plot_pc1_timeseries", pc_label="PC1")
-        plot_pc_timeseries(proj_pc2_data, outdir / "plot_pc2_timeseries", pc_label="PC2")
-        print(f"  Plots saved successfully")
-    except Exception as e:
-        print(f"Warning: failed projection plots: {e}")
-        import traceback
-        traceback.print_exc()
+    else:
+        print("[5/5] Plots...")
+        plot_variance(percent, cumulative, outdir)
+        plot_projections(projections, outdir)
 
     print("Done. Outputs in:", outdir)
-    print()
+    if len(projections) >= 3:
+        a, b, c = sorted(projections)[:3]
+        print(f"3D plot of PC{a}/PC{b}/PC{c}: plot_xvg.py {projections[a].name} {projections[b].name} "
+              f"{projections[c].name} --xy-correlation   (in {outdir})")
     print(f"All GROMACS commands have been logged to: {command_script}")
-    print("You can re-run the analysis independently with:")
-    print(f"  chmod +x {command_script}")
-    print(f"  {command_script}")
     return 0
 
 
