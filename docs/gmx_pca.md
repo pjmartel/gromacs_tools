@@ -19,6 +19,9 @@ Performs complete PCA workflow from trajectory preprocessing through eigenvector
 - ✅ Variance explained per PC: a table in the terminal and `variance.xvg`
 - ✅ Automatic plots (scree, cumulative variance, projections over time, scatter of two PCs),
   plus `gmx_pca_plot_commands.sh`: the same plots as `plot_xvg.py` commands, to edit and re-run
+- ✅ **Several trajectories** (replicas, apo vs holo): one PCA of all of them, of one group or of
+  one trajectory, with every trajectory projected on the same PCs and kept apart in the plots
+  and files (colour per trajectory or per group). See [Several Trajectories](#several-trajectories-replicas-apo-vs-holo)
 - ✅ Safe re-runs: earlier preprocessing is reused only if made with the same files and options
 - ✅ **Command logging** (on by default): every GROMACS command run, plus the exact invocation
   used, is saved to `<outdir>/gmx_pca_commands.sh` (override with `--commands-file`); the file from an earlier run is kept as `…_commands.1.sh`, `.2.sh`, … (highest number = most recent)
@@ -41,6 +44,9 @@ gmx_pca.py -s topol.tpr -f traj.xtc --last 5
 # A bound ligand, fitted on the protein backbone
 gmx_pca.py -s topol.tpr -f traj.xtc --selection "resname SAM" --fit-selection Backbone \
     -o pca_sam --last 3
+
+# Five replicas: one PCA of all of them, each replica in its own colour
+gmx_pca.py -s topol.tpr -f rep1.xtc rep2.xtc rep3.xtc rep4.xtc rep5.xtc -o pca_reps
 ```
 
 ## Workflow
@@ -177,12 +183,138 @@ gmx_pca.py -s topol.tpr -f traj.xtc --no-plots
 plot_xvg.py pca_out/projections.xvg
 ```
 
+## Several Trajectories (Replicas, Apo vs Holo)
+
+Each PCA has its own principal components: PC1 of one replica is in general another direction
+than PC1 of another, so the projections of separate PCAs can't be compared. To compare
+trajectories, they must all be projected on the **same** PCs. With several trajectories,
+`gmx_pca.py` does that, and keeps each trajectory's frames apart, so the plots and files show
+which points belong to which trajectory:
+
+```bash
+# Five holo replicas: one PCA of all of them, each replica in its own colour
+gmx_pca.py -s topol.tpr -f holo1.xtc holo2.xtc holo3.xtc holo4.xtc holo5.xtc -o pca_holo
+
+# Apo vs holo, from a file listing the ten trajectories (below):
+# one PCA of all ten, apo in one colour and holo in another
+gmx_pca.py --trajectories replicas.txt --color-by group -o pca_apo_holo
+
+# The PCA of the apo replicas only, with the holo ones projected on it
+gmx_pca.py --trajectories replicas.txt --pca-from apo --color-by group -o pca_from_apo
+```
+
+### Giving the Trajectories
+
+**On the command line** (simple cases): several files after `-f`, and after `-s` one `.tpr`
+for all of them or one per trajectory (in the same order). Each trajectory gets a label, by
+default its file name (`holo1.xtc` → `holo1`; if those are all the same, as in `rep1/md.xtc`,
+`rep2/md.xtc`, the folder too: `rep1_md`), or give them with `--labels`. `--groups` gives each
+a group:
+
+```bash
+gmx_pca.py -s apo.tpr apo.tpr holo.tpr holo.tpr -f apo_r1.xtc apo_r2.xtc holo_r1.xtc holo_r2.xtc \
+    --labels apo1 apo2 holo1 holo2 --groups apo apo holo holo
+```
+
+**In a file** (`--trajectories FILE`), one trajectory per line: label, group, trajectory and
+structure (`.tpr`). `#` starts a comment; a group `-` means none; without a structure (or with
+`-`) the one given with `-s` is used. Relative paths are relative to the file's folder; put
+paths with spaces in quotes.
+
+```
+# label  group  trajectory              structure
+apo1     apo    apo/rep1/md_all.xtc     apo/rep1/md.tpr
+apo2     apo    apo/rep2/md_all.xtc     apo/rep2/md.tpr
+holo1    holo   holo/rep1/md_all.xtc    holo/rep1/md.tpr
+holo2    holo   holo/rep2/md_all.xtc    holo/rep2/md.tpr
+```
+
+Labels and groups name files, so they may only contain letters, digits and `_ . + -`; a label
+can't also be a group name, and neither can be `all`. Each trajectory is one file: concatenate
+a replica's segments first (e.g. with `gmx_analysis.sh` or `gmx trjcat`).
+
+### What the PCA Is Made Of (`--pca-from`)
+
+- `--pca-from all` (default): one PCA of all trajectories together. Symmetric: no trajectory is
+  the reference, and the PCs describe the motions over all of them, including the differences
+  between them (e.g. apo vs holo, if those are large). Each trajectory weighs by its number of
+  frames: give replicas of similar length, or use `-b`/`-e`/`--dt` to even them out
+- `--pca-from GROUP` (e.g. `apo`): the PCA of that group's trajectories, with all
+  trajectories projected on it. Asks "how do the holo replicas look in the apo motions?":
+  holo motions that apo doesn't have are not shown
+- `--pca-from LABEL` (e.g. `apo1`): the PCA of one trajectory, all projected on it
+
+For apo vs holo, both views are worth having: e.g. `-o pca_all` with the default and
+`-o pca_apo` with `--pca-from apo`.
+
+### Same Options, Same Atoms, One Reference
+
+`--selection`, `--fit-selection`, `--pbc`, centring, `--fit` and `-b`/`-e`/`--dt` apply to every
+trajectory. Each trajectory's own `.tpr` is used for its index groups and PBC treatment, so
+the systems may differ (e.g. holo has a ligand and apo doesn't), but the **selected atoms must
+be the same** in all of them: same number, same atom names, same order (the PCA compares the
+coordinates atom by atom). `gmx_pca.py` checks that and stops with the first difference, e.g.
+when `--selection Protein` includes a ligand present in only some trajectories, or when the
+proteins have other residues. Residue names may differ (e.g. `HIS`/`HSD` protonation), with a
+note.
+
+All trajectories are fitted to **one** reference structure, `fit.gro`: the first frame of the
+first trajectory of the PCA (first in the list for `all`), with the PBC treatment. Fitting each
+trajectory to its own first frame would put them in different orientations, and the
+differences would show up as false motions. For the same reason, `--fit progressive` is not
+accepted with several trajectories.
+
+### How It Runs
+
+1. Per trajectory, in `trajectories/<label>/`: the index groups, from its own `.tpr`
+   (`selection.ndx`, `pca_groups.ndx`), the PBC treatment and centring of the selected atoms
+   (`pbc.xtc`), and its first frame treated the same way (`first.gro`). This is the slow part,
+   and is **reused** in later runs in the same output folder as long as the trajectory, its
+   structure and the options it depends on stay the same (`preprocessing.json` in that folder;
+   `--overwrite` makes it again). Changing `--pca-from`, `--last` or `--color-by` reuses it
+2. The check that all trajectories give the same atoms; the common reference `fit.gro`; each
+   trajectory fitted to it (`trajectories/<label>/fit.xtc`)
+3. `gmx covar` on the trajectories of the PCA, put one after the other (`gmx trjcat -cat`, a
+   temporary file); the variance table and `variance.xvg` as for one trajectory
+4. `gmx anaeig` on each trajectory separately, so each keeps its identity; the RMSF along the
+   PCs once (it depends only on the PCs)
+5. The mean and standard deviation of each trajectory's (and each group's) projections, in the
+   terminal and in `projection_stats.txt`; the plots
+
+### Outputs
+
+As for one trajectory, except:
+
+- `projection_pc<N>_<label>.xvg`, `projections_<label>.xvg` - Each trajectory's projections
+- `projection_pc<N>_group_<group>.xvg` - A group's projections, its trajectories one after the
+  other (so `plot_xvg.py` can draw a group in one colour; times repeat)
+- `projection_stats.txt` - Mean and standard deviation on each PC, per trajectory and per group:
+  where each replica sits in the PC space, and how much of it it explores
+- `trajectories/<label>/` - Each trajectory's index groups, PBC-treated and fitted trajectories,
+  first frame and logs. For `gmx_pca_movie.py`, use `fit.gro` and `eigenvectors.trr` of the
+  output folder with any trajectory's `trajectories/<label>/fit.xtc`
+- `plot_pc<N>_timeseries` - One panel per trajectory, on the same scale
+- `plot_pc<A>_pc<B>_scatter` - Every frame of every trajectory, one colour per trajectory
+  (`--color-by trajectory`, default) or per group (`--color-by group`)
+- `gmx_pca_plot_commands.sh` - The scatter plot (and a 3D one with three or more PCs) as
+  `plot_xvg.py --xy-correlation --multi` commands, in the same colours; the projections over
+  time as one plot with all trajectories (`plot_pc<N>_timeseries_overlay.png`), since
+  `plot_xvg.py` doesn't make panels
+
+The projections and plots of an earlier run in the same folder are removed first, so files of
+another PCA, other PCs or other trajectories are not left behind among the new ones.
+
 ## Command-Line Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `-s, --structure` | Required | The run input file (`.tpr`): needed to make molecules whole. A GRO/PDB is accepted only with `--pbc no` (trajectory already whole and centred) |
-| `-f, --trajectory` | Required | Trajectory file (XTC/TRR) |
+| `-s, --structure` | Required | The run input file (`.tpr`): needed to make molecules whole. A GRO/PDB is accepted only with `--pbc no` (trajectory already whole and centred). Several trajectories: one for all, or one per trajectory |
+| `-f, --trajectory` | Required | Trajectory file (XTC/TRR); several for a PCA of several trajectories |
+| `--trajectories` | | A file listing several trajectories: `label group trajectory [structure]` per line (see [Giving the Trajectories](#giving-the-trajectories)) |
+| `--labels` | file names | With several `-f`: a label per trajectory |
+| `--groups` | none | With several `-f`: a group per trajectory (`-` for none) |
+| `--pca-from` | `all` | Several trajectories: the PCA of `all`, of a group or of one trajectory (label); all are projected on it |
+| `--color-by` | `trajectory` | Several trajectories: one colour per `trajectory` or per `group` in the plots |
 | `-o, --outdir` | `pca_out` | Output directory |
 | `--selection` | `Backbone` | GROMACS selection of the atoms analysed: the PCA is of their coordinates |
 | `--fit-selection` | `--selection` | GROMACS selection of the atoms used for fitting and centring |
@@ -321,16 +453,11 @@ plot_xvg.py pca_out/projections.xvg --xcol 1 --columns 2 --scatter
 
 ### Comparing Replicas
 
-Each PCA has its own principal components: PC1 of one replica is in general another direction
-than PC1 of another, so the projections of two separate PCAs can't be compared directly. To
-compare replicas, do **one** PCA of all of them together, so that all frames are projected on
-the same PCs:
+Give all replicas at once: one PCA, every replica projected on the same PCs and shown in its
+own colour (see [Several Trajectories](#several-trajectories-replicas-apo-vs-holo)):
 
 ```bash
-# Concatenate the replicas (same system, same atoms); -settime/-cat options as needed
-gmx trjcat -f rep1.xtc rep2.xtc -o reps.xtc -cat
-gmx_pca.py -s topol.tpr -f reps.xtc -o pca_reps --last 3
-# The projections then contain rep1's frames followed by rep2's
+gmx_pca.py -s topol.tpr -f rep1.xtc rep2.xtc rep3.xtc --last 3 -o pca_reps
 ```
 
 ### Pre-processed Trajectory
@@ -406,6 +533,12 @@ Default group names (`Backbone`, `C-alpha`, `SideChain-H`, ...) are safest writt
 
 ### "--last N, but there are only M PCs"
 - There are at most 3 × (analysed atoms) PCs, and fewer than the number of frames
+
+### "X gives N atoms ..., Y M" / "atom K of the selection is ... in X but ... in Y"
+- With several trajectories, the selections must give the same atoms in each. Make
+  `--selection` (and `--fit-selection`) leave out what only some systems have, e.g. `Backbone`
+  or `Protein` rather than a group that includes a ligand, and check that the proteins have
+  the same residues (e.g. the same termini)
 
 ### GROMACS not found
 - Ensure `gmx` is in PATH: `which gmx`

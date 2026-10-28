@@ -197,6 +197,9 @@ python bin/plot_xvg.py rmsd_rep*.xvg --multi \
     --legends "Replica 0" "Replica 1" "Replica 2" \
     --style lines --title "RMSD Across Replicas" \
     --output replicas_rmsd.png
+
+# One PCA of all replicas, each replica in its own colour (same PCs for all)
+python bin/gmx_pca.py -s npt.tpr -f replica0.xtc replica1.xtc replica2.xtc -o pca_replicas
 ```
 
 ### 6. Trajectory Preprocessing: PBC Removal and Centering

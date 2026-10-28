@@ -24,6 +24,10 @@ Pipeline:
 4) Projections on PCs --first to --last and RMSF along them (gmx anaeig, one pass)
 5) Variance per PC (terminal table and variance.xvg) and plots
 
+Several trajectories (-f t1 t2 ... or --trajectories FILE): steps 1-2 per trajectory (kept in
+trajectories/<label>/), all fitted to one reference; the PCA of all of them, of a group or of
+one (--pca-from); each trajectory projected on its own; plots coloured by trajectory or group.
+
 Requirements:
 - GROMACS in PATH (gmx) or provide --gmx-bin
 - Python packages: numpy, matplotlib
@@ -35,12 +39,13 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
@@ -288,7 +293,7 @@ def write_ndx(path: Path, groups: List[Tuple[str, List[int]]]) -> None:
 
 
 def build_index(gmx: str, s: Path, selection: str, fit_selection: str, full_ndx: Path,
-                pca_ndx: Path, log_dir: Path) -> Tuple[int, int, int]:
+                pca_ndx: Path, log_dir: Path, label: str = "") -> Tuple[int, int, int]:
     """Index groups for the whole system (selection.ndx: all = analysed and fitted atoms
     together, analysis, fit) and for the reduced structure, which holds only those atoms
     (pca_groups.ndx: fit, analysis, all, as positions in it). Returns the numbers of atoms
@@ -300,6 +305,7 @@ def build_index(gmx: str, s: Path, selection: str, fit_selection: str, full_ndx:
     raw_ndx = full_ndx.with_name("select_out.ndx")
     cmd = [gmx, "select", "-s", str(s), "-select", selection, fit_selection, "-on", str(raw_ndx)]
     proc = run_cmd(cmd, comment="Step 1: Index groups of the analysed and of the fitted atoms "
+                                f"{'(' + label + ') ' if label else ''}"
                                 "(gmx_pca.py then writes selection.ndx and pca_groups.ndx from them)")
     (log_dir / "select.log").write_bytes(proc.stdout)
     groups = read_ndx(raw_ndx)
@@ -331,14 +337,37 @@ def trj_fit_center(gmx: str, s: Path, f: Path, full_ndx: Path, pca_ndx: Path, ou
     The reference gets exactly the same treatment as the trajectory (same options, first frame
     only): taken from the raw trajectory, it would be split across the box whenever the protein
     crosses the box edge in the first frame, which corrupts the fit and the PCA.
+    Returns the reference structure, with only the selected atoms (analysed and fitted).
+    """
+    out_gro = out_xtc.parent / "fit.gro"
+    temp_xtc = out_xtc.parent / "temp_pbc.xtc"
+    try:
+        trj_pbc(gmx, s, f, full_ndx, pca_ndx, temp_xtc, out_gro, pbc, center, log_dir, frames)
+        if fit:
+            fit_trajectory(gmx, out_gro, temp_xtc, out_xtc, pca_ndx, fit, log_dir / "trjconv_fit.log",
+                           "Step 2d: Fitting to the reference structure")
+        else:
+            temp_xtc.rename(out_xtc)
+            (log_dir / "trjconv_fit.log").write_text("Skipped (no fitting requested)\n")
+    finally:
+        if temp_xtc.exists():
+            temp_xtc.unlink()
+    return out_gro
+
+
+def trj_pbc(gmx: str, s: Path, f: Path, full_ndx: Path, pca_ndx: Path, out_xtc: Path, out_gro: Path,
+            pbc: str, center: bool, log_dir: Path, frames: Optional[List[str]] = None,
+            label: str = "") -> None:
+    """PBC treatment and centring of the selected atoms (out_xtc, only those atoms), and the
+    first frame treated the same way (out_gro).
 
     --pbc nojump: first -pbc whole, then -pbc nojump (atoms never jump across the box edge
     between frames; needs whole molecules in the first frame, hence the first pass).
     frames: trjconv's -b/-e/-dt, applied where the raw trajectory is read, so every later step
     uses only those frames; the reference is then the first frame of that range.
-    Returns the reference structure, with only the selected atoms (analysed and fitted).
+    label: the trajectory's label, added to the logged commands' comments (several trajectories).
     """
-    out_gro = out_xtc.parent / "fit.gro"
+    of = f" ({label})" if label else ""
     frames = frames or []
     temps: List[Path] = []
     try:
@@ -353,42 +382,39 @@ def trj_fit_center(gmx: str, s: Path, f: Path, full_ndx: Path, pca_ndx: Path, ou
             whole = ["-n", str(full_ndx), "-pbc", "whole"] + frames
             run_log(log_dir, "trjconv_whole.log", run_cmd(
                 [gmx, "trjconv", "-s", str(s), "-f", str(f), "-o", str(whole_xtc)] + whole,
-                stdin="0\n", comment="Step 2a: Make molecules whole (selected atoms)"))
+                stdin="0\n", comment=f"Step 2a: Make molecules whole (selected atoms){of}"))
             run_log(log_dir, "trjconv_whole_gro.log", run_cmd(
                 [gmx, "trjconv", "-s", str(s), "-f", str(f), "-o", str(whole_gro), "-dump", "0"] + whole,
-                stdin="0\n", comment="Step 2a: The first frame, whole, as structure for the next step"))
+                stdin="0\n", comment=f"Step 2a: The first frame, whole, as structure for the next step{of}"))
             source, source_s = whole_xtc, whole_gro
             treatment = ["-n", str(pca_ndx), "-pbc", "nojump"] + center_opts
             stdin1 = (f"{GROUP_FIT}\n" if center else "") + f"{GROUP_ALL}\n"
-            step = "Step 2b: No jumps across the box edge between frames"
+            step = f"Step 2b: No jumps across the box edge between frames{of}"
         else:
             source, source_s = f, s
             treatment = ["-n", str(full_ndx), "-pbc", pbc, "-ur", "compact"] + center_opts + frames
             stdin1 = center_answer + "0\n"
-            step = "Step 2a: PBC treatment and centring"
-        temp_xtc = out_xtc.parent / "temp_pbc.xtc"
-        temps.append(temp_xtc)
+            step = f"Step 2a: PBC treatment and centring{of}"
         run_log(log_dir, "trjconv_pbc.log", run_cmd(
-            [gmx, "trjconv", "-s", str(source_s), "-f", str(source), "-o", str(temp_xtc)] + treatment,
+            [gmx, "trjconv", "-s", str(source_s), "-f", str(source), "-o", str(out_xtc)] + treatment,
             stdin=stdin1, comment=step))
         run_log(log_dir, "trjconv_gro.log", run_cmd(
             [gmx, "trjconv", "-s", str(source_s), "-f", str(source), "-o", str(out_gro), "-dump", "0"] + treatment,
-            stdin=stdin1, comment="Step 2c: First frame, treated the same way, as the reference structure"))
-
-        if fit:
-            # fit group, output group: positions in the reduced structure (pca_groups.ndx)
-            run_log(log_dir, "trjconv_fit.log", run_cmd(
-                [gmx, "trjconv", "-s", str(out_gro), "-f", str(temp_xtc), "-o", str(out_xtc),
-                 "-n", str(pca_ndx), "-fit", fit],
-                stdin=f"{GROUP_FIT}\n{GROUP_ALL}\n", comment="Step 2d: Fitting to the reference structure"))
-        else:
-            temp_xtc.rename(out_xtc)
-            (log_dir / "trjconv_fit.log").write_text("Skipped (no fitting requested)\n")
+            stdin=stdin1, comment=f"Step 2c: First frame, treated the same way, as the reference structure{of}"))
     finally:
         for t in temps:
             if t.exists():
                 t.unlink()
-    return out_gro
+
+
+def fit_trajectory(gmx: str, ref: Path, src: Path, out_xtc: Path, pca_ndx: Path, fit: str,
+                   log: Path, comment: str) -> None:
+    """Fit a PBC-treated trajectory of the selected atoms to a reference structure of them."""
+    # fit group, output group: positions in the reduced structure (pca_groups.ndx)
+    proc = run_cmd([gmx, "trjconv", "-s", str(ref), "-f", str(src), "-o", str(out_xtc),
+                    "-n", str(pca_ndx), "-fit", fit],
+                   stdin=f"{GROUP_FIT}\n{GROUP_ALL}\n", comment=comment)
+    log.write_bytes(proc.stdout)
 
 
 def run_log(log_dir: Path, name: str, proc: subprocess.CompletedProcess) -> subprocess.CompletedProcess:
@@ -474,20 +500,28 @@ def print_variance_table(eigenvalues: np.ndarray, percent: np.ndarray, cumulativ
 
 
 def run_anaeig(gmx: str, s: Path, f: Path, eig_trr: Path, pca_ndx: Path, out_dir: Path,
-               first: int, last: int, log_dir: Path) -> Tuple[Dict[int, Path], Path]:
+               first: int, last: int, log_dir: Path, label: str = "",
+               rmsf: bool = True) -> Tuple[Dict[int, Path], Optional[Path]]:
     """One gmx anaeig pass: projections on PCs first..last and the RMSF along them. The
     projections, written by anaeig as one block per PC, are split into projection_pc<N>.xvg
     files (one per PC, e.g. for plot_xvg.py --xy-correlation) and projections.xvg (time and
-    all PCs as columns). Returns ({PC: file}, rmsf file)."""
-    proj_raw = out_dir / "temp_projections.xvg"
-    rmsf_xvg = out_dir / "rmsf.xvg"
+    all PCs as columns). Returns ({PC: file}, rmsf file).
+    label: one of several trajectories, its files named projection_pc<N>_<label>.xvg and
+    projections_<label>.xvg; rmsf: also the RMSF along the PCs (the same for every trajectory,
+    since it comes from the eigenvectors and eigenvalues)."""
+    tag = f"_{label}" if label else ""
+    proj_raw = out_dir / f"temp_projections{tag}.xvg"
+    rmsf_xvg = out_dir / "rmsf.xvg" if rmsf else None
     cmd = [gmx, "anaeig", "-s", str(s), "-f", str(f), "-v", str(eig_trr), "-n", str(pca_ndx),
-           "-first", str(first), "-last", str(last), "-proj", str(proj_raw), "-rmsf", str(rmsf_xvg)]
+           "-first", str(first), "-last", str(last), "-proj", str(proj_raw)]
+    if rmsf_xvg:
+        cmd += ["-rmsf", str(rmsf_xvg)]
+    what = f"Projections{' of ' + label if label else ''} on PC{first}-PC{last}"
     # anaeig asks for the group used for fitting in covar, then the group of the eigenvectors
     try:
         proc = run_cmd(cmd, stdin=f"{GROUP_FIT}\n{GROUP_ANALYSIS}\n",
-                       comment=f"Step 4: Projections on PC{first}-PC{last} and RMSF along them")
-        (log_dir / "anaeig.log").write_bytes(proc.stdout)
+                       comment=f"Step 4: {what}" + (" and RMSF along them" if rmsf_xvg else ""))
+        (log_dir / f"anaeig{tag}.log").write_bytes(proc.stdout)
         blocks = read_projection_blocks(proj_raw)
     finally:
         if proj_raw.exists():
@@ -502,19 +536,19 @@ def run_anaeig(gmx: str, s: Path, f: Path, eig_trr: Path, pca_ndx: Path, out_dir
             raise AnalysisError(f"the projection on PC{pc} has other times than the one on PC{first}")
     files = {}
     for pc, data in blocks:
-        path = out_dir / f"projection_pc{pc}.xvg"
+        path = out_dir / f"projection_pc{pc}{tag}.xvg"
         with path.open("w") as fh:
-            fh.write(f"# Projection of the trajectory on PC{pc} (from gmx anaeig, written by gmx_pca.py)\n")
-            fh.write(f'@    title "Projection on PC{pc}"\n')
+            fh.write(f"# Projection of {label or 'the trajectory'} on PC{pc} (from gmx anaeig, written by gmx_pca.py)\n")
+            fh.write(f'@    title "Projection{" of " + label if label else ""} on PC{pc}"\n')
             fh.write('@    xaxis  label "Time (ps)"\n')
             fh.write(f'@    yaxis  label "PC{pc} (nm)"\n')
             fh.write("@TYPE xy\n")
             for t, v in data:
                 fh.write(f"{t:12.4f}  {v:12.6f}\n")
         files[pc] = path
-    with (out_dir / "projections.xvg").open("w") as fh:
-        fh.write("# Projections of the trajectory on the PCs (from gmx anaeig, written by gmx_pca.py)\n")
-        fh.write('@    title "Projections on the principal components"\n')
+    with (out_dir / f"projections{tag}.xvg").open("w") as fh:
+        fh.write(f"# Projections of {label or 'the trajectory'} on the PCs (from gmx anaeig, written by gmx_pca.py)\n")
+        fh.write(f'@    title "Projections{" of " + label if label else ""} on the principal components"\n')
         fh.write('@    xaxis  label "Time (ps)"\n')
         fh.write('@    yaxis  label "Projection (nm)"\n')
         fh.write("@TYPE xy\n")
@@ -615,11 +649,9 @@ def plot_projections(projections: Dict[int, Path], out_dir: Path) -> None:
         save(out_dir / f"plot_pc{a}_pc{b}_scatter")
 
 
-def write_plot_script(out_dir: Path, projections: Dict[int, Path], n_pcs: int,
-                      name: str = "gmx_pca_plot_commands.sh") -> Path:
-    """gmx_pca_plot_commands.sh: plot_xvg.py commands that make the same plots as this script
-    (same file names, titles and labels), to be edited and re-run to tweak them. An existing
-    one (maybe edited) is kept as gmx_pca_plot_commands.1.sh, .2.sh, ..."""
+def plot_script_start(out_dir: Path, n_pcs: int, name: str) -> Tuple[Path, List[str]]:
+    """The plot script's path (an existing one, maybe edited, kept as name.1.sh, .2.sh, ...)
+    and its first lines: the header and the variance plots."""
     path = out_dir / name
     backup = backup_existing_file(path)
     if backup:
@@ -627,7 +659,6 @@ def write_plot_script(out_dir: Path, projections: Dict[int, Path], n_pcs: int,
     here = Path(__file__).resolve().parent / "plot_xvg.py"
     n = min(n_pcs, SCREE_PCS)
     shown = "" if n == n_pcs else f" (first {n} of {n_pcs} PCs)"
-    pcs = sorted(projections)
     q = shell_quote
     lines = [
         "#!/bin/bash",
@@ -649,6 +680,17 @@ def write_plot_script(out_dir: Path, projections: Dict[int, Path], n_pcs: int,
         f"    --title {q('Cumulative variance' + shown)} --xlabel 'Number of PCs' --ylabel 'Cumulative variance (%)' \\",
         "    --output plot_cumulative_variance.png",
     ]
+    return path, lines
+
+
+def write_plot_script(out_dir: Path, projections: Dict[int, Path], n_pcs: int,
+                      name: str = "gmx_pca_plot_commands.sh") -> Path:
+    """gmx_pca_plot_commands.sh: plot_xvg.py commands that make the same plots as this script
+    (same file names, titles and labels), to be edited and re-run to tweak them. An existing
+    one (maybe edited) is kept as gmx_pca_plot_commands.1.sh, .2.sh, ..."""
+    path, lines = plot_script_start(out_dir, n_pcs, name)
+    pcs = sorted(projections)
+    q = shell_quote
     for pc in pcs:
         lines += [
             "",
@@ -682,14 +724,504 @@ def write_plot_script(out_dir: Path, projections: Dict[int, Path], n_pcs: int,
 
 
 # ---------------------------------------------------------------------------
+# Several trajectories
+# ---------------------------------------------------------------------------
+
+class Trajectory(NamedTuple):
+    label: str              # names its files and its points in the plots
+    group: Optional[str]    # e.g. apo/holo: colouring and --pca-from; None if not given
+    trajectory: Path
+    structure: Path         # its run input file (.tpr), for the PBC treatment and index
+
+
+NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]*")   # labels and groups: they name files
+
+
+def read_trajectory_table(path: Path, default_s: Optional[Path]) -> List[Trajectory]:
+    """The --trajectories file: one trajectory per line, 'label group trajectory [structure]'
+    ('#' starts a comment; quotes for paths with spaces; group '-' for none; structure '-' or
+    left out: the one given with -s). Paths are relative to the file's folder."""
+    base = path.parent
+    entries: List[Trajectory] = []
+    for n, line in enumerate(path.read_text().splitlines(), 1):
+        where = f"{path.name}, line {n}"
+        try:
+            fields = shlex.split(line, comments=True)
+        except ValueError as e:
+            raise AnalysisError(f"{where}: {e}")
+        if not fields:
+            continue
+        if len(fields) not in (3, 4):
+            raise AnalysisError(f"{where}: expected 'label group trajectory [structure]', "
+                                f"got {len(fields)} fields: {line.strip()[:80]}")
+        label, group, traj = fields[:3]
+        structure = fields[3] if len(fields) == 4 else "-"
+        if structure == "-":
+            if default_s is None:
+                raise AnalysisError(f"{where}: no structure (.tpr) for {label}: give it as 4th field, "
+                                    f"or one for all trajectories with -s")
+            s = default_s
+        else:
+            s = (base / Path(structure).expanduser()).resolve()
+        entries.append(Trajectory(label, None if group == "-" else group,
+                                  (base / Path(traj).expanduser()).resolve(), s))
+    if not entries:
+        raise AnalysisError(f"no trajectories in {path}")
+    return entries
+
+
+def default_labels(files: List[Path]) -> List[str]:
+    """Labels from the file names: the stems (md_holo1.xtc -> md_holo1), else, if those are not
+    all different (replica1/md.xtc, replica2/md.xtc), the folder and the stem (replica1_md)."""
+    def clean(name: str) -> str:
+        return re.sub(r"[^A-Za-z0-9_.+-]", "_", name).lstrip("_.+-") or "traj"
+    for make in (lambda f: f.stem, lambda f: f"{f.parent.name}_{f.stem}"):
+        labels = [clean(make(f)) for f in files]
+        if len(set(labels)) == len(labels):
+            return labels
+    raise AnalysisError("the trajectories' file and folder names don't tell them apart: "
+                        "give a label for each with --labels")
+
+
+def trajectories_from_args(files: List[str], structures: List[str], labels: Optional[List[str]],
+                           groups: Optional[List[str]]) -> List[Trajectory]:
+    """The short form: -f t1.xtc t2.xtc ... -s one.tpr (for all) or one .tpr per trajectory,
+    --labels and --groups one per trajectory."""
+    f = [Path(x).expanduser().resolve() for x in files]
+    s = [Path(x).expanduser().resolve() for x in structures]
+    if len(s) not in (1, len(f)):
+        raise AnalysisError(f"-s: give one structure for all trajectories or one per trajectory "
+                            f"({len(f)}), not {len(s)}")
+    for name, values in (("--labels", labels), ("--groups", groups)):
+        if values is not None and len(values) != len(f):
+            raise AnalysisError(f"{name}: {len(values)} given for {len(f)} trajectories")
+    labels = labels or default_labels(f)
+    return [Trajectory(labels[i], groups[i] if groups and groups[i] != "-" else None, f[i],
+                       s[i] if len(s) > 1 else s[0]) for i in range(len(f))]
+
+
+def check_trajectories(trajs: List[Trajectory], pbc: str) -> None:
+    """Labels and groups valid, distinct and usable in file names; files there; a .tpr each
+    unless --pbc no."""
+    seen = set()
+    for t in trajs:
+        if not NAME_RE.fullmatch(t.label) or t.label == "all":
+            raise AnalysisError(f"label '{t.label}': use letters, digits and _ . + - (starting with a "
+                                f"letter or digit), and not 'all'")
+        if t.label in seen:
+            raise AnalysisError(f"the label '{t.label}' is given to more than one trajectory")
+        seen.add(t.label)
+        if t.group is not None and (not NAME_RE.fullmatch(t.group) or t.group == "all"):
+            raise AnalysisError(f"group '{t.group}' ({t.label}): use letters, digits and _ . + - "
+                                f"(starting with a letter or digit), and not 'all'")
+    clash = sorted({t.group for t in trajs if t.group} & seen)
+    if clash:
+        raise AnalysisError(f"{', '.join(clash)}: used both as a label and as a group; "
+                            f"they must differ (--pca-from takes either)")
+    files = [t.trajectory for t in trajs]
+    for t in trajs:
+        for kind, path in (("trajectory", t.trajectory), ("structure", t.structure)):
+            if not path.exists():
+                raise AnalysisError(f"{kind} file of {t.label} not found: {path}")
+        if files.count(t.trajectory) > 1:
+            raise AnalysisError(f"{t.trajectory} is given more than once")
+        if pbc != "no" and t.structure.suffix.lower() != ".tpr":
+            raise AnalysisError(f"--pbc {pbc} needs a .tpr as structure, to make molecules whole; "
+                                f"{t.structure.name} ({t.label}) has no topology. Give the run's .tpr, "
+                                f"or use --pbc no if the trajectories are already whole and centred.")
+
+
+def select_basis(trajs: List[Trajectory], pca_from: str) -> Tuple[List[Trajectory], str]:
+    """The trajectories whose frames make the PCA (--pca-from all, a group or a label), and
+    a description of them."""
+    if pca_from == "all":
+        return trajs, "all trajectories"
+    by_group = [t for t in trajs if t.group == pca_from]
+    if by_group:
+        return by_group, f"group {pca_from} ({', '.join(t.label for t in by_group)})"
+    by_label = [t for t in trajs if t.label == pca_from]
+    if by_label:
+        return by_label, pca_from
+    groups = sorted({t.group for t in trajs if t.group})
+    raise AnalysisError(f"--pca-from {pca_from}: no such group or label (groups: "
+                        f"{', '.join(groups) or 'none'}; labels: {', '.join(t.label for t in trajs)})")
+
+
+def read_gro_atoms(path: Path) -> List[Tuple[str, str]]:
+    """(residue name, atom name) of each atom of a .gro file, in order."""
+    lines = path.read_text().splitlines()
+    try:
+        n = int(lines[1].strip())
+    except (IndexError, ValueError):
+        raise AnalysisError(f"{path} is not a .gro file (no atom count on line 2)")
+    if len(lines) < n + 3:
+        raise AnalysisError(f"{path}: {n} atoms announced, {max(len(lines) - 3, 0)} found")
+    return [(line[5:10].strip(), line[10:15].strip()) for line in lines[2:n + 2]]
+
+
+def check_same_atoms(trajs: List[Trajectory], dirs: Dict[str, Path]) -> None:
+    """All trajectories must give the same atoms, in the same order, with the same fitted and
+    analysed ones: the PCA compares coordinates atom by atom. Atom names must match; residue
+    names may differ (e.g. HIS/HSD protonation), with a warning."""
+    ref = trajs[0]
+    ref_atoms = read_gro_atoms(dirs[ref.label] / "first.gro")
+    ref_groups = read_ndx(dirs[ref.label] / "pca_groups.ndx")
+    for t in trajs[1:]:
+        atoms = read_gro_atoms(dirs[t.label] / "first.gro")
+        if len(atoms) != len(ref_atoms):
+            raise AnalysisError(f"{t.label} gives {len(atoms)} atoms (analysed and fitted), {ref.label} "
+                                f"{len(ref_atoms)}: the selections must give the same atoms in every "
+                                f"trajectory (a ligand or residues present in only some?)")
+        names = [i for i, (a, b) in enumerate(zip(atoms, ref_atoms)) if a[1] != b[1]]
+        if names:
+            i = names[0]
+            raise AnalysisError(f"atom {i + 1} of the selection is {atoms[i][0]} {atoms[i][1]} in {t.label} "
+                                f"but {ref_atoms[i][0]} {ref_atoms[i][1]} in {ref.label} ({len(names)} "
+                                f"atom{'s differ' if len(names) > 1 else ' differs'}): the trajectories must "
+                                f"have the same atoms in the same order")
+        if read_ndx(dirs[t.label] / "pca_groups.ndx") != ref_groups:
+            raise AnalysisError(f"the analysed and fitted atoms are not the same in {t.label} as in "
+                                f"{ref.label} (pca_groups.ndx of each in trajectories/)")
+        residues = sorted({f"{b[0]}->{a[0]}" for a, b in zip(atoms, ref_atoms) if a[0] != b[0]})
+        if residues:
+            print(f"  Note: residue names differ between {ref.label} and {t.label} ({', '.join(residues[:5])}"
+                  f"{', ...' if len(residues) > 5 else ''}); the atoms match")
+
+
+def copy_logged(src: Path, dst: Path, comment: str) -> None:
+    """Copy a file, logged as cp in the command script."""
+    if _command_script_path:
+        log_command_to_script(_command_script_path, ["cp", str(src), str(dst)], comment=comment)
+    shutil.copyfile(src, dst)
+
+
+def projection_stats(trajs: List[Trajectory], projections: Dict[str, Dict[int, Path]],
+                     basis_desc: str, out: Path) -> None:
+    """Mean and standard deviation of the projections on each PC, per trajectory and per group
+    (all its frames together): terminal table and projection_stats.txt."""
+    pcs = sorted(projections[trajs[0].label])
+    values = {t.label: {pc: np.loadtxt(projections[t.label][pc], comments=("#", "@"), ndmin=2)[:, 1]
+                        for pc in pcs} for t in trajs}
+    rows = [(t.label, "trajectory", values[t.label]) for t in trajs]
+    for g in dict.fromkeys(t.group for t in trajs if t.group):
+        rows.append((g, "group", {pc: np.concatenate([values[t.label][pc] for t in trajs if t.group == g])
+                                  for pc in pcs}))
+    width = max(10, max(len(r[0]) for r in rows))
+    head = f"  {'':<{width}}  {'':<10}  {'frames':>7}" + "".join(f"  {f'PC{pc} mean':>9}  {'sd':>6}" for pc in pcs)
+    print(head)
+    lines = ["# Projections on the PCs (nm): mean and standard deviation per trajectory and per group",
+             f"# PCA of {basis_desc} (written by gmx_pca.py)",
+             "# name  kind  frames" + "".join(f"  PC{pc}_mean  PC{pc}_sd" for pc in pcs)]
+    for name, kind, v in rows:
+        n = len(v[pcs[0]])
+        print(f"  {name:<{width}}  {kind:<10}  {n:>7}" +
+              "".join(f"  {v[pc].mean():>9.3f}  {v[pc].std():>6.3f}" for pc in pcs))
+        lines.append(f"{name}  {kind}  {n}" + "".join(f"  {v[pc].mean():.5f}  {v[pc].std():.5f}" for pc in pcs))
+    out.write_text("\n".join(lines) + "\n")
+
+
+def write_group_projections(trajs: List[Trajectory], projections: Dict[str, Dict[int, Path]],
+                            out_dir: Path) -> Dict[str, Dict[int, Path]]:
+    """projection_pc<N>_group_<group>.xvg: the projections of a group's trajectories one after
+    the other (for plot_xvg.py: a group's points in one colour). Their times repeat, from one
+    trajectory to the next."""
+    files: Dict[str, Dict[int, Path]] = {}
+    for g in dict.fromkeys(t.group for t in trajs if t.group):
+        members = [t for t in trajs if t.group == g]
+        files[g] = {}
+        for pc in sorted(projections[members[0].label]):
+            path = out_dir / f"projection_pc{pc}_group_{g}.xvg"
+            with path.open("w") as fh:
+                fh.write(f"# Projections of group {g} on PC{pc}: {', '.join(t.label for t in members)}, "
+                         f"one after the other (written by gmx_pca.py)\n")
+                fh.write(f'@    title "Projection of {g} on PC{pc}"\n')
+                fh.write('@    xaxis  label "Time (ps)"\n')
+                fh.write(f'@    yaxis  label "PC{pc} (nm)"\n')
+                fh.write("@TYPE xy\n")
+                for t in members:
+                    for line in projections[t.label][pc].read_text().splitlines():
+                        if line.strip() and line.lstrip()[0] not in "#@&":
+                            fh.write(line + "\n")
+            files[g][pc] = path
+    return files
+
+
+def colour_sets(trajs: List[Trajectory], by_group: bool) -> List[Tuple[str, List[Trajectory]]]:
+    """The sets of trajectories drawn in one colour each, in order: each trajectory, or each
+    group (in order of first appearance). Colour i is matplotlib's 'C<i>', as in plot_xvg.py."""
+    if not by_group:
+        return [(t.label, [t]) for t in trajs]
+    return [(g, [t for t in trajs if t.group == g]) for g in dict.fromkeys(t.group for t in trajs)]
+
+
+def plot_multi_projections(trajs: List[Trajectory], projections: Dict[str, Dict[int, Path]],
+                           by_group: bool, basis_desc: str, out_dir: Path) -> None:
+    """Per PC, the projections over time, one panel per trajectory (same scale); the first two
+    PCs as a scatter plot of every frame, coloured by trajectory or group."""
+    data = {t.label: {pc: np.loadtxt(path, comments=("#", "@"), ndmin=2) for pc, path in projections[t.label].items()}
+            for t in trajs}
+    colour = {t.label: f"C{i}" for i, (_, members) in enumerate(colour_sets(trajs, by_group)) for t in members}
+    pcs = sorted(projections[trajs[0].label])
+    for pc in pcs:
+        fig, axes = plt.subplots(len(trajs), 1, figsize=(7, 0.9 + 1.2 * len(trajs)), sharex=True, sharey=True,
+                                 squeeze=False)
+        for ax, t in zip(axes[:, 0], trajs):
+            d = data[t.label][pc]
+            ax.plot(d[:, 0], d[:, 1], lw=0.8, color=colour[t.label])
+            ax.text(0.01, 0.95, t.label + (f" ({t.group})" if t.group else ""), transform=ax.transAxes,
+                    va="top", fontsize=8)
+            ax.grid(True, alpha=0.3)
+        axes[-1, 0].set_xlabel("Time (ps)")
+        fig.supylabel(f"PC{pc} (nm)")
+        fig.suptitle(f"Projection on PC{pc} over time (PCA of {basis_desc})", fontsize=10)
+        save(out_dir / f"plot_pc{pc}_timeseries")
+    if len(pcs) >= 2:
+        a, b = pcs[0], pcs[1]
+        plt.figure(figsize=(6, 5.5))
+        for i, (name, members) in enumerate(colour_sets(trajs, by_group)):
+            x = np.concatenate([data[t.label][a][:, 1] for t in members])
+            y = np.concatenate([data[t.label][b][:, 1] for t in members])
+            plt.plot(x, y, "o", markersize=2, color=f"C{i}", alpha=0.6, label=name)
+        plt.xlabel(f"PC{a} (nm)")
+        plt.ylabel(f"PC{b} (nm)")
+        plt.title(f"PC{a} vs PC{b} projection (PCA of {basis_desc})", fontsize=10)
+        plt.legend(markerscale=4, fontsize=8)
+        plt.grid(True, alpha=0.3)
+        save(out_dir / f"plot_pc{a}_pc{b}_scatter")
+
+
+def write_multi_plot_script(out_dir: Path, trajs: List[Trajectory], projections: Dict[str, Dict[int, Path]],
+                            group_files: Dict[str, Dict[int, Path]], by_group: bool, basis_desc: str,
+                            n_pcs: int, name: str = "gmx_pca_plot_commands.sh") -> Path:
+    """gmx_pca_plot_commands.sh for several trajectories: the variance plots, the projections
+    over time (all trajectories in one plot: plot_xvg.py has no panels), and the scatter plots
+    of the first two (and three) PCs, coloured by trajectory or by group (--color-by)."""
+    path, lines = plot_script_start(out_dir, n_pcs, name)
+    q = shell_quote
+    pcs = sorted(projections[trajs[0].label])
+    sets = ([(g, group_files[g]) for g in group_files] if by_group
+            else [(t.label, projections[t.label]) for t in trajs])
+    legends = " ".join(q(s[0]) for s in sets)
+    for pc in pcs:
+        lines += ["", f"# Projection on PC{pc} over time, all trajectories in one plot "
+                      f"(gmx_pca.py's plot_pc{pc}_timeseries.png has a panel per trajectory)",
+                  '"$PLOT" \\']
+        lines += [f"    {projections[t.label][pc].name} \\" for t in trajs]
+        lines += [f"    --multi --legends {' '.join(q(t.label) for t in trajs)} --style lines --figsize 7 4 \\",
+                  f"    --title {q(f'Projection on PC{pc} over time (PCA of {basis_desc})')} --xlabel 'Time (ps)' "
+                  f"--ylabel {q(f'PC{pc} (nm)')} \\",
+                  f"    --output plot_pc{pc}_timeseries_overlay.png"]
+    colouring = "group" if by_group else "trajectory"
+    if len(pcs) >= 2:
+        a, b = pcs[:2]
+        lines += ["", f"# PC{a} vs PC{b}, one colour per {colouring} (files in pairs: PC{a}, PC{b} of each)",
+                  '"$PLOT" \\']
+        lines += [f"    {files[a].name} {files[b].name} \\" for _, files in sets]
+        lines += [f"    --xy-correlation --multi --2d --legends {legends} --markersize 1.5 --figsize 6 5.5 \\",
+                  f"    --title {q(f'PC{a} vs PC{b} projection (PCA of {basis_desc})')} "
+                  f"--xlabel {q(f'PC{a} (nm)')} --ylabel {q(f'PC{b} (nm)')} \\",
+                  f"    --output plot_pc{a}_pc{b}_scatter.png"]
+    if len(pcs) >= 3:
+        a, b, c = pcs[:3]
+        lines += ["", f"# PC{a}, PC{b} and PC{c} in 3D, one colour per {colouring} (gmx_pca.py itself makes "
+                      f"no 3D plot)", '"$PLOT" \\']
+        lines += [f"    {files[a].name} {files[b].name} {files[c].name} \\" for _, files in sets]
+        lines += [f"    --xy-correlation --multi --3d --legends {legends} --markersize 1.5 --figsize 7 6 \\",
+                  f"    --title {q(f'PC{a}, PC{b} and PC{c} (PCA of {basis_desc})')} \\",
+                  f"    --output plot_pc{a}_pc{b}_pc{c}_3d.png"]
+    path.write_text("\n".join(lines) + "\n")
+    path.chmod(0o755)
+    return path
+
+
+def run_multi(gmx: str, trajs: List[Trajectory], basis: List[Trajectory], basis_desc: str, outdir: Path,
+              log_dir: Path, selection: str, fit_selection: str, pbc: str, center: bool,
+              fit: Optional[str], frames: dict, first: int, last: int,
+              overwrite: bool) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, Dict[int, Path]]]:
+    """Steps 1-4 for several trajectories. Each trajectory's index, PBC-treated trajectory of
+    the selected atoms and first frame are kept in trajectories/<label>/ and reused while its
+    files and the options they depend on stay the same. All trajectories are then fitted to one
+    reference (fit.gro: the first frame of the first trajectory of the PCA), the PCA is made
+    from the basis trajectories one after the other (gmx trjcat -cat, for gmx covar only), and
+    each trajectory is projected on its PCs on its own, so it keeps its identity.
+    Returns (eigenvalues, percent, cumulative, {label: {PC: projection file}})."""
+    frame_opts = frame_options(frames["begin_ps"], frames["end_ps"], frames["dt_ps"])
+    dirs = {t.label: outdir / "trajectories" / t.label for t in trajs}
+    print(f"[1/5] Per trajectory: index groups (analysed '{selection}', fitted '{fit_selection}'), "
+          f"PBC treatment ({pbc}) and centring, {describe_frames(frames['begin_ps'], frames['end_ps'], frames['dt_ps'])}")
+    for t in trajs:
+        d = dirs[t.label]
+        t_logs = d / "logs"
+        ensure_outdir(t_logs)
+        files = {k: d / k for k in ("selection.ndx", "pca_groups.ndx", "pbc.xtc", "first.gro")}
+        params_file = d / "preprocessing.json"
+        params = {"structure": file_signature(t.structure), "trajectory": file_signature(t.trajectory),
+                  "selection": selection, "fit_selection": fit_selection, "pbc": pbc, "center": center,
+                  "frames": frames}
+        reason = None if overwrite else reuse_reason(params_file, params, list(files.values()))
+        if reason == "":
+            print(f"  {t.label}: [skip] reusing trajectories/{t.label}/ (same files and options)")
+            continue
+        if reason:
+            print(f"  {t.label}: not reusing trajectories/{t.label}/: {reason}")
+        if params_file.exists():
+            params_file.unlink()
+        try:
+            n_all, n_analysis, n_fit = build_index(gmx, t.structure, selection, fit_selection,
+                                                   files["selection.ndx"], files["pca_groups.ndx"], t_logs,
+                                                   label=t.label)
+            print(f"  {t.label}: {n_analysis} atoms analysed, {n_fit} fitted, {n_all} kept; PBC treatment...")
+            trj_pbc(gmx, t.structure, t.trajectory, files["selection.ndx"], files["pca_groups.ndx"],
+                    files["pbc.xtc"], files["first.gro"], pbc, center, t_logs, frame_opts, label=t.label)
+        except (CommandError, AnalysisError) as e:
+            raise type(e)(f"{t.label}: {e}")
+        params_file.write_text(json.dumps(params, indent=2) + "\n")
+    check_same_atoms(trajs, dirs)
+
+    pca_ndx = outdir / "pca_groups.ndx"
+    fit_gro = outdir / "fit.gro"
+    ref = basis[0]
+    copy_logged(dirs[ref.label] / "pca_groups.ndx", pca_ndx,
+                "Index groups of the reduced structure (the same for every trajectory)")
+    copy_logged(dirs[ref.label] / "first.gro", fit_gro,
+                f"Step 2: The common reference structure: the first frame of {ref.label}")
+    fitted: Dict[str, Path] = {}
+    if fit:
+        print(f"[2/5] Fitting every trajectory ({fit}) to one reference, the first frame of {ref.label}...")
+        for t in trajs:
+            fitted[t.label] = dirs[t.label] / "fit.xtc"
+            fit_trajectory(gmx, fit_gro, dirs[t.label] / "pbc.xtc", fitted[t.label], pca_ndx, fit,
+                           dirs[t.label] / "logs" / "trjconv_fit.log",
+                           f"Step 2d: Fitting {t.label} to the common reference structure")
+    else:
+        print("[2/5] No fitting requested (gmx covar and anaeig still fit to the reference)")
+        fitted = {t.label: dirs[t.label] / "pbc.xtc" for t in trajs}
+
+    print(f"[3/5] Covariance analysis (covar) of {basis_desc}...")
+    if len(basis) > 1:
+        basis_xtc = outdir / "temp_basis.xtc"
+        try:
+            # -cat: keep every frame, also those with the same time in different trajectories
+            run_log(log_dir, "trjcat_basis.log", run_cmd(
+                [gmx, "trjcat", "-f"] + [str(fitted[t.label]) for t in basis] + ["-o", str(basis_xtc), "-cat"],
+                comment=f"Step 3: The trajectories of the PCA one after the other ({', '.join(t.label for t in basis)})"))
+            ev_xvg, ev_trr, avg_pdb, trace = run_covar(gmx, fit_gro, basis_xtc, pca_ndx, outdir, log_dir)
+        finally:
+            if basis_xtc.exists():
+                basis_xtc.unlink()
+    else:
+        ev_xvg, ev_trr, avg_pdb, trace = run_covar(gmx, fit_gro, fitted[ref.label], pca_ndx, outdir, log_dir)
+    eigenvalues = read_eigenvalues(ev_xvg)
+    if last > len(eigenvalues):
+        n_analysis = len(read_ndx(pca_ndx)[GROUP_ANALYSIS][1])
+        raise AnalysisError(f"--last {last}, but there are only {len(eigenvalues)} PCs "
+                            f"(at most 3 x {n_analysis} atoms, and fewer than the number of frames)")
+    percent, cumulative = write_variance(eigenvalues, trace, outdir / "variance.xvg")
+    print("  Variance per principal component (all PCs in variance.xvg):")
+    print_variance_table(eigenvalues, percent, cumulative, last)
+
+    print(f"[4/5] Projections of each trajectory on PC{first}-PC{last} (anaeig), and RMSF...")
+    # projections and plots of an earlier run in this folder (other PCs, trajectories or PCA)
+    # would be taken for this one's
+    stale = [q for pattern in ("projection_pc*.xvg", "projections*.xvg", "projection_stats.txt",
+                               "plot_pc*.png", "plot_pc*.pdf") for q in outdir.glob(pattern)]
+    for q in stale:
+        q.unlink()
+    if stale:
+        print(f"  Removed {len(stale)} projection and plot files of an earlier run in {outdir.name}/")
+    projections: Dict[str, Dict[int, Path]] = {}
+    for i, t in enumerate(trajs):
+        projections[t.label], _ = run_anaeig(gmx, fit_gro, fitted[t.label], ev_trr, pca_ndx, outdir,
+                                             first, last, log_dir, label=t.label, rmsf=(i == 0))
+    return eigenvalues, percent, cumulative, projections
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
+def main_multi(args: argparse.Namespace, outdir: Path, fit_selection: str, frames: dict) -> int:
+    """gmx_pca.py with several trajectories (-f t1 t2 ... or --trajectories)."""
+    try:
+        if args.trajectories is not None:
+            default_s = Path(args.structure[0]).expanduser().resolve() if args.structure else None
+            table = Path(args.trajectories).expanduser().resolve()
+            if not table.exists():
+                raise AnalysisError(f"--trajectories file not found: {table}")
+            trajs = read_trajectory_table(table, default_s)
+        else:
+            trajs = trajectories_from_args(args.trajectory, args.structure, args.labels, args.groups)
+        if len(trajs) < 2:
+            raise AnalysisError("--trajectories lists one trajectory: give it with -f and -s instead")
+        check_trajectories(trajs, args.pbc)
+        by_group = args.color_by == "group"
+        if by_group and any(t.group is None for t in trajs):
+            raise AnalysisError("--color-by group: give every trajectory a group "
+                                f"(none for {', '.join(t.label for t in trajs if t.group is None)})")
+        basis, basis_desc = select_basis(trajs, args.pca_from or "all")
+        gmx = which_gmx(args.gmx_bin)
+    except (AnalysisError, FileNotFoundError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+
+    width = max(len(t.label) for t in trajs)
+    print(f"{len(trajs)} trajectories; PCA of {basis_desc}:")
+    for t in trajs:
+        print(f"  {t.label:<{width}}  {t.group or '-':<8}  {t.trajectory}  ({t.structure.name})"
+              + ("  *" if t in basis and len(basis) < len(trajs) else ""))
+    ensure_outdir(outdir)
+    log_dir = outdir / "logs"
+    ensure_outdir(log_dir)
+    command_script = outdir / args.commands_file
+    set_command_script_path(command_script)
+    fit_mode = None if args.fit in ("", "none") else args.fit
+    try:
+        eigenvalues, percent, cumulative, projections = run_multi(
+            gmx, trajs, basis, basis_desc, outdir, log_dir, args.selection, fit_selection, args.pbc,
+            not args.no_center, fit_mode, frames, args.first, args.last, args.overwrite)
+        print("  Mean and standard deviation of the projections (nm; also in projection_stats.txt):")
+        projection_stats(trajs, projections, basis_desc, outdir / "projection_stats.txt")
+        group_files = write_group_projections(trajs, projections, outdir)
+    except (CommandError, AnalysisError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    if args.no_plots:
+        print("[5/5] Skipping plotting as requested (--no-plots)")
+    elif plt is None:
+        print("Matplotlib not available; cannot create plots. Install matplotlib or use --no-plots.", file=sys.stderr)
+        return 3
+    else:
+        print("[5/5] Plots...")
+        plot_variance(percent, cumulative, outdir)
+        plot_multi_projections(trajs, projections, by_group, basis_desc, outdir)
+    plot_script = write_multi_plot_script(outdir, trajs, projections, group_files, by_group, basis_desc,
+                                          len(eigenvalues))
+    print("Done. Outputs in:", outdir)
+    print(f"All GROMACS commands have been logged to: {command_script}")
+    print(f"plot_xvg.py commands for the plots, to edit and re-run: {plot_script}")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(description="Automate GROMACS PCA and produce plots.")
-    p.add_argument("-s", "--structure", required=True,
-                   help="The run input file (.tpr), needed to make molecules whole; a GRO/PDB only with --pbc no")
-    p.add_argument("-f", "--trajectory", required=True, help="Trajectory file (XTC/TRR)")
+    p.add_argument("-s", "--structure", nargs="+", default=None,
+                   help="The run input file (.tpr), needed to make molecules whole; a GRO/PDB only with --pbc no. "
+                        "Several trajectories: one for all, or one per trajectory")
+    p.add_argument("-f", "--trajectory", nargs="+", default=None,
+                   help="Trajectory file (XTC/TRR); several for a PCA of several trajectories")
+    p.add_argument("--trajectories", default=None, metavar="FILE",
+                   help="Several trajectories from a file, one per line: 'label group trajectory [structure]' "
+                        "(group '-' for none; without structure, the one given with -s)")
+    p.add_argument("--labels", nargs="+", default=None,
+                   help="With several -f: a label for each trajectory (default: from the file names)")
+    p.add_argument("--groups", nargs="+", default=None,
+                   help="With several -f: a group for each trajectory, e.g. apo apo holo holo ('-' for none)")
+    p.add_argument("--pca-from", default=None, metavar="all|GROUP|LABEL",
+                   help="Several trajectories: the PCA of all of them together (default: all), of one group, "
+                        "or of one trajectory; every trajectory is projected on its PCs")
+    p.add_argument("--color-by", default=None, choices=["trajectory", "group"],
+                   help="Several trajectories: one colour per trajectory (default) or per group in the plots")
     p.add_argument("-o", "--outdir", default="pca_out", help="Output directory (default: pca_out)")
     p.add_argument("--selection", default="Backbone",
                    help="GROMACS selection of the atoms analysed: the PCA is of their coordinates (default: Backbone)")
@@ -719,6 +1251,28 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     args = p.parse_args(argv)
     fit_selection = args.fit_selection or args.selection
+    multi = args.trajectories is not None or (args.trajectory is not None and len(args.trajectory) > 1)
+    if args.trajectories is not None and args.trajectory is not None:
+        p.error("give the trajectories either with -f or with --trajectories, not both")
+    if args.trajectory is None and args.trajectories is None:
+        p.error("give a trajectory with -f (or several with -f or --trajectories)")
+    if not multi:
+        for name, value in (("--labels", args.labels), ("--groups", args.groups),
+                            ("--pca-from", args.pca_from), ("--color-by", args.color_by)):
+            if value is not None:
+                p.error(f"{name} is for several trajectories (-f t1.xtc t2.xtc ... or --trajectories)")
+        if args.structure is None or len(args.structure) != 1:
+            p.error("give one structure (.tpr) with -s")
+    elif args.trajectories is not None:
+        if args.labels is not None or args.groups is not None:
+            p.error("--labels and --groups are for -f; with --trajectories the labels and groups are in the file")
+        if args.structure is not None and len(args.structure) != 1:
+            p.error("with --trajectories, -s gives one structure, for the trajectories without one in the file")
+    elif args.structure is None:
+        p.error("give the structure (.tpr) with -s: one for all trajectories or one per trajectory")
+    if multi and args.fit == "progressive":
+        p.error("--fit progressive fits each frame to the one before, so the trajectories would not share "
+                "a reference: use rot+trans with several trajectories")
     if args.first < 1 or args.last < args.first:
         p.error(f"--first and --last must satisfy 1 <= first <= last (got {args.first}, {args.last})")
     scale = TIME_UNITS_PS[args.tu]
@@ -730,10 +1284,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         p.error("--dt must be positive")
     frames = {"begin_ps": begin_ps, "end_ps": end_ps, "dt_ps": args.dt}
 
-    # Resolve paths
-    s = Path(args.structure).expanduser().resolve()
-    f = Path(args.trajectory).expanduser().resolve()
     outdir = Path(args.outdir).expanduser().resolve()
+    if multi:
+        return main_multi(args, outdir, fit_selection, frames)
+
+    # Resolve paths
+    s = Path(args.structure[0]).expanduser().resolve()
+    f = Path(args.trajectory[0]).expanduser().resolve()
 
     # Basic checks (before anything is written)
     if not s.exists():
