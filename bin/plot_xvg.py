@@ -122,40 +122,91 @@ def add_stats_box(ax, labels):
 
 
 def parse_xvg(filename):
+    """Read an XVG file: (data columns, legends {set: text}, labels {title, subtitle, xlabel,
+    ylabel, stats}).
+
+    A line '&' ends a data set (Grace format; GROMACS writes it, e.g. gmx anaeig, gmx rmsf with
+    several groups). One set, with or without a final '&', is read as usual. Several sets with
+    the same x values (same times, same atoms) become columns of one table, each set's y
+    columns after the previous ones, named by '@ sN legend' or, failing that, by each set's own
+    '@ yaxis label' (gmx anaeig: "vec 1", "vec 2", ...). Sets with different x values, values
+    that are not numbers and rows with a different number of columns are errors (ValueError,
+    naming the file and line), never guessed.
+    """
     legends = {}
     labels = {}
-    data_lines = []
+    sets = []                   # [[row, ...], ...]
+    set_ylabels = []            # each set's own '@ yaxis label', if any
+    rows = []
+    ylabel = None
+
+    def close_set():
+        nonlocal rows, ylabel
+        if rows:
+            sets.append(rows)
+            set_ylabels.append(ylabel)
+        rows, ylabel = [], None
 
     with open(filename, 'r') as f:
-        for line in f:
-            line = line.strip()
+        for number, raw in enumerate(f, 1):
+            line = raw.strip()
             if line.startswith(STATS_COMMENT_PREFIX):
                 labels['stats'] = parse_stats_comment(line)
                 continue
             if not line or line.startswith('#'):
                 continue
-
+            if line == '&':
+                close_set()
+                continue
             if line.startswith('@'):
                 parts = line.split()
+                if len(parts) < 2:
+                    continue
                 if parts[1] == 'title':
-                    labels['title'] = ' '.join(parts[2:]).strip('"')
+                    labels.setdefault('title', ' '.join(parts[2:]).strip('"'))
                 elif parts[1] == 'subtitle':
-                    labels['subtitle'] = ' '.join(parts[2:]).strip('"')
-                elif parts[1] == 'xaxis' and parts[2] == 'label':
-                    labels['xlabel'] = ' '.join(parts[3:]).strip('"')
-                elif parts[1] == 'yaxis' and parts[2] == 'label':
-                    labels['ylabel'] = ' '.join(parts[3:]).strip('"')
-                elif parts[1].startswith('s') and parts[2] == 'legend':
+                    labels.setdefault('subtitle', ' '.join(parts[2:]).strip('"'))
+                elif parts[1] == 'xaxis' and len(parts) > 2 and parts[2] == 'label':
+                    labels.setdefault('xlabel', ' '.join(parts[3:]).strip('"'))
+                elif parts[1] == 'yaxis' and len(parts) > 2 and parts[2] == 'label':
+                    ylabel = ' '.join(parts[3:]).strip('"')
+                    labels.setdefault('ylabel', ylabel)
+                elif parts[1].startswith('s') and len(parts) > 2 and parts[2] == 'legend':
                     index = int(parts[1][1:])
                     legends[index] = ' '.join(parts[3:]).strip('"')
-            else:
-                data_lines.append(line)
+                continue
+            try:
+                row = [float(v) for v in line.split()]
+            except ValueError:
+                raise ValueError(f"{filename}, line {number}: not a number in '{line[:60]}'")
+            if rows and len(row) != len(rows[0]):
+                raise ValueError(f"{filename}, line {number}: {len(row)} columns, but the rows "
+                                 f"before have {len(rows[0])}")
+            rows.append(row)
+    close_set()
 
-    # Parse data into columns
-    data = [list(map(float, line.split())) for line in data_lines]
+    if len(sets) <= 1:
+        data = sets[0] if sets else []
+    else:
+        first = sets[0]
+        for i, other in enumerate(sets[1:], 2):
+            same_x = len(other) == len(first) and all(
+                abs(a[0] - b[0]) <= 1e-9 * max(1.0, abs(a[0])) for a, b in zip(first, other))
+            if not same_x:
+                raise ValueError(f"{filename} has {len(sets)} data sets (separated by '&') whose x "
+                                 f"values differ (set {i} vs set 1): plot them from separate files")
+        data = [list(first[r]) + [v for other in sets[1:] for v in other[r][1:]]
+                for r in range(len(first))]
+        names = [n for n in set_ylabels]
+        if not legends and all(names) and len(set(names)) == len(names) and \
+                all(len(st[0]) == 2 for st in sets):
+            # one y column per set, each with its own y-axis label (gmx anaeig): use as legends
+            legends = {i: n for i, n in enumerate(names)}
+            labels.pop('ylabel', None)
+
     data_by_columns = list(zip(*data))  # transpose rows to columns
-
     return data_by_columns, legends, labels
+
 
 def select_xy_columns(data_columns, legends, labels, xcol=0, columns=None):
     """Choose the x column and the y columns to plot.

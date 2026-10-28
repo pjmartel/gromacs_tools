@@ -122,6 +122,16 @@ python bin/plot_xvg.py raw_data.dat \
 python bin/plot_xvg.py data.xvg --no-legend
 ```
 
+### Files with Several Data Sets (`&`)
+
+GROMACS ends a data set with a line `&` (Grace format), and some tools write several sets to
+one file (e.g. `gmx anaeig -proj` or `-rmsf` for several eigenvectors). One set, with or without
+a final `&`, is read as usual. Several sets with the same x values (same times, same atoms)
+are read as columns, one curve per set, named by the file's legends or, failing those, by each
+set's own y-axis label (`gmx anaeig`: `vec 1`, `vec 2`, ...); give the y-axis a name with
+`--ylabel`. Sets with different x values are reported as an error, as are values that are not
+numbers and rows with a different number of columns (with the file and line).
+
 ### Choosing the X Column (`--xcol`)
 
 By default the first column (column 0) is the x-axis. `--xcol N` uses file column `N` instead,
