@@ -615,6 +615,71 @@ def plot_projections(projections: Dict[int, Path], out_dir: Path) -> None:
         save(out_dir / f"plot_pc{a}_pc{b}_scatter")
 
 
+def write_plot_script(out_dir: Path, projections: Dict[int, Path], n_pcs: int,
+                      name: str = "gmx_pca_plot_commands.sh") -> Path:
+    """gmx_pca_plot_commands.sh: plot_xvg.py commands that make the same plots as this script
+    (same file names, titles and labels), to be edited and re-run to tweak them. An existing
+    one (maybe edited) is kept as gmx_pca_plot_commands.1.sh, .2.sh, ..."""
+    path = out_dir / name
+    backup = backup_existing_file(path)
+    if backup:
+        print(f"Previous plot commands kept as: {backup}")
+    here = Path(__file__).resolve().parent / "plot_xvg.py"
+    n = min(n_pcs, SCREE_PCS)
+    shown = "" if n == n_pcs else f" (first {n} of {n_pcs} PCs)"
+    pcs = sorted(projections)
+    q = shell_quote
+    lines = [
+        "#!/bin/bash",
+        "# plot_xvg.py commands that make gmx_pca.py's plots (same file names), written by",
+        f"# gmx_pca.py on {datetime.now():%Y-%m-%d %H:%M:%S}. Edit them (titles, labels, ranges, sizes,",
+        "# --output .pdf/.svg, ...; see plot_xvg.py --help) and run this script to remake the plots.",
+        "set -e",
+        f"cd {q(str(out_dir))}",
+        "# plot_xvg.py from PATH, else the one next to gmx_pca.py",
+        f"PLOT=$(command -v plot_xvg.py || echo {q(str(here))})",
+        "",
+        "# Scree plot: variance (%) of each PC (variance.xvg: PC, eigenvalue, %, cumulative %)",
+        f'"$PLOT" variance.xvg --columns 2 --end {n} --style lines+dots \\',
+        f"    --title {q('Scree plot' + shown)} --xlabel 'Principal component' --ylabel 'Variance (%)' \\",
+        "    --output plot_eigenvalues.png",
+        "",
+        "# Cumulative variance (%)",
+        f'"$PLOT" variance.xvg --columns 3 --end {n} --style lines+dots --ylim 0 105 \\',
+        f"    --title {q('Cumulative variance' + shown)} --xlabel 'Number of PCs' --ylabel 'Cumulative variance (%)' \\",
+        "    --output plot_cumulative_variance.png",
+    ]
+    for pc in pcs:
+        lines += [
+            "",
+            f"# Projection on PC{pc} over time",
+            f'"$PLOT" {projections[pc].name} --style lines \\',
+            f"    --title {q(f'Projection on PC{pc} over time')} --xlabel 'Time (ps)' --ylabel {q(f'PC{pc} (nm)')} \\",
+            f"    --output plot_pc{pc}_timeseries.png",
+        ]
+    if len(pcs) >= 2:
+        a, b = pcs[0], pcs[1]
+        lines += [
+            "",
+            f"# PC{a} vs PC{b}, coloured by time (projections.xvg: time, PC{pcs[0]}, ..., PC{pcs[-1]})",
+            f'"$PLOT" projections.xvg --xcol 1 --columns 2 --scatter \\',
+            f"    --title {q(f'PC{a} vs PC{b} projection')} --xlabel {q(f'PC{a} (nm)')} --ylabel {q(f'PC{b} (nm)')} \\",
+            f"    --output plot_pc{a}_pc{b}_scatter.png",
+        ]
+    if len(pcs) >= 3:
+        a, b, c = pcs[:3]
+        lines += [
+            "",
+            f"# PC{a}, PC{b} and PC{c} in 3D (gmx_pca.py itself makes no 3D plot)",
+            f'"$PLOT" {projections[a].name} {projections[b].name} {projections[c].name} --xy-correlation \\',
+            f"    --title {q(f'PC{a}, PC{b} and PC{c}')} \\",
+            f"    --output plot_pc{a}_pc{b}_pc{c}_3d.png",
+        ]
+    path.write_text("\n".join(lines) + "\n")
+    path.chmod(0o755)
+    return path
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -754,6 +819,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("[5/5] Plots...")
         plot_variance(percent, cumulative, outdir)
         plot_projections(projections, outdir)
+    plot_script = write_plot_script(outdir, projections, len(eigenvalues))
 
     print("Done. Outputs in:", outdir)
     if len(projections) >= 3:
@@ -761,6 +827,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"3D plot of PC{a}/PC{b}/PC{c}: plot_xvg.py {projections[a].name} {projections[b].name} "
               f"{projections[c].name} --xy-correlation   (in {outdir})")
     print(f"All GROMACS commands have been logged to: {command_script}")
+    print(f"plot_xvg.py commands for the plots, to edit and re-run: {plot_script}")
     return 0
 
 
