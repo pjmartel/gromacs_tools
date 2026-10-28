@@ -62,9 +62,18 @@ python bin/plot_xvg.py energy.xvg --style lines+dots
 # Color by time/frame order
 python bin/plot_xvg.py projection.xvg --scatter --colormap viridis
 
+# Color by the time itself (column 0), colour bar labelled e.g. "Time (ps)"; here PC1 vs PC2
+python bin/plot_xvg.py projections.xvg --xcol 1 --columns 2 --scatter --color-by time
+
 # Custom marker size
 python bin/plot_xvg.py data.xvg --scatter --markersize 5
 ```
+
+`--scatter` colours the points by row order by default (colour bar "Frame / Time order"). With
+`--color-by time` they are coloured by the file's column 0, normally time, also when `--xcol`
+puts another column on the x-axis, and the colour bar is labelled with the file's x-axis label;
+for `--xy-correlation`, the time comes from the first file. This matters when frames are not
+evenly spaced in time, and gives the colour bar real time values.
 
 ### 3. Histograms
 
@@ -108,6 +117,9 @@ python bin/plot_xvg.py data.xvg --columns 1 2 3 \
 # Essential for files without XVG headers
 python bin/plot_xvg.py raw_data.dat \
     --columns 1 2 --legends "Temperature" "Pressure" --style lines
+
+# No legend at all (also when the XVG file names its data sets)
+python bin/plot_xvg.py data.xvg --no-legend
 ```
 
 ### Choosing the X Column (`--xcol`)
@@ -189,7 +201,7 @@ python bin/plot_xvg.py data.xvg \
 ### Figure Size and DPI
 
 ```bash
-# Custom figure size (width height in inches)
+# Custom figure size (width height in inches; every plot mode, single files included)
 python bin/plot_xvg.py data.xvg --figsize 12 8
 
 # High DPI for publications

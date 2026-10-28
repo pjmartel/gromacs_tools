@@ -211,7 +211,8 @@ def select_xy_columns(data_columns, legends, labels, xcol=0, columns=None):
 def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots', 
              scatter_colormap='viridis', use_scatter=False, use_histogram=False, 
              hist_bins=50, markersize=3, start_row=None, end_row=None, columns=None,
-             custom_legends=None, show_subtitle=True, show_stats=False, xcol=0):
+             custom_legends=None, show_subtitle=True, show_stats=False, xcol=0,
+             figsize=(10, 6), color_by_time=False):
     """Plot a single XVG file and return (fig, ax) without displaying.
 
     The previous implementation called plt.show() internally which prevented
@@ -245,12 +246,19 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
     xcol : int
         File column (counting from 0) used as the x-axis (default 0, normally time).
         Points are connected in file (row) order.
+    figsize : (float, float)
+        Figure size in inches (--figsize).
+    color_by_time : bool
+        Scatter mode: colour the points by the file's column 0 (normally time, also when
+        another column is the x-axis) instead of by row order, with the colour bar labelled
+        with the file's x-axis label.
     """
     data_columns, legends, labels = parse_xvg(filename)
     
     # Apply row slicing to all columns
     if start_row is not None or end_row is not None:
         data_columns = [list(col)[start_row:end_row] for col in data_columns]
+    time_column = np.asarray(data_columns[0])        # for --color-by time
     
     data_columns, legends, xlabel = select_xy_columns(data_columns, legends, labels,
                                                       xcol, columns)
@@ -263,7 +271,7 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
             raise ValueError(f"Number of custom legends ({len(custom_legends)}) must match number of datasets ({num_datasets})")
         legends = {i: custom_legends[i] for i in range(num_datasets)}
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=figsize)
 
     # With a stats box (top left), pin the legend to the top right instead of 'best',
     # which only avoids the data, not other boxes
@@ -289,12 +297,13 @@ def plot_xvg(filename, show_moving_avg=False, window_size=10, style='dots',
             label = legends.get(i, f'Dataset {i}')
 
             if use_scatter:
-                colors = np.arange(len(x))
+                colors = time_column if color_by_time else np.arange(len(x))
                 scatter = ax.scatter(x, y, c=colors, cmap=scatter_colormap,
                                      s=markersize*7, alpha=0.7, label=label)
                 if num_datasets == 1:  # Only add colorbar for single dataset
                     cbar = fig.colorbar(scatter, ax=ax)
-                    cbar.set_label('Frame / Time order', rotation=270, labelpad=20)
+                    cbar.set_label(labels.get('xlabel', 'Time') if color_by_time else 'Frame / Time order',
+                                   rotation=270, labelpad=20)
             else:
                 if style == 'dots':
                     ax.plot(x, y, 'o', markersize=markersize, label=label)
@@ -524,6 +533,14 @@ Examples:
                         help='Size of markers/dots in plots (default: 3.0). '
                              'For scatter plots, the actual size is markersize*7 for better visibility.')
     
+    parser.add_argument('--color-by', choices=['order', 'time'], default='order',
+                        help='Colours of --scatter points: "order" (row order, default) or "time" '
+                             '(the file\'s column 0, normally time, also when --xcol puts another '
+                             'column on the x-axis; for correlations, the first file\'s). With '
+                             '"time" the colour bar is labelled with the file\'s x-axis label, '
+                             'e.g. "Time (ps)"')
+    parser.add_argument('--no-legend', action='store_true',
+                        help='Do not draw a legend (also when the XVG file names its data sets)')
     parser.add_argument('--colormap', '--cmap', type=str, default='viridis',
                         help='Colormap for scatter mode (default: viridis). '
                              'Common options: viridis, plasma, inferno, magma, coolwarm, rainbow')
@@ -749,6 +766,12 @@ def apply_plot_customization(ax, args, is_3d=False):
         args: Parsed command-line arguments
         is_3d: bool, whether this is a 3D plot
     """
+    # --no-legend: remove the legend, whichever plot mode drew it
+    if getattr(args, 'no_legend', False):
+        legend = ax.get_legend()
+        if legend is not None:
+            legend.remove()
+
     # Apply custom labels if provided
     if args.title:
         ax.set_title(args.title)
@@ -777,6 +800,14 @@ def apply_plot_customization(ax, args, is_3d=False):
         ax.set_xlim(args.xlim[0], args.xlim[1])
     if args.ylim:
         ax.set_ylim(args.ylim[0], args.ylim[1])
+
+
+def correlation_colors(args, data_columns, labels, n):
+    """Colours of a correlation scatter and the colour bar's label: row order, or with
+    --color-by time the first file's column 0 (normally time), labelled with its x-axis label."""
+    if getattr(args, 'color_by', 'order') == 'time':
+        return np.asarray(data_columns[0]), labels.get('xlabel', 'Time')
+    return np.arange(n), 'Frame / Time order'
 
 
 def plot_single_correlation_2d(args):
@@ -810,12 +841,12 @@ def plot_single_correlation_2d(args):
     fig, ax = plt.subplots(figsize=tuple(args.figsize))
     
     if args.scatter:
-        # Scatter mode with color by order
-        colors = np.arange(len(y1))
+        # Scatter mode, coloured by order or (--color-by time) by the first file's column 0
+        colors, color_label = correlation_colors(args, data1_columns, labels1, len(y1))
         scatter = ax.scatter(y1, y2, c=colors, cmap=args.colormap, 
                            s=args.markersize*7, alpha=0.7)
         cbar = fig.colorbar(scatter, ax=ax)
-        cbar.set_label('Frame / Time order', rotation=270, labelpad=20)
+        cbar.set_label(color_label, rotation=270, labelpad=20)
     else:
         # Simple dots or specified style
         if args.style == 'dots':
@@ -881,12 +912,12 @@ def plot_single_correlation_3d(args):
     ax = fig.add_subplot(111, projection='3d')
     
     if args.scatter:
-        # Scatter mode with color by order
-        colors = np.arange(len(y1))
+        # Scatter mode, coloured by order or (--color-by time) by the first file's column 0
+        colors, color_label = correlation_colors(args, data1_columns, labels1, len(y1))
         scatter = ax.scatter(y1, y2, y3, c=colors, cmap=args.colormap,
                            s=args.markersize*7, alpha=0.7)
         cbar = fig.colorbar(scatter, ax=ax, pad=0.1)
-        cbar.set_label('Frame / Time order', rotation=270, labelpad=20)
+        cbar.set_label(color_label, rotation=270, labelpad=20)
     else:
         # Line or marker plot in 3D
         if args.style == 'dots':
@@ -1202,7 +1233,8 @@ def main():
                                use_histogram=args.histogram, hist_bins=args.bins, markersize=args.markersize,
                                start_row=args.start, end_row=args.end, columns=args.columns,
                                custom_legends=args.legends, show_subtitle=not args.no_subtitle,
-                               show_stats=args.stats, xcol=args.xcol)
+                               show_stats=args.stats, xcol=args.xcol, figsize=tuple(args.figsize),
+                               color_by_time=args.color_by == 'time')
             
             apply_plot_customization(ax, args, is_3d=False)
 
