@@ -245,9 +245,9 @@ titles and labels (and, with three or more PCs, a 3D plot of the first three, wh
 bash pca_out/gmx_pca_plot_commands.sh      # works from any folder
 ```
 
-It replaces the PNG plots in the output folder with the new versions. The plots look a little
-different from `gmx_pca.py`'s own (`plot_xvg.py`'s style: smaller fonts, a legend; the scatter's
-colour bar counts frames instead of ps). Running `gmx_pca.py` again writes a new script and keeps
+It replaces the PNG plots in the output folder with the new versions, which look much like
+`gmx_pca.py`'s own (same sizes, no legends, the scatter coloured by time with a colour bar in ps:
+`--figsize`, `--no-legend`, `--color-by time`). Running `gmx_pca.py` again writes a new script and keeps
 the earlier one, maybe edited, as `gmx_pca_plot_commands.1.sh`, `.2.sh`, ...
 
 It uses `plot_xvg.py` from `PATH`, or else the one next to `gmx_pca.py`.
