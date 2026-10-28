@@ -22,6 +22,9 @@ Performs complete PCA workflow from trajectory preprocessing through eigenvector
 - ✅ **Several trajectories** (replicas, apo vs holo): one PCA of all of them, of one group or of
   one trajectory, with every trajectory projected on the same PCs and kept apart in the plots
   and files (colour per trajectory or per group). See [Several Trajectories](#several-trajectories-replicas-apo-vs-holo)
+- ✅ **RMSIP** (`--rmsip`): how similar the motions are, from separate PCAs: first vs second half
+  of each trajectory (convergence), trajectory vs trajectory, group vs group, within and
+  between groups. See [Comparing the Motions](#comparing-the-motions-rmsip---rmsip)
 - ✅ Safe re-runs: earlier preprocessing is reused only if made with the same files and options
 - ✅ **Command logging** (on by default): every GROMACS command run, plus the exact invocation
   used, is saved to `<outdir>/gmx_pca_commands.sh` (override with `--commands-file`); the file from an earlier run is kept as `…_commands.1.sh`, `.2.sh`, … (highest number = most recent)
@@ -304,6 +307,82 @@ As for one trajectory, except:
 The projections and plots of an earlier run in the same folder are removed first, so files of
 another PCA, other PCs or other trajectories are not left behind among the new ones.
 
+## Comparing the Motions: RMSIP (`--rmsip`)
+
+Projecting everything on one set of PCs shows **where** the trajectories go. A different
+question is whether they make the **same motions**. For that, each trajectory (or group) gets
+its own PCA, and their eigenvectors are compared. The projections of separate PCAs can't be
+compared, but the eigenvectors themselves can: they are directions in the same space of atom
+coordinates, as long as the atoms and the reference structure are the same. `gmx_pca.py`
+makes sure of both: every separate PCA uses the main PCA's atoms and reference, `fit.gro`.
+
+```bash
+# Convergence of one trajectory: its first half vs its second half
+gmx_pca.py -s topol.tpr -f traj.xtc --rmsip
+
+# Two force fields, five replicas each: all of the comparisons below
+gmx_pca.py --trajectories ff_replicas.txt --color-by group --rmsip -o pca_ff
+```
+
+The inner product of two eigenvectors (both of unit length) is 1 for the same motion and 0 for
+unrelated ones (its sign means nothing: an eigenvector can point either way). The **RMSIP**
+(root mean square inner product) of the first N PCs (`--rmsip-pcs`, default 10) of two PCAs,
+
+RMSIP = √( (1/N) Σᵢ Σⱼ (vᵢ · wⱼ)² ),  i, j = 1 … N
+
+is 1 when the two sets of PCs span the same motions and 0 when they share none. Values above
+about 0.7 are usually read as similar.
+
+What `--rmsip` computes:
+
+- **Convergence**, for every trajectory: its first half vs its second half (split halfway
+  between the two middle frames). A low value means that the trajectory hasn't sampled its
+  main motions consistently: it is still changing, or too short
+- With several trajectories, **trajectory vs trajectory**: every pair. With groups, the
+  terminal summarises them **within** each group (e.g. replica vs replica of ff14sb) and
+  **between** groups (an ff14sb replica vs an ff19sb replica)
+- With groups, **group vs group**: a PCA of each group (its trajectories one after the other),
+  their RMSIP and the overlap matrix of their PCs (|vᵢ · wⱼ| for each pair of PCs), which shows
+  which motion matches which: e.g. PC1 of one group may be PC2 of the other
+
+**Read the values against the within-group ones.** The RMSIP is never 1, even for two replicas
+of the same system: each samples only part of the motions, and shorter samples agree less. A
+value between groups means something only next to the values within them:
+
+```
+Trajectory vs trajectory, within and between groups
+  within ff14sb: mean 0.62  (0.55-0.70, 10 pairs)
+  within ff19sb: mean 0.60  (0.52-0.68, 10 pairs)
+  between ff14sb and ff19sb: mean 0.58  (0.49-0.66, 25 pairs)
+```
+
+If the values between groups are like those within them, the groups make the same motions,
+as far as the replicas can tell; if they are clearly lower, the motions differ. The group PCAs
+(more frames each) usually give higher values than single trajectories.
+
+Each PCA needs more frames than PCs: with `--rmsip-pcs 10`, each half of each trajectory needs
+at least 11 frames (more is much better; `gmx_pca.py` stops with a message otherwise). The
+separate PCAs reuse the fitted trajectories and only write their first N eigenvectors: with C-
+alphas they take seconds; with the backbone of a large protein, each one takes as long as the
+main `gmx covar`.
+
+Outputs (in the output folder):
+
+- `rmsip_summary.txt` - The summary printed in the terminal
+- `rmsip_halves.dat` - First vs second half of each trajectory, with the numbers of frames
+- `rmsip_trajectories.dat` - The matrix of all trajectory pairs (several trajectories)
+- `rmsip_groups.dat` - The matrix of all group pairs (two groups or more)
+- `overlap_<groupA>_<groupB>.dat` - |inner product| of each PC of group A (rows) with each PC of
+  group B (columns)
+- `plot_rmsip_trajectories` - Heatmap of the trajectory matrix, with lines between the groups
+- `plot_overlap_<groupA>_<groupB>` - Heatmap of the overlap matrix
+- `rmsip/` - The separate PCAs (eigenvectors, eigenvalues, averages, logs)
+
+The heatmaps are made by `gmx_pca.py` only (`plot_xvg.py` doesn't make heatmaps), so they are
+not in `gmx_pca_plot_commands.sh`. The RMSIP is computed from the eigenvectors read with
+`gmx dump`; for one pair, `gmx anaeig -v A.trr -v2 B.trr -first 1 -last N -over overlap.xvg`
+gives the same number as the square root of the last value in `overlap.xvg`.
+
 ## Command-Line Options
 
 | Option | Default | Description |
@@ -315,6 +394,8 @@ another PCA, other PCs or other trajectories are not left behind among the new o
 | `--groups` | none | With several `-f`: a group per trajectory (`-` for none) |
 | `--pca-from` | `all` | Several trajectories: the PCA of `all`, of a group or of one trajectory (label); all are projected on it |
 | `--color-by` | `trajectory` | Several trajectories: one colour per `trajectory` or per `group` in the plots |
+| `--rmsip` | `False` | Also compare the motions with separate PCAs (RMSIP): first vs second half of each trajectory and, with several, trajectory vs trajectory and group vs group (see [Comparing the Motions](#comparing-the-motions-rmsip---rmsip)) |
+| `--rmsip-pcs` | `10` | Number of PCs compared with `--rmsip` |
 | `-o, --outdir` | `pca_out` | Output directory |
 | `--selection` | `Backbone` | GROMACS selection of the atoms analysed: the PCA is of their coordinates |
 | `--fit-selection` | `--selection` | GROMACS selection of the atoms used for fitting and centring |

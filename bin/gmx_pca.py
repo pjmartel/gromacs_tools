@@ -28,6 +28,9 @@ Several trajectories (-f t1 t2 ... or --trajectories FILE): steps 1-2 per trajec
 trajectories/<label>/), all fitted to one reference; the PCA of all of them, of a group or of
 one (--pca-from); each trajectory projected on its own; plots coloured by trajectory or group.
 
+--rmsip: separate PCAs (same atoms and reference) of each half of each trajectory, of each
+trajectory and of each group, compared by the RMSIP of their first PCs (--rmsip-pcs).
+
 Requirements:
 - GROMACS in PATH (gmx) or provide --gmx-bin
 - Python packages: numpy, matplotlib
@@ -1037,14 +1040,14 @@ def write_multi_plot_script(out_dir: Path, trajs: List[Trajectory], projections:
 def run_multi(gmx: str, trajs: List[Trajectory], basis: List[Trajectory], basis_desc: str, outdir: Path,
               log_dir: Path, selection: str, fit_selection: str, pbc: str, center: bool,
               fit: Optional[str], frames: dict, first: int, last: int,
-              overwrite: bool) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, Dict[int, Path]]]:
+              overwrite: bool) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, Dict[int, Path]], Dict[str, Path]]:
     """Steps 1-4 for several trajectories. Each trajectory's index, PBC-treated trajectory of
     the selected atoms and first frame are kept in trajectories/<label>/ and reused while its
     files and the options they depend on stay the same. All trajectories are then fitted to one
     reference (fit.gro: the first frame of the first trajectory of the PCA), the PCA is made
     from the basis trajectories one after the other (gmx trjcat -cat, for gmx covar only), and
     each trajectory is projected on its PCs on its own, so it keeps its identity.
-    Returns (eigenvalues, percent, cumulative, {label: {PC: projection file}})."""
+    Returns (eigenvalues, percent, cumulative, {label: {PC: projection file}}, {label: fitted trajectory})."""
     frame_opts = frame_options(frames["begin_ps"], frames["end_ps"], frames["dt_ps"])
     dirs = {t.label: outdir / "trajectories" / t.label for t in trajs}
     print(f"[1/5] Per trajectory: index groups (analysed '{selection}', fitted '{fit_selection}'), "
@@ -1124,7 +1127,8 @@ def run_multi(gmx: str, trajs: List[Trajectory], basis: List[Trajectory], basis_
     # projections and plots of an earlier run in this folder (other PCs, trajectories or PCA)
     # would be taken for this one's
     stale = [q for pattern in ("projection_pc*.xvg", "projections*.xvg", "projection_stats.txt",
-                               "plot_pc*.png", "plot_pc*.pdf") for q in outdir.glob(pattern)]
+                               "plot_pc*.png", "plot_pc*.pdf", "rmsip_*", "overlap_*", "plot_rmsip_*",
+                               "plot_overlap_*") for q in outdir.glob(pattern)]
     for q in stale:
         q.unlink()
     if stale:
@@ -1133,7 +1137,272 @@ def run_multi(gmx: str, trajs: List[Trajectory], basis: List[Trajectory], basis_
     for i, t in enumerate(trajs):
         projections[t.label], _ = run_anaeig(gmx, fit_gro, fitted[t.label], ev_trr, pca_ndx, outdir,
                                              first, last, log_dir, label=t.label, rmsf=(i == 0))
-    return eigenvalues, percent, cumulative, projections
+    return eigenvalues, percent, cumulative, projections, fitted
+
+
+# ---------------------------------------------------------------------------
+# RMSIP: how similar the motions of separate PCAs are
+# ---------------------------------------------------------------------------
+
+def covar_vectors(gmx: str, ref: Path, xtc: Path, pca_ndx: Path, work: Path, name: str, n: int,
+                  what: str, log_dir: Path, span: Tuple[Optional[float], Optional[float]] = (None, None)) -> Path:
+    """The first n eigenvectors of a separate PCA (gmx covar -last n) of an already fitted
+    trajectory, or of the frames in span (begin, end; ps), with the same reference structure
+    and groups as the main PCA, so that all eigenvectors are in the same frame. Returns the
+    eigenvector file, work/<name>.trr; its other outputs stay in work/ too."""
+    trr = work / f"{name}.trr"
+    cmd = [gmx, "covar", "-s", str(ref), "-f", str(xtc), "-n", str(pca_ndx), "-v", str(trr),
+           "-o", str(work / f"{name}_eigenvalues.xvg"), "-av", str(work / f"{name}_average.pdb"),
+           "-l", str(work / f"{name}_covar.log"), "-last", str(n)]
+    for flag, t in zip(("-b", "-e"), span):
+        if t is not None:
+            cmd += [flag, f"{t:.6f}"]
+    run_log(log_dir, f"covar_rmsip_{name}.log", run_cmd(
+        cmd, stdin=f"{GROUP_FIT}\n{GROUP_ANALYSIS}\n", comment=f"RMSIP: first {n} eigenvectors of {what}"))
+    return trr
+
+
+def read_eigenvectors(gmx: str, trr: Path, n: int) -> np.ndarray:
+    """Eigenvectors 1..n of a gmx covar eigenvector file, as rows (3 x atoms columns), read
+    from gmx dump's text. covar writes the reference structure (step -1), the average (step 0)
+    and eigenvector k at step k (its eigenvalue as the time); each frame's coordinates must be
+    complete and every eigenvector of unit length."""
+    proc = subprocess.run([gmx, "dump", "-f", str(trr)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          check=False)
+    if proc.returncode != 0:
+        raise CommandError(f"gmx dump failed: {gromacs_error(proc.stderr.decode(errors='replace'))}")
+    frames: Dict[int, List[List[float]]] = {}
+    natoms: Dict[int, int] = {}
+    step: Optional[int] = None
+    for line in proc.stdout.decode(errors="replace").splitlines():
+        if re.search(r" frame \d+:\s*$", line):
+            step = None
+            continue
+        m = re.match(r"^\s*natoms=\s*(\d+)\s+step=\s*(-?\d+)\s+time=\s*\S+\s+lambda=\s*\S+\s*$", line)
+        if m:
+            step = int(m.group(2))
+            if step in frames:
+                raise AnalysisError(f"{trr.name}: step {step} appears twice")
+            natoms[step], frames[step] = int(m.group(1)), []
+            continue
+        m = re.match(r"^\s*x\[\s*(\d+)\]=\{\s*(\S+),\s*(\S+),\s*(\S+)\}\s*$", line)
+        if m:
+            if step is None or int(m.group(1)) != len(frames[step]):
+                raise AnalysisError(f"{trr.name}: unexpected coordinate line in gmx dump's output: {line.strip()[:60]}")
+            frames[step].append([float(v) for v in m.group(2, 3, 4)])
+            continue
+        if re.match(r"^\s*(box \(3x3\):|box\[\s*\d+\]=\{.*\}|x \(\d+x3\):)\s*$", line) or not line.strip():
+            continue
+        raise AnalysisError(f"{trr.name}: unexpected line in gmx dump's output: {line.strip()[:60]}")
+    missing = [k for k in range(1, n + 1) if k not in frames]
+    if missing:
+        raise AnalysisError(f"{trr.name} has no eigenvector{'s' if len(missing) > 1 else ''} "
+                            f"{', '.join(map(str, missing))} (expected 1 to {n})")
+    for k in range(1, n + 1):
+        if len(frames[k]) != natoms[k] or natoms[k] != natoms[1]:
+            raise AnalysisError(f"{trr.name}: eigenvector {k} has {len(frames[k])} of {natoms[k]} atoms")
+    vectors = np.array([np.ravel(frames[k]) for k in range(1, n + 1)])
+    norms = np.linalg.norm(vectors, axis=1)
+    if np.abs(norms - 1).max() > 1e-3:
+        raise AnalysisError(f"{trr.name}: the eigenvectors are not of unit length (lengths "
+                            f"{norms.min():.4f} to {norms.max():.4f}); mass-weighted?")
+    return vectors
+
+
+def rmsip(a: np.ndarray, b: np.ndarray) -> float:
+    """Root mean square inner product of two sets of n eigenvectors (rows): 1 when they span
+    the same space, 0 when every vector of one is orthogonal to every vector of the other."""
+    return float(np.sqrt(((a @ b.T) ** 2).sum() / len(a)))
+
+
+def halves(times: np.ndarray, name: str, n: int) -> Tuple[Tuple[Optional[float], Optional[float]],
+                                                          Tuple[Optional[float], Optional[float]], int, int]:
+    """The first and second half of a trajectory's frames, as (begin, end) times for gmx
+    covar: split halfway between the two middle frames. Returns (span1, span2, frames1, frames2)."""
+    if len(times) < 2 or np.any(np.diff(times) <= 0):
+        raise AnalysisError(f"{name}: the frame times don't increase steadily, so the trajectory "
+                            f"can't be split into halves by time")
+    k = len(times) // 2
+    mid = (times[k - 1] + times[k]) / 2
+    return (None, mid), (mid, None), k, len(times) - k
+
+
+def check_frames(name: str, frames: int, n: int) -> None:
+    """A PCA of f frames has at most f - 1 eigenvectors with a meaning."""
+    if frames <= n:
+        raise AnalysisError(f"--rmsip-pcs {n}: {name} has {frames} frames, so only {frames - 1} PCs with "
+                            f"a meaning; use fewer PCs (--rmsip-pcs) or more frames")
+
+
+def write_matrix(path: Path, names: List[str], m: np.ndarray, header: List[str]) -> None:
+    width = max(10, max(len(x) for x in names))
+    lines = [f"# {h}" for h in header]
+    lines.append(f"{'#':<{width}}" + "".join(f"  {x:>{width}}" for x in names))
+    for name, row in zip(names, m):
+        lines.append(f"{name:<{width}}" + "".join(f"  {v:>{width}.4f}" for v in row))
+    path.write_text("\n".join(lines) + "\n")
+
+
+def print_matrix(names: List[str], m: np.ndarray, col_names: Optional[List[str]] = None) -> None:
+    cols = col_names or names
+    width = max(len(x) for x in names)
+    cw = max(5, max(len(x) for x in cols))
+    print(f"    {'':<{width}}" + "".join(f" {x:>{cw}}" for x in cols))
+    for name, row in zip(names, m):
+        print(f"    {name:<{width}}" + "".join(f" {v:>{cw}.2f}" for v in row))
+
+
+def plot_matrix(path: Path, m: np.ndarray, rows: List[str], cols: List[str], title: str, label: str,
+                xlabel: str = "", ylabel: str = "", separators: Optional[List[int]] = None) -> None:
+    """A heatmap of values from 0 to 1, each cell labelled with its value."""
+    size = max(4.5, 0.55 * len(cols) + 2.5)
+    fig, ax = plt.subplots(figsize=(size, max(4, 0.55 * len(rows) + 1.8)))
+    im = ax.imshow(m, vmin=0, vmax=1, cmap="viridis")
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04).set_label(label)
+    ax.set_xticks(range(len(cols)))
+    ax.set_xticklabels(cols, rotation=45 if max(len(c) for c in cols) > 3 else 0, ha="right" if max(len(c) for c in cols) > 3 else "center", fontsize=8)
+    ax.set_yticks(range(len(rows)))
+    ax.set_yticklabels(rows, fontsize=8)
+    if len(rows) * len(cols) <= 400:
+        for i in range(len(rows)):
+            for j in range(len(cols)):
+                ax.text(j, i, f"{m[i, j]:.2f}", ha="center", va="center", fontsize=7,
+                        color="black" if m[i, j] > 0.6 else "white")
+    for s in separators or []:
+        ax.axhline(s - 0.5, color="white", lw=2)
+        ax.axvline(s - 0.5, color="white", lw=2)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title, fontsize=10)
+    save(path)
+
+
+def summarise(values: List[float]) -> str:
+    return f"mean {np.mean(values):.2f}  ({min(values):.2f}-{max(values):.2f}, {len(values)} pair{'s' if len(values) > 1 else ''})"
+
+
+def run_rmsip_multi(gmx: str, trajs: List[Trajectory], fitted: Dict[str, Path], times: Dict[str, np.ndarray],
+                    fit_gro: Path, pca_ndx: Path, outdir: Path, log_dir: Path, n: int, plots: bool) -> None:
+    """Separate PCAs of each trajectory, of each half of each trajectory and of each group (its
+    trajectories one after the other), all with the main PCA's reference and atoms; the RMSIP of
+    their first n PCs: trajectory vs trajectory, half vs half (convergence), group vs group,
+    within and between groups; the overlap of each group's PCs with each other group's."""
+    work = outdir / "rmsip"
+    ensure_outdir(work)
+    groups = list(dict.fromkeys(t.group for t in trajs if t.group))
+    for t in trajs:
+        check_frames(t.label, len(times[t.label]), n)
+    spans = {t.label: halves(times[t.label], t.label, n) for t in trajs}
+    for t in trajs:
+        check_frames(f"each half of {t.label}", min(spans[t.label][2:]), n)
+
+    print(f"  Separate PCAs (first {n} PCs) of each trajectory, each half of it"
+          + (" and each group" if groups else "") + "...")
+    vec: Dict[str, np.ndarray] = {}
+    half_vec: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+    for t in trajs:
+        vec[t.label] = read_eigenvectors(gmx, covar_vectors(gmx, fit_gro, fitted[t.label], pca_ndx, work, t.label, n,
+                                                            t.label, log_dir), n)
+        s1, s2, f1, f2 = spans[t.label]
+        half_vec[t.label] = tuple(read_eigenvectors(gmx, covar_vectors(
+            gmx, fit_gro, fitted[t.label], pca_ndx, work, f"{t.label}_half{i}", n,
+            f"{'the first' if i == 1 else 'the second'} half of {t.label} ({f1 if i == 1 else f2} frames)",
+            log_dir, span), n) for i, span in ((1, s1), (2, s2)))
+    group_vec: Dict[str, np.ndarray] = {}
+    for g in groups:
+        members = [t for t in trajs if t.group == g]
+        if len(members) == 1:
+            group_vec[g] = vec[members[0].label]
+            continue
+        temp = work / f"temp_group_{g}.xtc"
+        try:
+            run_log(log_dir, f"trjcat_rmsip_{g}.log", run_cmd(
+                [gmx, "trjcat", "-f"] + [str(fitted[t.label]) for t in members] + ["-o", str(temp), "-cat"],
+                comment=f"RMSIP: the trajectories of group {g} one after the other"))
+            group_vec[g] = read_eigenvectors(gmx, covar_vectors(gmx, fit_gro, temp, pca_ndx, work, f"group_{g}", n,
+                                                                f"group {g}", log_dir), n)
+        finally:
+            if temp.exists():
+                temp.unlink()
+
+    labels = [t.label for t in trajs]
+    m = np.array([[rmsip(vec[a], vec[b]) for b in labels] for a in labels])
+    half = {t.label: rmsip(*half_vec[t.label]) for t in trajs}
+    report = [f"RMSIP of the first {n} PCs of separate PCAs (1 = the same motions, 0 = unrelated ones)", ""]
+    report.append("Convergence: first half vs second half of each trajectory")
+    width = max(len(x) for x in labels)
+    report += [f"  {t.label:<{width}}  {half[t.label]:.2f}   ({spans[t.label][2]} + {spans[t.label][3]} frames)"
+               for t in trajs]
+    pairs = [(a, b) for i, a in enumerate(trajs) for b in trajs[i + 1:]]
+    if groups:
+        report += ["", "Trajectory vs trajectory, within and between groups"]
+        for g in groups:
+            within = [m[labels.index(a.label), labels.index(b.label)] for a, b in pairs if a.group == g == b.group]
+            if within:
+                report.append(f"  within {g}: {summarise(within)}")
+        for i, g in enumerate(groups):
+            for h in groups[i + 1:]:
+                between = [m[labels.index(a.label), labels.index(b.label)] for a, b in pairs
+                           if {a.group, b.group} == {g, h}]
+                report.append(f"  between {g} and {h}: {summarise(between)}")
+        if len(groups) > 1:
+            report += ["", "Group vs group (a PCA of each group, its trajectories together)"]
+            for i, g in enumerate(groups):
+                for h in groups[i + 1:]:
+                    report.append(f"  {g} vs {h}: {rmsip(group_vec[g], group_vec[h]):.2f}")
+    elif len(trajs) > 1:
+        report += ["", f"Trajectory vs trajectory: {summarise([m[labels.index(a.label), labels.index(b.label)] for a, b in pairs])}"]
+    report += ["", "Files: rmsip_trajectories.dat (all pairs), rmsip_halves.dat"
+               + (", rmsip_groups.dat, overlap_<group>_<group>.dat" if len(groups) > 1 else "")]
+    print("  " + "\n  ".join(report))
+    print("  Trajectory vs trajectory:")
+    print_matrix(labels, m)
+    (outdir / "rmsip_summary.txt").write_text("\n".join(report) + "\n")
+
+    common = [f"RMSIP of the first {n} PCs of separate PCAs (written by gmx_pca.py)"]
+    write_matrix(outdir / "rmsip_trajectories.dat", labels, m, common + ["trajectory vs trajectory"])
+    with (outdir / "rmsip_halves.dat").open("w") as fh:
+        fh.write(f"# {common[0]}\n# first half vs second half of each trajectory\n# label  rmsip  frames_first  frames_second\n")
+        for t in trajs:
+            fh.write(f"{t.label}  {half[t.label]:.4f}  {spans[t.label][2]}  {spans[t.label][3]}\n")
+    separators = [i for i in range(1, len(trajs)) if trajs[i].group != trajs[i - 1].group] if groups else []
+    if plots:
+        plot_matrix(outdir / "plot_rmsip_trajectories", m, labels, labels,
+                    f"RMSIP of the first {n} PCs, trajectory vs trajectory", "RMSIP", separators=separators)
+    if len(groups) > 1:
+        gm = np.array([[rmsip(group_vec[g], group_vec[h]) for h in groups] for g in groups])
+        write_matrix(outdir / "rmsip_groups.dat", groups, gm, common + ["group vs group (a PCA of each group)"])
+        pcs = [f"PC{k}" for k in range(1, n + 1)]
+        for i, g in enumerate(groups):
+            for h in groups[i + 1:]:
+                over = np.abs(group_vec[g] @ group_vec[h].T)
+                write_matrix(outdir / f"overlap_{g}_{h}.dat", [f"{g}_{p}" for p in pcs], over,
+                             [f"|inner product| of the PCs of group {g} (rows) and of group {h} (columns), written by gmx_pca.py",
+                              f"(the sign of an eigenvector is arbitrary); RMSIP = {rmsip(group_vec[g], group_vec[h]):.4f}"])
+                if plots:
+                    plot_matrix(outdir / f"plot_overlap_{g}_{h}", over, pcs, pcs,
+                                f"Overlap of the PCs of {g} and {h} (RMSIP {rmsip(group_vec[g], group_vec[h]):.2f})",
+                                "|inner product|", xlabel=f"PCs of {h}", ylabel=f"PCs of {g}")
+
+
+def run_rmsip_single(gmx: str, fit_xtc: Path, times: np.ndarray, fit_gro: Path, pca_ndx: Path, outdir: Path,
+                     log_dir: Path, n: int) -> None:
+    """Convergence of one trajectory: the RMSIP of the first n PCs of separate PCAs of its first
+    and its second half."""
+    work = outdir / "rmsip"
+    ensure_outdir(work)
+    check_frames("the trajectory", len(times), n)
+    s1, s2, f1, f2 = halves(times, "the trajectory", n)
+    check_frames("each half of the trajectory", min(f1, f2), n)
+    a, b = (read_eigenvectors(gmx, covar_vectors(gmx, fit_gro, fit_xtc, pca_ndx, work, f"half{i}", n,
+                                                 f"the {which} half of the trajectory ({f} frames)", log_dir, span), n)
+            for i, which, f, span in ((1, "first", f1, s1), (2, "second", f2, s2)))
+    value = rmsip(a, b)
+    print(f"  Convergence: RMSIP of the first {n} PCs, first half ({f1} frames) vs second half ({f2}): {value:.2f}")
+    (outdir / "rmsip_halves.dat").write_text(
+        f"# RMSIP of the first {n} PCs of separate PCAs (written by gmx_pca.py)\n"
+        f"# first half vs second half of the trajectory\n# rmsip  frames_first  frames_second\n"
+        f"{value:.4f}  {f1}  {f2}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -1176,12 +1445,19 @@ def main_multi(args: argparse.Namespace, outdir: Path, fit_selection: str, frame
     set_command_script_path(command_script)
     fit_mode = None if args.fit in ("", "none") else args.fit
     try:
-        eigenvalues, percent, cumulative, projections = run_multi(
+        eigenvalues, percent, cumulative, projections, fitted = run_multi(
             gmx, trajs, basis, basis_desc, outdir, log_dir, args.selection, fit_selection, args.pbc,
             not args.no_center, fit_mode, frames, args.first, args.last, args.overwrite)
         print("  Mean and standard deviation of the projections (nm; also in projection_stats.txt):")
         projection_stats(trajs, projections, basis_desc, outdir / "projection_stats.txt")
         group_files = write_group_projections(trajs, projections, outdir)
+        if args.rmsip:
+            print("[4b] RMSIP: how similar the motions of the trajectories and groups are...")
+            first_pc = sorted(projections[trajs[0].label])[0]
+            times = {t.label: np.loadtxt(projections[t.label][first_pc], comments=("#", "@"), ndmin=2)[:, 0]
+                     for t in trajs}
+            run_rmsip_multi(gmx, trajs, fitted, times, outdir / "fit.gro", outdir / "pca_groups.ndx", outdir,
+                            log_dir, args.rmsip_pcs, plots=not args.no_plots and plt is not None)
     except (CommandError, AnalysisError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
@@ -1243,6 +1519,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                         "the box edge between frames (for long runs)")
     p.add_argument("--no-center", action="store_true", help="Do not center trajectory")
     p.add_argument("--fit", default="rot+trans", choices=["", "none", "rot+trans", "progressive"], help="Fitting mode for trjconv (default: rot+trans). Use 'none' or '' to disable.")
+    p.add_argument("--rmsip", action="store_true",
+                   help="Also compare the motions with separate PCAs: the RMSIP of their first PCs, first vs second "
+                        "half of each trajectory (convergence) and, with several trajectories, trajectory vs "
+                        "trajectory and group vs group")
+    p.add_argument("--rmsip-pcs", type=int, default=10, help="PCs compared with --rmsip (default: 10)")
     p.add_argument("--gmx-bin", default=None, help="GROMACS binary to use (e.g., gmx or full path)")
     p.add_argument("--no-plots", action="store_true", help="Skip plotting (still runs GROMACS steps)")
     p.add_argument("--overwrite", action="store_true",
@@ -1282,6 +1563,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         p.error(f"--end must be after --begin (got {args.begin} and {args.end} {args.tu})")
     if args.dt is not None and args.dt <= 0:
         p.error("--dt must be positive")
+    if args.rmsip_pcs < 1:
+        p.error("--rmsip-pcs must be at least 1")
     frames = {"begin_ps": begin_ps, "end_ps": end_ps, "dt_ps": args.dt}
 
     outdir = Path(args.outdir).expanduser().resolve()
@@ -1364,6 +1647,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"[4/5] Projections on PC{args.first}-PC{args.last} and RMSF (anaeig)...")
         projections, rmsf_xvg = run_anaeig(gmx, fit_gro, fit_xtc, ev_trr, pca_ndx, outdir,
                                            args.first, args.last, log_dir)
+        old = outdir / "rmsip_halves.dat"
+        if old.exists():
+            old.unlink()
+        if args.rmsip:
+            times = np.loadtxt(projections[args.first], comments=("#", "@"), ndmin=2)[:, 0]
+            run_rmsip_single(gmx, fit_xtc, times, fit_gro, pca_ndx, outdir, log_dir, args.rmsip_pcs)
     except (CommandError, AnalysisError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
