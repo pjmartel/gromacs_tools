@@ -25,6 +25,9 @@ Performs complete PCA workflow from trajectory preprocessing through eigenvector
 - ✅ **RMSIP** (`--rmsip`): how similar the motions are, from separate PCAs: first vs second half
   of each trajectory (convergence), trajectory vs trajectory, group vs group, within and
   between groups. See [Comparing the Motions](#comparing-the-motions-rmsip---rmsip)
+- ✅ **Region split** (`--region`): every projection split into the part of a region (e.g. a floppy
+  terminus) and the rest: the projections without the region, and how much of each PC it is.
+  See [The Part of a Region](#the-part-of-a-region---region)
 - ✅ Safe re-runs: earlier preprocessing is reused only if made with the same files and options
 - ✅ **Command logging** (on by default): every GROMACS command run, plus the exact invocation
   used, is saved to `<outdir>/gmx_pca_commands.sh` (override with `--commands-file`); the file from an earlier run is kept as `…_commands.1.sh`, `.2.sh`, … (highest number = most recent)
@@ -383,6 +386,75 @@ not in `gmx_pca_plot_commands.sh`. The RMSIP is computed from the eigenvectors r
 `gmx dump`; for one pair, `gmx anaeig -v A.trr -v2 B.trr -first 1 -last N -over overlap.xvg`
 gives the same number as the square root of the last value in `overlap.xvg`.
 
+## The Part of a Region (`--region`)
+
+How much of the PCA is due to one part of the protein, e.g. a floppy N-terminus? A projection is a
+sum over the analysed atoms (each atom's displacement from the average structure times its part of
+the eigenvector), so it splits exactly into the part of the region's atoms and the part of the
+rest:
+
+  projection(t) = region's part(t) + rest's part(t)
+
+The rest's part is the trajectory **without the region**, projected on the same PCs: the
+difference from the full projection is the effect of the region.
+
+```bash
+# Backbone PCA of 5 replicas: how much is the N-terminus? (fitted without it, see below)
+gmx_pca.py --trajectories replicas.txt --selection Backbone \
+    --fit-selection 'group "Backbone" and not resnr 1 to 10' \
+    --region 'resnr 1 to 10' --region-name Nterm --last 3
+```
+
+Only the region's **analysed** atoms count: with `--selection 'name CA'`, `--region 'resnr 1 to
+10'` means their C-alphas. It works with one trajectory or several (each split separately, and
+each group's frames together), with `--pca-from` and `--rmsip`, and needs `--fit rot+trans`
+(the default).
+
+In the terminal and `region_split.txt`:
+
+```
+Weight of Nterm in each PC (share of the eigenvector's squared length on its atoms):
+  PC1  76.6%  PC2  54.0%  PC3  15.1%
+
+Variance of the projections, split: Nterm's part, the rest's part, and together
+(twice their covariance: + they move together along the PC, - they cancel out), as % of the variance:
+                  PC1: Nterm   rest together      PC2: Nterm   rest together
+  apo1                   72%     6%      22%             44%    27%      29%
+```
+
+- **Weight**: how much of the PC's eigenvector is on the region (the same for every
+  trajectory). Here PC1 is mostly the N-terminus
+- **Variance split**, per trajectory and group: the region's part, the rest's part and their
+  covariance term add up to 100 %. A negative "together" means that along this PC the region and
+  the rest move against each other (their parts partly cancel); the rest's part can then be over
+  100 %
+
+**Leave the region out of the fit** (`--fit-selection`). If a floppy region is fitted, the fit
+rotates the rest of the protein to follow it, and the region's motion is smeared over all atoms:
+in the example above, with the N-terminus in the fit, PC1 is 17 % N-terminus instead of 77 %. A
+warning is printed when the region's atoms are also fitted.
+
+Outputs:
+
+- `projection_pc<N>_parts[_<label>].xvg` - Time, the projection with all atoms, the region's
+  part and the rest's part (without the region)
+- `region_split.txt`, `region_weights.dat` - The tables above
+- `plot_pc<N>_<name>_parts` - The three over time, a panel per trajectory
+- `plot_pc<A>_pc<B>_without_<name>` - The scatter of the first two PCs with all atoms (grey)
+  and without the region (colour), a panel per trajectory
+- `gmx_pca_plot_commands.sh` - Also the time series (`plot_xvg.py` makes no panels nor this
+  scatter)
+
+This is the full PCA seen without the region's atoms: the PCs stay those of the full PCA. A
+PCA made without the region has PCs of its own (run it with a `--selection` that leaves it out).
+
+How it is checked: the split is computed in Python from the fitted trajectories and the
+eigenvectors (read with `gmx dump`). The fitted frames must reproduce gmx covar's average
+structure (to 0.002 nm, apart from one translation), and all atoms together must reproduce gmx
+anaeig's projections. These agree to rounding (about 0.0005 nm) when the fitted and analysed
+atoms are the same; when they differ, anaeig fits each frame itself, slightly differently from
+covar (about 1 % of the projections' range; the split follows covar).
+
 ## Command-Line Options
 
 | Option | Default | Description |
@@ -396,6 +468,8 @@ gives the same number as the square root of the last value in `overlap.xvg`.
 | `--color-by` | `trajectory` | Several trajectories: one colour per `trajectory` or per `group` in the plots |
 | `--rmsip` | `False` | Also compare the motions with separate PCAs (RMSIP): first vs second half of each trajectory and, with several, trajectory vs trajectory and group vs group (see [Comparing the Motions](#comparing-the-motions-rmsip---rmsip)) |
 | `--rmsip-pcs` | `10` | Number of PCs compared with `--rmsip` |
+| `--region` | | Split every projection into the part of these analysed atoms and the rest (see [The Part of a Region](#the-part-of-a-region---region)) |
+| `--region-name` | `region` | Name of `--region` in files, tables and plots, e.g. `Nterm` |
 | `-o, --outdir` | `pca_out` | Output directory |
 | `--selection` | `Backbone` | GROMACS selection of the atoms analysed: the PCA is of their coordinates |
 | `--fit-selection` | `--selection` | GROMACS selection of the atoms used for fitting and centring |

@@ -30,6 +30,7 @@ one (--pca-from); each trajectory projected on its own; plots coloured by trajec
 
 --rmsip: separate PCAs (same atoms and reference) of each half of each trajectory, of each
 trajectory and of each group, compared by the RMSIP of their first PCs (--rmsip-pcs).
+--region: every projection split into the part of a region's atoms and the rest's.
 
 Requirements:
 - GROMACS in PATH (gmx) or provide --gmx-bin
@@ -687,7 +688,7 @@ def plot_script_start(out_dir: Path, n_pcs: int, name: str) -> Tuple[Path, List[
 
 
 def write_plot_script(out_dir: Path, projections: Dict[int, Path], n_pcs: int,
-                      name: str = "gmx_pca_plot_commands.sh") -> Path:
+                      name: str = "gmx_pca_plot_commands.sh", extra: Optional[List[str]] = None) -> Path:
     """gmx_pca_plot_commands.sh: plot_xvg.py commands that make the same plots as this script
     (same file names, titles and labels), to be edited and re-run to tweak them. An existing
     one (maybe edited) is kept as gmx_pca_plot_commands.1.sh, .2.sh, ..."""
@@ -721,6 +722,7 @@ def write_plot_script(out_dir: Path, projections: Dict[int, Path], n_pcs: int,
             f"    --title {q(f'PC{a}, PC{b} and PC{c}')} \\",
             f"    --output plot_pc{a}_pc{b}_pc{c}_3d.png",
         ]
+    lines += extra or []
     path.write_text("\n".join(lines) + "\n")
     path.chmod(0o755)
     return path
@@ -995,7 +997,8 @@ def plot_multi_projections(trajs: List[Trajectory], projections: Dict[str, Dict[
 
 def write_multi_plot_script(out_dir: Path, trajs: List[Trajectory], projections: Dict[str, Dict[int, Path]],
                             group_files: Dict[str, Dict[int, Path]], by_group: bool, basis_desc: str,
-                            n_pcs: int, name: str = "gmx_pca_plot_commands.sh") -> Path:
+                            n_pcs: int, name: str = "gmx_pca_plot_commands.sh",
+                            extra: Optional[List[str]] = None) -> Path:
     """gmx_pca_plot_commands.sh for several trajectories: the variance plots, the projections
     over time (all trajectories in one plot: plot_xvg.py has no panels), and the scatter plots
     of the first two (and three) PCs, coloured by trajectory or by group (--color-by)."""
@@ -1032,6 +1035,7 @@ def write_multi_plot_script(out_dir: Path, trajs: List[Trajectory], projections:
         lines += [f"    --xy-correlation --multi --3d --legends {legends} --markersize 1.5 --figsize 7 6 \\",
                   f"    --title {q(f'PC{a}, PC{b} and PC{c} (PCA of {basis_desc})')} \\",
                   f"    --output plot_pc{a}_pc{b}_pc{c}_3d.png"]
+    lines += extra or []
     path.write_text("\n".join(lines) + "\n")
     path.chmod(0o755)
     return path
@@ -1128,7 +1132,7 @@ def run_multi(gmx: str, trajs: List[Trajectory], basis: List[Trajectory], basis_
     # would be taken for this one's
     stale = [q for pattern in ("projection_pc*.xvg", "projections*.xvg", "projection_stats.txt",
                                "plot_pc*.png", "plot_pc*.pdf", "rmsip_*", "overlap_*", "plot_rmsip_*",
-                               "plot_overlap_*") for q in outdir.glob(pattern)]
+                               "plot_overlap_*", "region_*") for q in outdir.glob(pattern)]
     for q in stale:
         q.unlink()
     if stale:
@@ -1162,51 +1166,70 @@ def covar_vectors(gmx: str, ref: Path, xtc: Path, pca_ndx: Path, work: Path, nam
     return trr
 
 
-def read_eigenvectors(gmx: str, trr: Path, n: int) -> np.ndarray:
-    """Eigenvectors 1..n of a gmx covar eigenvector file, as rows (3 x atoms columns), read
-    from gmx dump's text. covar writes the reference structure (step -1), the average (step 0)
-    and eigenvector k at step k (its eigenvalue as the time); each frame's coordinates must be
-    complete and every eigenvector of unit length."""
-    proc = subprocess.run([gmx, "dump", "-f", str(trr)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+def dump_frames(gmx: str, path: Path) -> List[Tuple[int, float, np.ndarray]]:
+    """The frames of a trajectory or eigenvector file, read from gmx dump's text: [(step, time,
+    coordinates (atoms x 3))], in order. Every frame must have all its atoms' coordinates."""
+    proc = subprocess.run([gmx, "dump", "-f", str(path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           check=False)
     if proc.returncode != 0:
         raise CommandError(f"gmx dump failed: {gromacs_error(proc.stderr.decode(errors='replace'))}")
-    frames: Dict[int, List[List[float]]] = {}
-    natoms: Dict[int, int] = {}
-    step: Optional[int] = None
+    frames: List[Tuple[int, float, int, List[List[float]]]] = []
+    in_frame = False
     for line in proc.stdout.decode(errors="replace").splitlines():
         if re.search(r" frame \d+:\s*$", line):
-            step = None
+            in_frame = False
             continue
-        m = re.match(r"^\s*natoms=\s*(\d+)\s+step=\s*(-?\d+)\s+time=\s*\S+\s+lambda=\s*\S+\s*$", line)
+        # eigenvector files (trr) end the line with lambda=, trajectories (xtc) with prec=
+        m = re.match(r"^\s*natoms=\s*(\d+)\s+step=\s*(-?\d+)\s+time=\s*(\S+)\s+(lambda|prec)=\s*\S+\s*$", line)
         if m:
-            step = int(m.group(2))
-            if step in frames:
-                raise AnalysisError(f"{trr.name}: step {step} appears twice")
-            natoms[step], frames[step] = int(m.group(1)), []
+            frames.append((int(m.group(2)), float(m.group(3)), int(m.group(1)), []))
+            in_frame = True
             continue
         m = re.match(r"^\s*x\[\s*(\d+)\]=\{\s*(\S+),\s*(\S+),\s*(\S+)\}\s*$", line)
         if m:
-            if step is None or int(m.group(1)) != len(frames[step]):
-                raise AnalysisError(f"{trr.name}: unexpected coordinate line in gmx dump's output: {line.strip()[:60]}")
-            frames[step].append([float(v) for v in m.group(2, 3, 4)])
+            if not in_frame or int(m.group(1)) != len(frames[-1][3]):
+                raise AnalysisError(f"{path.name}: unexpected coordinate line in gmx dump's output: {line.strip()[:60]}")
+            frames[-1][3].append([float(v) for v in m.group(2, 3, 4)])
             continue
         if re.match(r"^\s*(box \(3x3\):|box\[\s*\d+\]=\{.*\}|x \(\d+x3\):)\s*$", line) or not line.strip():
             continue
-        raise AnalysisError(f"{trr.name}: unexpected line in gmx dump's output: {line.strip()[:60]}")
-    missing = [k for k in range(1, n + 1) if k not in frames]
+        raise AnalysisError(f"{path.name}: unexpected line in gmx dump's output: {line.strip()[:60]}")
+    if not frames:
+        raise AnalysisError(f"gmx dump found no frames in {path.name}")
+    for i, (step, _, natoms, x) in enumerate(frames):
+        if len(x) != natoms:
+            raise AnalysisError(f"{path.name}: frame {i} (step {step}) has coordinates for {len(x)} of {natoms} atoms")
+    return [(step, time, np.array(x)) for step, time, _, x in frames]
+
+
+def read_eigenvector_file(gmx: str, trr: Path, first: int, last: int) -> Tuple[np.ndarray, np.ndarray]:
+    """The average structure and eigenvectors first..last of a gmx covar eigenvector file, as
+    (average (atoms x 3), vectors (PCs x atoms x 3)). covar writes the reference structure
+    (step -1), the average (step 0) and eigenvector k at step k (its eigenvalue as the time);
+    every eigenvector must be of unit length."""
+    frames: Dict[int, np.ndarray] = {}
+    for step, _, x in dump_frames(gmx, trr):
+        if step in frames:
+            raise AnalysisError(f"{trr.name}: step {step} appears twice")
+        frames[step] = x
+    missing = [k for k in [0] + list(range(first, last + 1)) if k not in frames]
     if missing:
-        raise AnalysisError(f"{trr.name} has no eigenvector{'s' if len(missing) > 1 else ''} "
-                            f"{', '.join(map(str, missing))} (expected 1 to {n})")
-    for k in range(1, n + 1):
-        if len(frames[k]) != natoms[k] or natoms[k] != natoms[1]:
-            raise AnalysisError(f"{trr.name}: eigenvector {k} has {len(frames[k])} of {natoms[k]} atoms")
-    vectors = np.array([np.ravel(frames[k]) for k in range(1, n + 1)])
-    norms = np.linalg.norm(vectors, axis=1)
+        raise AnalysisError(f"{trr.name} has no {'average structure' if missing == [0] else 'eigenvector(s) ' + ', '.join(map(str, missing))}")
+    shapes = {frames[k].shape for k in [0] + list(range(first, last + 1))}
+    if len(shapes) != 1:
+        raise AnalysisError(f"{trr.name}: the eigenvectors don't all have the same number of atoms")
+    vectors = np.array([frames[k] for k in range(first, last + 1)])
+    norms = np.sqrt((vectors ** 2).sum(axis=(1, 2)))
     if np.abs(norms - 1).max() > 1e-3:
         raise AnalysisError(f"{trr.name}: the eigenvectors are not of unit length (lengths "
                             f"{norms.min():.4f} to {norms.max():.4f}); mass-weighted?")
-    return vectors
+    return frames[0], vectors
+
+
+def read_eigenvectors(gmx: str, trr: Path, n: int) -> np.ndarray:
+    """Eigenvectors 1..n of a gmx covar eigenvector file, as rows (3 x atoms columns)."""
+    _, vectors = read_eigenvector_file(gmx, trr, 1, n)
+    return vectors.reshape(n, -1)
 
 
 def rmsip(a: np.ndarray, b: np.ndarray) -> float:
@@ -1406,6 +1429,215 @@ def run_rmsip_single(gmx: str, fit_xtc: Path, times: np.ndarray, fit_gro: Path, 
 
 
 # ---------------------------------------------------------------------------
+# Region: each projection split into the part of a region of the atoms and the rest
+# ---------------------------------------------------------------------------
+
+# region + rest must give anaeig's projections within this (nm, plus 2 % of their range): a safeguard
+# against wrong atoms or an unfitted trajectory. Not closer: with other fitted than analysed atoms,
+# anaeig fits each frame itself, slightly differently from covar (about 1 % of the range); the
+# coordinates used here are checked against covar's own average instead (average_shift)
+REGION_TOLERANCE = 0.02
+SHIFT_TOLERANCE = 0.002     # nm: covar's average vs the fitted frames' mean, beyond one translation
+
+
+def region_mask(gmx: str, s: Path, region: str, full_ndx: Path, out_ndx: Path, log_dir: Path,
+                label: str = "") -> Tuple[np.ndarray, int]:
+    """Which analysed atoms (in the order of the eigenvector components) are in --region, and
+    how many of them are also fitted. Only the region's analysed atoms count (e.g. 'resnr 1 to
+    10' with --selection 'name CA': their C-alphas); some must be, and not all of the analysed atoms."""
+    of = f" ({label})" if label else ""
+    run_log(log_dir, "select_region.log", run_cmd(
+        [gmx, "select", "-s", str(s), "-select", region, "-on", str(out_ndx)],
+        comment=f"Region: the atoms of --region{of} (gmx_pca.py splits the projections with them)"))
+    groups = read_ndx(out_ndx)
+    if len(groups) != 1 or not groups[0][1]:
+        raise AnalysisError(f"--region '{region}' selects no atoms{of}")
+    atoms = set(groups[0][1])
+    selection = read_ndx(full_ndx)          # all, analysis, fit
+    analysis, fit = selection[1][1], selection[2][1]
+    mask = np.array([a in atoms for a in analysis])
+    if not mask.any():
+        raise AnalysisError(f"--region '{region}'{of}: none of its {len(atoms)} atoms are analysed (--selection)")
+    if mask.all():
+        raise AnalysisError(f"--region '{region}'{of} has all of the analysed atoms: nothing would be left")
+    return mask, len(atoms & set(analysis) & set(fit))
+
+
+def analysis_coordinates(gmx: str, fit_xtc: Path, pca_ndx: Path) -> Tuple[np.ndarray, np.ndarray]:
+    """Times and coordinates of the analysed atoms (frames x atoms x 3, in the order of the
+    eigenvector components) of a fitted trajectory of the reduced structure."""
+    analysis = np.array(read_ndx(pca_ndx)[GROUP_ANALYSIS][1]) - 1
+    frames = dump_frames(gmx, fit_xtc)
+    if any(len(x) <= analysis.max() for _, _, x in frames):
+        raise AnalysisError(f"{fit_xtc.name} has fewer atoms than pca_groups.ndx refers to")
+    return np.array([t for _, t, _ in frames]), np.array([x[analysis] for _, _, x in frames])
+
+
+def average_shift(basis: List[np.ndarray], average: np.ndarray) -> np.ndarray:
+    """The translation from the fitted trajectories' coordinates to gmx covar's: covar stores
+    the average structure of the PCA's frames, shifted to the origin of its fit when the fitted
+    and analysed atoms differ. The mean of the same frames, as fitted by trjconv, must differ
+    from it by one translation, the same for every atom."""
+    d = np.concatenate(basis).mean(axis=0) - average          # atoms x 3
+    shift = d.mean(axis=0)
+    spread = np.abs(d - shift).max()
+    if spread > SHIFT_TOLERANCE:
+        raise AnalysisError(f"the average structure of the PCA's frames differs from gmx covar's by more than a "
+                            f"translation (up to {spread:.3f} nm): the trajectories are not fitted as covar fitted them")
+    return shift
+
+
+def split_projections(times: np.ndarray, coords: np.ndarray, shift: np.ndarray, average: np.ndarray,
+                      vectors: np.ndarray, first: int, mask: np.ndarray, projections: Dict[int, Path],
+                      name: str, what: str) -> Tuple[Dict[int, np.ndarray], float]:
+    """Each frame's projection on PCs first.., as the sum over the analysed atoms of their
+    displacement from the average times their part of the eigenvector, split into the region's
+    atoms (mask) and the rest: {PC: array (frames x 3): all atoms, region, rest}. All atoms
+    together must give anaeig's own projections (the files in projections), else the atoms or
+    the fit don't match what anaeig used. Also returns the largest difference from them (nm)."""
+    disp = coords - shift - average                            # frames x atoms x 3
+    parts: Dict[int, np.ndarray] = {}
+    largest = 0.0
+    for i, vector in enumerate(vectors):
+        pc = first + i
+        per_atom = (disp * vector).sum(axis=2)                 # frames x atoms
+        region, rest = per_atom[:, mask].sum(axis=1), per_atom[:, ~mask].sum(axis=1)
+        parts[pc] = np.column_stack([region + rest, region, rest])
+        ref = np.loadtxt(projections[pc], comments=("#", "@"), ndmin=2)
+        if ref.shape[0] != len(times) or not np.allclose(ref[:, 0], times, atol=1e-3):
+            raise AnalysisError(f"{what}: the fitted trajectory has other frames than {projections[pc].name}")
+        diff = np.abs(parts[pc][:, 0] - ref[:, 1]).max()
+        largest = max(largest, diff)
+        if diff > REGION_TOLERANCE + 0.02 * np.abs(ref[:, 1]).max():
+            raise AnalysisError(f"{what}: the projections on PC{pc} computed for --region differ from gmx anaeig's "
+                                f"by up to {diff:.4f} nm: the trajectory is not fitted to the reference as anaeig expects")
+    return parts, largest
+
+
+def write_parts(out_dir: Path, times: np.ndarray, parts: Dict[int, np.ndarray], name: str,
+                label: str = "") -> Dict[int, Path]:
+    """projection_pc<N>_parts[_<label>].xvg: time, projection on PC N with all atoms, the
+    region's part and the rest's part (the projection without the region)."""
+    tag = f"_{label}" if label else ""
+    files = {}
+    for pc, p in parts.items():
+        path = out_dir / f"projection_pc{pc}_parts{tag}.xvg"
+        with path.open("w") as fh:
+            fh.write(f"# Projection{' of ' + label if label else ''} on PC{pc} split into the part of the atoms of "
+                     f"{name} and of the rest (written by gmx_pca.py)\n")
+            fh.write(f'@    title "Projection{" of " + label if label else ""} on PC{pc}: {name} and the rest"\n')
+            fh.write('@    xaxis  label "Time (ps)"\n')
+            fh.write(f'@    yaxis  label "PC{pc} (nm)"\n')
+            fh.write("@TYPE xy\n")
+            for i, legend in enumerate(("all atoms", name, f"without {name}")):
+                fh.write(f'@ s{i} legend "{legend}"\n')
+            for t, row in zip(times, p):
+                fh.write(f"{t:12.4f}  {row[0]:12.6f}  {row[1]:12.6f}  {row[2]:12.6f}\n")
+        files[pc] = path
+    return files
+
+
+def variance_split(p: np.ndarray) -> Tuple[float, float, float]:
+    """The variance of a projection (columns all, region, rest) split as % of it: the region's,
+    the rest's, and together (twice their covariance: positive when they move together along the
+    PC, negative when they cancel out)."""
+    total = p[:, 0].var()
+    if total == 0:
+        return 0.0, 0.0, 0.0
+    cov = np.cov(p[:, 1], p[:, 2], bias=True)[0, 1]
+    return 100 * p[:, 1].var() / total, 100 * p[:, 2].var() / total, 100 * 2 * cov / total
+
+
+def region_report(out_dir: Path, name: str, region: str, n_region: int, n_analysis: int,
+                  weights: Dict[int, float], sets: List[Tuple[str, str, Dict[int, np.ndarray]]]) -> None:
+    """Terminal table and region_split.txt: the region's weight in each PC's eigenvector, and
+    the variance of the projections split, per set (trajectory or group)."""
+    pcs = sorted(weights)
+    lines = [f"Region {name} ('{region}'): {n_region} of the {n_analysis} analysed atoms",
+             "",
+             f"Weight of {name} in each PC (share of the eigenvector's squared length on its atoms):",
+             "  " + "  ".join(f"PC{pc} {100 * weights[pc]:5.1f}%" for pc in pcs),
+             "",
+             f"Variance of the projections, split: {name}'s part, the rest's part, and together",
+             "(twice their covariance: + they move together along the PC, - they cancel out), as % of the variance:"]
+    width = max(10, max(len(s[0]) for s in sets))
+    lines.append(f"  {'':<{width}}" + "".join(f"  {f'PC{pc}: ' + name:>{max(14, len(name) + 6)}} {'rest':>6} {'together':>8}" for pc in pcs))
+    for label, kind, parts in sets:
+        cells = []
+        for pc in pcs:
+            r, s, c = variance_split(parts[pc])
+            cells.append(f"  {r:>{max(14, len(name) + 6) - 1}.0f}% {s:>5.0f}% {c:>7.0f}%")
+        lines.append(f"  {label:<{width}}" + "".join(cells) + ("" if kind == "trajectory" else f"   ({kind})"))
+    print("  " + "\n  ".join(lines))
+    (out_dir / "region_split.txt").write_text("\n".join(lines) + "\n")
+    with (out_dir / "region_weights.dat").open("w") as fh:
+        fh.write(f"# Weight of {name} ('{region}') in each PC: share of the eigenvector's squared length on its atoms\n")
+        fh.write("# PC  weight\n")
+        for pc in pcs:
+            fh.write(f"{pc}  {weights[pc]:.5f}\n")
+
+
+def plot_region(out_dir: Path, name: str, sets: List[Tuple[str, np.ndarray, Dict[int, np.ndarray]]],
+                colours: List[str]) -> None:
+    """Per trajectory (one panel each): the projections over time with all atoms, the region's
+    part and the rest's part; and the scatter of the first two PCs with all atoms and without
+    the region."""
+    pcs = sorted(sets[0][2])
+    n = len(sets)
+    for pc in pcs:
+        fig, axes = plt.subplots(n, 1, figsize=(7, 1.2 + 1.5 * n), sharex=True, sharey=True, squeeze=False)
+        for ax, (label, times, parts) in zip(axes[:, 0], sets):
+            p = parts[pc]
+            ax.plot(times, p[:, 0], lw=0.8, color="0.3", label="all atoms")
+            ax.plot(times, p[:, 1], lw=0.8, color="C3", label=name)
+            ax.plot(times, p[:, 2], lw=0.8, color="C0", label=f"without {name}")
+            if label:
+                ax.text(0.01, 0.95, label, transform=ax.transAxes, va="top", fontsize=8)
+            ax.grid(True, alpha=0.3)
+        axes[0, 0].legend(fontsize=7, loc="upper right", ncol=3)
+        axes[-1, 0].set_xlabel("Time (ps)")
+        fig.supylabel(f"PC{pc} (nm)")
+        fig.suptitle(f"Projection on PC{pc}: {name} and the rest", fontsize=10)
+        save(out_dir / f"plot_pc{pc}_{name}_parts")
+    if len(pcs) >= 2:
+        a, b = pcs[:2]
+        cols = min(n, 5)
+        rows = (n + cols - 1) // cols
+        fig, axes = plt.subplots(rows, cols, figsize=(1 + 3.2 * cols, 0.8 + 3.2 * rows), sharex=True, sharey=True,
+                                 squeeze=False)
+        for i, (label, _, parts) in enumerate(sets):
+            ax = axes[i // cols, i % cols]
+            ax.plot(parts[a][:, 0], parts[b][:, 0], "o", ms=1.5, color="0.65", alpha=0.6, label="all atoms")
+            ax.plot(parts[a][:, 2], parts[b][:, 2], "o", ms=1.5, color=colours[i], alpha=0.7, label=f"without {name}")
+            if label:
+                ax.set_title(label, fontsize=9)
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=7, markerscale=3)
+        for j in range(n, rows * cols):
+            axes[j // cols, j % cols].set_visible(False)
+        fig.supxlabel(f"PC{a} (nm)")
+        fig.supylabel(f"PC{b} (nm)")
+        fig.suptitle(f"PC{a} vs PC{b}, with all atoms and without {name}", fontsize=10)
+        save(out_dir / f"plot_pc{a}_pc{b}_without_{name}")
+
+
+def region_plot_commands(name: str, files: Dict[str, Dict[int, Path]]) -> List[str]:
+    """plot_xvg.py commands for the region's time series, one plot per trajectory and PC
+    (plot_xvg.py makes no panels, nor the scatter without the region)."""
+    q = shell_quote
+    lines = ["", f"# --region: projections over time with all atoms, {name}'s part and the rest's part (gmx_pca.py's "
+                 f"own plots have a panel per trajectory, and also the scatter without {name})"]
+    for label, by_pc in files.items():
+        for pc, path in sorted(by_pc.items()):
+            tag = f"_{label}" if label else ""
+            title = f"Projection{' of ' + label if label else ''} on PC{pc}: {name} and the rest"
+            lines += [f'"$PLOT" {path.name} --style lines --figsize 7 3.5 \\',
+                      f"    --title {q(title)} --xlabel 'Time (ps)' --ylabel {q(f'PC{pc} (nm)')} \\",
+                      f"    --output plot_pc{pc}_{name}_parts{tag}_xvg.png"]
+    return lines
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1458,6 +1690,42 @@ def main_multi(args: argparse.Namespace, outdir: Path, fit_selection: str, frame
                      for t in trajs}
             run_rmsip_multi(gmx, trajs, fitted, times, outdir / "fit.gro", outdir / "pca_groups.ndx", outdir,
                             log_dir, args.rmsip_pcs, plots=not args.no_plots and plt is not None)
+        region_sets: List[Tuple[str, np.ndarray, Dict[int, np.ndarray]]] = []
+        region_files: Dict[str, Dict[int, Path]] = {}
+        if args.region is not None:
+            name = args.region_name
+            print(f"[4c] Region {name}: each projection split into {name}'s part and the rest's...")
+            masks = []
+            for t in trajs:
+                d = outdir / "trajectories" / t.label
+                mask, n_fitted = region_mask(gmx, t.structure, args.region, d / "selection.ndx", d / "region.ndx",
+                                             d / "logs", t.label)
+                masks.append(mask)
+                if n_fitted and t is trajs[0]:
+                    print(f"  Warning: {n_fitted} atoms of {name} are also fitted (--fit-selection): its motion then "
+                          f"also moves the rest through the fit; leave it out of --fit-selection")
+            if any(not np.array_equal(m, masks[0]) for m in masks[1:]):
+                bad = next(t.label for t, m in zip(trajs, masks) if not np.array_equal(m, masks[0]))
+                raise AnalysisError(f"--region gives other analysed atoms in {bad} than in {trajs[0].label}")
+            average, vectors = read_eigenvector_file(gmx, outdir / "eigenvectors.trr", args.first, args.last)
+            coords = {t.label: analysis_coordinates(gmx, fitted[t.label], outdir / "pca_groups.ndx") for t in trajs}
+            shift = average_shift([coords[t.label][1] for t in basis], average)
+            largest = 0.0
+            for t in trajs:
+                times, x = coords[t.label]
+                parts, diff = split_projections(times, x, shift, average, vectors, args.first, masks[0],
+                                                projections[t.label], name, t.label)
+                largest = max(largest, diff)
+                region_sets.append((t.label, times, parts))
+                region_files[t.label] = write_parts(outdir, times, parts, name, t.label)
+            weights = {pc: float((vectors[i][masks[0]] ** 2).sum()) for i, pc in enumerate(range(args.first, args.last + 1))}
+            pooled = []
+            for g in dict.fromkeys(t.group for t in trajs if t.group):
+                members = [s for s, t in zip(region_sets, trajs) if t.group == g]
+                pooled.append((g, "group", {pc: np.vstack([s[2][pc] for s in members]) for pc in weights}))
+            print(f"  (all atoms together agree with gmx anaeig's projections within {largest:.4f} nm)")
+            region_report(outdir, name, args.region, int(masks[0].sum()), len(masks[0]), weights,
+                          [(s[0], "trajectory", s[2]) for s in region_sets] + pooled)
     except (CommandError, AnalysisError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
@@ -1471,8 +1739,12 @@ def main_multi(args: argparse.Namespace, outdir: Path, fit_selection: str, frame
         print("[5/5] Plots...")
         plot_variance(percent, cumulative, outdir)
         plot_multi_projections(trajs, projections, by_group, basis_desc, outdir)
+        if region_sets:
+            colour = {t.label: f"C{i}" for i, (_, members) in enumerate(colour_sets(trajs, by_group)) for t in members}
+            plot_region(outdir, args.region_name, region_sets, [colour[s[0]] for s in region_sets])
     plot_script = write_multi_plot_script(outdir, trajs, projections, group_files, by_group, basis_desc,
-                                          len(eigenvalues))
+                                          len(eigenvalues),
+                                          extra=region_plot_commands(args.region_name, region_files) if region_files else None)
     print("Done. Outputs in:", outdir)
     print(f"All GROMACS commands have been logged to: {command_script}")
     print(f"plot_xvg.py commands for the plots, to edit and re-run: {plot_script}")
@@ -1524,6 +1796,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                         "half of each trajectory (convergence) and, with several trajectories, trajectory vs "
                         "trajectory and group vs group")
     p.add_argument("--rmsip-pcs", type=int, default=10, help="PCs compared with --rmsip (default: 10)")
+    p.add_argument("--region", default=None, metavar="SELECTION",
+                   help="Split every projection into the part of these analysed atoms (e.g. 'resnr 1 to 10') and the "
+                        "rest: the projection without them, and how much of each PC they make up")
+    p.add_argument("--region-name", default="region",
+                   help="Name of --region in file names, tables and plots (default: region), e.g. Nterm")
     p.add_argument("--gmx-bin", default=None, help="GROMACS binary to use (e.g., gmx or full path)")
     p.add_argument("--no-plots", action="store_true", help="Skip plotting (still runs GROMACS steps)")
     p.add_argument("--overwrite", action="store_true",
@@ -1565,6 +1842,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         p.error("--dt must be positive")
     if args.rmsip_pcs < 1:
         p.error("--rmsip-pcs must be at least 1")
+    if args.region is not None:
+        if not NAME_RE.fullmatch(args.region_name):
+            p.error("--region-name: use letters, digits and _ . + - (starting with a letter or digit)")
+        if args.fit != "rot+trans":
+            p.error("--region needs --fit rot+trans: the projections are split from the fitted coordinates, "
+                    "which must be fitted to the reference structure as gmx anaeig does")
     frames = {"begin_ps": begin_ps, "end_ps": end_ps, "dt_ps": args.dt}
 
     outdir = Path(args.outdir).expanduser().resolve()
@@ -1647,12 +1930,32 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"[4/5] Projections on PC{args.first}-PC{args.last} and RMSF (anaeig)...")
         projections, rmsf_xvg = run_anaeig(gmx, fit_gro, fit_xtc, ev_trr, pca_ndx, outdir,
                                            args.first, args.last, log_dir)
-        old = outdir / "rmsip_halves.dat"
-        if old.exists():
-            old.unlink()
+        for old in [outdir / "rmsip_halves.dat", outdir / "region_split.txt", outdir / "region_weights.dat",
+                    *outdir.glob("projection_pc*_parts.xvg")]:
+            if old.exists():
+                old.unlink()
         if args.rmsip:
             times = np.loadtxt(projections[args.first], comments=("#", "@"), ndmin=2)[:, 0]
             run_rmsip_single(gmx, fit_xtc, times, fit_gro, pca_ndx, outdir, log_dir, args.rmsip_pcs)
+        region_set = None
+        region_files: Dict[str, Dict[int, Path]] = {}
+        if args.region is not None:
+            name = args.region_name
+            print(f"  Region {name}: each projection split into {name}'s part and the rest's...")
+            mask, n_fitted = region_mask(gmx, s, args.region, full_ndx, outdir / "region.ndx", log_dir)
+            if n_fitted:
+                print(f"  Warning: {n_fitted} atoms of {name} are also fitted (--fit-selection): its motion then "
+                      f"also moves the rest through the fit; leave it out of --fit-selection")
+            average, vectors = read_eigenvector_file(gmx, ev_trr, args.first, args.last)
+            times, x = analysis_coordinates(gmx, fit_xtc, pca_ndx)
+            parts, diff = split_projections(times, x, average_shift([x], average), average, vectors, args.first,
+                                            mask, projections, name, "the trajectory")
+            print(f"  (all atoms together agree with gmx anaeig's projections within {diff:.4f} nm)")
+            region_set = ("", times, parts)
+            region_files[""] = write_parts(outdir, times, parts, name)
+            weights = {pc: float((vectors[i][mask] ** 2).sum()) for i, pc in enumerate(range(args.first, args.last + 1))}
+            region_report(outdir, name, args.region, int(mask.sum()), len(mask), weights,
+                          [("trajectory", "trajectory", parts)])
     except (CommandError, AnalysisError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
@@ -1666,7 +1969,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("[5/5] Plots...")
         plot_variance(percent, cumulative, outdir)
         plot_projections(projections, outdir)
-    plot_script = write_plot_script(outdir, projections, len(eigenvalues))
+        if region_set:
+            plot_region(outdir, args.region_name, [region_set], ["C0"])
+    plot_script = write_plot_script(outdir, projections, len(eigenvalues),
+                                    extra=region_plot_commands(args.region_name, region_files) if region_files else None)
 
     print("Done. Outputs in:", outdir)
     if len(projections) >= 3:
