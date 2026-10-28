@@ -157,8 +157,35 @@ def run_cmd(cmd: List[str], stdin: Optional[str] = None, cwd: Optional[Path] = N
         stderr=subprocess.STDOUT,
     )
     if proc.returncode != 0:
-        raise CommandError(f"Command failed ({proc.returncode}): {' '.join(cmd)}\nOutput:\n{proc.stdout.decode(errors='ignore')}")
+        output = proc.stdout.decode(errors="replace")
+        where = ""
+        if _command_script_path:
+            log = _command_script_path.parent / "logs" / f"failed_{Path(cmd[0]).name}_{cmd[1]}.log"
+            try:
+                log.parent.mkdir(parents=True, exist_ok=True)
+                log.write_text(f"$ {' '.join(cmd)}\n\n{output}")
+                where = f" (full output: {log})"
+            except OSError:
+                pass
+        raise CommandError(f"gmx {cmd[1]} failed: {gromacs_error(output)}{where}")
     return proc
+
+
+def gromacs_error(output: str) -> str:
+    """The message of a GROMACS error: the lines after its "Fatal error:" / "Error in user input:"
+    heading, up to the dashed line (else the last lines of the output)."""
+    lines = output.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith(("Fatal error", "Error in user input", "Inconsistency in user input")):
+            message = []
+            for follow in lines[i + 1:]:
+                if follow.startswith("-----") or follow.startswith("For more information"):
+                    break
+                if follow.strip():
+                    message.append(follow.strip())
+            return " ".join(message) or line.strip()
+    rest = [l.strip() for l in lines if l.strip()]
+    return " | ".join(rest[-3:]) if rest else "no output"
 
 
 def which_gmx(user_bin: Optional[str]) -> str:
@@ -184,10 +211,30 @@ def file_signature(path: Path) -> dict:
 
 
 def preprocessing_params(s: Path, f: Path, selection: str, fit_selection: str, pbc: str,
-                         center: bool, fit: Optional[str]) -> dict:
+                         center: bool, fit: Optional[str], frames: dict) -> dict:
     """Everything the index, fitted trajectory and reference structure depend on."""
     return {"structure": file_signature(s), "trajectory": file_signature(f), "selection": selection,
-            "fit_selection": fit_selection, "pbc": pbc, "center": center, "fit": fit or "none"}
+            "fit_selection": fit_selection, "pbc": pbc, "center": center, "fit": fit or "none",
+            "frames": frames}
+
+
+TIME_UNITS_PS = {"fs": 0.001, "ps": 1.0, "ns": 1000.0, "us": 1.0e6}
+
+
+def describe_frames(begin_ps: Optional[float], end_ps: Optional[float], dt_ps: Optional[float]) -> str:
+    if begin_ps is None and end_ps is None and dt_ps is None:
+        return "all frames"
+    span = f"{'start' if begin_ps is None else f'{begin_ps:g} ps'} to {'end' if end_ps is None else f'{end_ps:g} ps'}"
+    return f"frames {span}" + (f", every {dt_ps:g} ps" if dt_ps is not None else "")
+
+
+def frame_options(begin_ps: Optional[float], end_ps: Optional[float], dt_ps: Optional[float]) -> List[str]:
+    """trjconv's -b/-e/-dt, in ps, for the frames chosen."""
+    opts: List[str] = []
+    for flag, value in (("-b", begin_ps), ("-e", end_ps), ("-dt", dt_ps)):
+        if value is not None:
+            opts += [flag, f"{value:g}"]
+    return opts
 
 
 def reuse_reason(params_file: Path, params: dict, outputs: List[Path]) -> Optional[str]:
@@ -276,7 +323,8 @@ def build_index(gmx: str, s: Path, selection: str, fit_selection: str, full_ndx:
 # ---------------------------------------------------------------------------
 
 def trj_fit_center(gmx: str, s: Path, f: Path, full_ndx: Path, pca_ndx: Path, out_xtc: Path,
-                   pbc: str, center: bool, fit: Optional[str], log_dir: Path) -> Path:
+                   pbc: str, center: bool, fit: Optional[str], log_dir: Path,
+                   frames: Optional[List[str]] = None) -> Path:
     """Make the selected atoms whole and centred (PBC treatment), take the first frame of that
     as the reference structure (fit.gro), and fit the trajectory to it.
 
@@ -286,9 +334,12 @@ def trj_fit_center(gmx: str, s: Path, f: Path, full_ndx: Path, pca_ndx: Path, ou
 
     --pbc nojump: first -pbc whole, then -pbc nojump (atoms never jump across the box edge
     between frames; needs whole molecules in the first frame, hence the first pass).
+    frames: trjconv's -b/-e/-dt, applied where the raw trajectory is read, so every later step
+    uses only those frames; the reference is then the first frame of that range.
     Returns the reference structure, with only the selected atoms (analysed and fitted).
     """
     out_gro = out_xtc.parent / "fit.gro"
+    frames = frames or []
     temps: List[Path] = []
     try:
         # centring is on the fitted atoms (the stable part), output is all selected atoms
@@ -299,7 +350,7 @@ def trj_fit_center(gmx: str, s: Path, f: Path, full_ndx: Path, pca_ndx: Path, ou
             whole_xtc = out_xtc.parent / "temp_whole.xtc"
             whole_gro = out_xtc.parent / "temp_whole.gro"
             temps += [whole_xtc, whole_gro]
-            whole = ["-n", str(full_ndx), "-pbc", "whole"]
+            whole = ["-n", str(full_ndx), "-pbc", "whole"] + frames
             run_log(log_dir, "trjconv_whole.log", run_cmd(
                 [gmx, "trjconv", "-s", str(s), "-f", str(f), "-o", str(whole_xtc)] + whole,
                 stdin="0\n", comment="Step 2a: Make molecules whole (selected atoms)"))
@@ -312,7 +363,7 @@ def trj_fit_center(gmx: str, s: Path, f: Path, full_ndx: Path, pca_ndx: Path, ou
             step = "Step 2b: No jumps across the box edge between frames"
         else:
             source, source_s = f, s
-            treatment = ["-n", str(full_ndx), "-pbc", pbc, "-ur", "compact"] + center_opts
+            treatment = ["-n", str(full_ndx), "-pbc", pbc, "-ur", "compact"] + center_opts + frames
             stdin1 = center_answer + "0\n"
             step = "Step 2a: PBC treatment and centring"
         temp_xtc = out_xtc.parent / "temp_pbc.xtc"
@@ -579,6 +630,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--fit-selection", default=None,
                    help="GROMACS selection of the atoms used for fitting and centring (default: --selection), "
                         "e.g. fit on the protein's backbone and analyse a ligand, a loop or the N-terminus")
+    p.add_argument("-b", "--begin", type=float, default=None,
+                   help="First frame to use, in the unit of --tu (default: the first frame)")
+    p.add_argument("-e", "--end", type=float, default=None,
+                   help="Last frame to use, in the unit of --tu (default: the last frame)")
+    p.add_argument("--dt", type=float, default=None,
+                   help="Only use frames spaced by this interval, always in ps (default: every frame)")
+    p.add_argument("--tu", default="ps", choices=list(TIME_UNITS_PS),
+                   help="Unit of --begin/--end (default: ps); --dt is always in ps")
     p.add_argument("--first", type=int, default=1, help="First PC projected and plotted (default: 1)")
     p.add_argument("--last", type=int, default=2, help="Last PC projected and plotted (default: 2)")
     p.add_argument("--pbc", default="mol", choices=["no", "mol", "res", "atom", "nojump"],
@@ -596,6 +655,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     fit_selection = args.fit_selection or args.selection
     if args.first < 1 or args.last < args.first:
         p.error(f"--first and --last must satisfy 1 <= first <= last (got {args.first}, {args.last})")
+    scale = TIME_UNITS_PS[args.tu]
+    begin_ps = args.begin * scale if args.begin is not None else None
+    end_ps = args.end * scale if args.end is not None else None
+    if begin_ps is not None and end_ps is not None and end_ps <= begin_ps:
+        p.error(f"--end must be after --begin (got {args.begin} and {args.end} {args.tu})")
+    if args.dt is not None and args.dt <= 0:
+        p.error("--dt must be positive")
+    frames = {"begin_ps": begin_ps, "end_ps": end_ps, "dt_ps": args.dt}
 
     # Resolve paths
     s = Path(args.structure).expanduser().resolve()
@@ -640,7 +707,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         # are reused only if they were made from the same files with the same options (recorded
         # in preprocessing.json); otherwise, or with --overwrite, they are made again
         params_file = outdir / "preprocessing.json"
-        params = preprocessing_params(s, f, args.selection, fit_selection, args.pbc, do_center, fit_mode)
+        params = preprocessing_params(s, f, args.selection, fit_selection, args.pbc, do_center, fit_mode, frames)
         reason = None if args.overwrite else reuse_reason(params_file, params, [full_ndx, pca_ndx, fit_xtc, fit_gro])
         if reason == "":
             print(f"[skip] Reusing the index, fitted trajectory and reference structure in {outdir}"
@@ -655,8 +722,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"[1/5] Index groups: analysed '{args.selection}', fitted '{fit_selection}'")
             n_all, n_analysis, n_fit = build_index(gmx, s, args.selection, fit_selection, full_ndx, pca_ndx, log_dir)
             print(f"      {n_analysis} atoms analysed, {n_fit} fitted, {n_all} kept")
-            print(f"[2/5] PBC treatment ({args.pbc}), centring and fitting (trjconv)...")
-            fit_gro = trj_fit_center(gmx, s, f, full_ndx, pca_ndx, fit_xtc, args.pbc, do_center, fit_mode, log_dir)
+            chosen = describe_frames(begin_ps, end_ps, args.dt)
+            print(f"[2/5] PBC treatment ({args.pbc}), centring and fitting (trjconv), {chosen}...")
+            fit_gro = trj_fit_center(gmx, s, f, full_ndx, pca_ndx, fit_xtc, args.pbc, do_center, fit_mode,
+                                     log_dir, frame_options(begin_ps, end_ps, args.dt))
             params_file.write_text(json.dumps(params, indent=2) + "\n")
 
         print("[3/5] Covariance analysis (covar)...")

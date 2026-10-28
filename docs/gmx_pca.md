@@ -11,6 +11,7 @@ Performs complete PCA workflow from trajectory preprocessing through eigenvector
 - ✅ Atom selection with GROMACS selection syntax, for the atoms analysed (`--selection`) and,
   separately, the atoms used for fitting (`--fit-selection`): e.g. fit on the protein backbone
   and analyse a bound ligand, a loop or the N-terminus
+- ✅ Choice of frames: `-b`/`-e` (time range, in ps or `--tu`) and `--dt` (spacing)
 - ✅ PBC treatment (whole molecules, or no jumps across the box edge), centring and fitting
 - ✅ Covariance matrix and eigenvectors
 - ✅ Projections on any range of PCs (`--first`/`--last`), one file per PC (ready for 2D and
@@ -46,7 +47,8 @@ gmx_pca.py -s topol.tpr -f traj.xtc --selection "resname SAM" --fit-selection Ba
 1. **Index groups**: the atoms analysed (`--selection`), the atoms fitted (`--fit-selection`,
    default the same), and both together, the only atoms kept from here on
    (`selection.ndx` for the whole system, `pca_groups.ndx` for the reduced structure)
-2. **Trajectory preprocessing**: makes the kept atoms whole and centres them on the fitted atoms
+2. **Trajectory preprocessing**: takes the frames chosen with `-b`/`-e`/`--dt` (all by
+   default), makes the kept atoms whole and centres them on the fitted atoms
    (PBC treatment, which needs the run's `.tpr`), takes the first frame of that as the reference
    structure `fit.gro`, and fits the trajectory to it on the fitted atoms. The reference is taken
    *after* the PBC treatment: taken from the raw trajectory, it would be split across the box
@@ -101,6 +103,23 @@ placed in the compact unit cell around them, so a ligand appears in the periodic
 to the protein's centre. This is right for ligands **bound** to the protein; a ligand or ion
 that diffuses freely through the box mostly shows that wandering, which a PCA can't make much
 of.
+
+### Choosing Frames (`-b`, `-e`, `--dt`, `--tu`)
+
+```bash
+# 100-500 ns only (e.g. leaving out equilibration)
+gmx_pca.py -s topol.tpr -f traj.xtc -b 100 -e 500 --tu ns
+
+# Every 100 ps (fewer frames: faster for long runs)
+gmx_pca.py -s topol.tpr -f traj.xtc --dt 100
+```
+
+The frames are chosen where the raw trajectory is read (the first `gmx trjconv` step), so the
+fitting, the covariance analysis and the projections all use the same frames, and the
+reference structure is the first frame of the range. `-b`/`-e` are in the unit of `--tu`
+(default ps); `--dt` is always in ps (`trjconv -dt`: frames whose time is a multiple of it, from
+the first one). A `-b` beyond the end of the trajectory is reported by GROMACS ("Specified frame
+... doesn't exist").
 
 ### PCs to Project and Plot (`--first`, `--last`)
 
@@ -166,6 +185,10 @@ plot_xvg.py pca_out/projections.xvg
 | `-o, --outdir` | `pca_out` | Output directory |
 | `--selection` | `Backbone` | GROMACS selection of the atoms analysed: the PCA is of their coordinates |
 | `--fit-selection` | `--selection` | GROMACS selection of the atoms used for fitting and centring |
+| `-b, --begin` | first frame | First frame used, in the unit of `--tu` |
+| `-e, --end` | last frame | Last frame used, in the unit of `--tu` |
+| `--dt` | every frame | Only frames spaced by this interval, always in ps |
+| `--tu` | `ps` | Unit of `-b`/`-e`: `fs`, `ps`, `ns` or `us` |
 | `--first` | `1` | First PC projected and plotted |
 | `--last` | `2` | Last PC projected and plotted |
 | `--pbc` | `mol` | PBC treatment: `mol`, `res`, `atom`, `nojump` (whole, then no jumps between frames) or `no` |
@@ -196,7 +219,8 @@ All in `--outdir` (GROMACS runs there, so its own logs stay there too, and it ma
 - `projection_pc<N>.xvg` - The trajectory projected on PC N (time, value), for PCs `--first` to `--last`
 - `projections.xvg` - The same, all PCs as columns (time, PC first, ..., PC last)
 - `rmsf.xvg` - RMSF per atom along each eigenvector `--first` to `--last` (one data set per PC)
-- `covar.log` - Log of `gmx covar`; `logs/` - output of every GROMACS step
+- `covar.log` - Log of `gmx covar`; `logs/` - output of every GROMACS step (and, when one
+  fails, its full output as `failed_gmx_<tool>.log`; the error message itself is printed)
 - `gmx_pca_commands.sh` - The GROMACS commands run (see Features)
 
 ### Generated Plots
@@ -228,8 +252,8 @@ fit: the same simulation gives other numbers for `Backbone` than for `name CA`.
 
 The index, fitted trajectory and reference structure of an earlier run are reused only if
 they were made from the same structure and trajectory files (same path, size and modification
-time) with the same `--selection`, `--fit-selection`, `--pbc`, `--fit` and centring, as recorded
-in `preprocessing.json`. Otherwise they are made again, with a note saying what changed (e.g.
+time) with the same `--selection`, `--fit-selection`, `--pbc`, `--fit`, centring and frames
+(`-b`/`-e`/`--dt`), as recorded in `preprocessing.json`. Otherwise they are made again, with a note saying what changed (e.g.
 "changed since: selection"). `--overwrite` makes them again in any case. The covariance
 analysis, projections and plots are always made again.
 
