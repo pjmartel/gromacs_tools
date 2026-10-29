@@ -442,6 +442,9 @@ Outputs:
 - `plot_pc<N>_<name>_parts` - The three over time, a panel per trajectory
 - `plot_pc<A>_pc<B>_without_<name>` - The scatter of the first two PCs with all atoms (grey)
   and without the region (colour), a panel per trajectory
+- `plot_pc<A>_pc<B>_without_<name>_all` - All trajectories together, side by side with the same
+  axes: with all atoms (as `plot_pc<A>_pc<B>_scatter`) and without the region, each trajectory (or
+  group, `--color-by group`) in the same colour in both
 - `gmx_pca_plot_commands.sh` - Also the time series (`plot_xvg.py` makes no panels nor this
   scatter)
 

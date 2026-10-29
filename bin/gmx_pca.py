@@ -1578,10 +1578,11 @@ def region_report(out_dir: Path, name: str, region: str, n_region: int, n_analys
 
 
 def plot_region(out_dir: Path, name: str, sets: List[Tuple[str, np.ndarray, Dict[int, np.ndarray]]],
-                colours: List[str]) -> None:
+                colours: List[str], legends: Optional[List[str]] = None) -> None:
     """Per trajectory (one panel each): the projections over time with all atoms, the region's
     part and the rest's part; and the scatter of the first two PCs with all atoms and without
-    the region."""
+    the region. Then that scatter for all trajectories together, in two panels (colours and
+    legends: one per trajectory, from --color-by)."""
     pcs = sorted(sets[0][2])
     n = len(sets)
     for pc in pcs:
@@ -1619,6 +1620,27 @@ def plot_region(out_dir: Path, name: str, sets: List[Tuple[str, np.ndarray, Dict
         fig.supylabel(f"PC{b} (nm)")
         fig.suptitle(f"PC{a} vs PC{b}, with all atoms and without {name}", fontsize=10)
         save(out_dir / f"plot_pc{a}_pc{b}_without_{name}")
+
+        # all trajectories together: with all atoms (left) and without the region (right), same
+        # axes, each trajectory in its colour of plot_pc<A>_pc<B>_scatter
+        fig, axes = plt.subplots(1, 2, figsize=(11, 5.2), sharex=True, sharey=True)
+        shown = set()
+        for i, (_, _, parts) in enumerate(sets):
+            legend = legends[i] if legends and legends[i] not in shown else None
+            shown.add(legend)
+            for ax, col in zip(axes, (0, 2)):
+                ax.plot(parts[a][:, col], parts[b][:, col], "o", ms=2, color=colours[i], alpha=0.6,
+                        label=legend if ax is axes[1] else None)
+        for ax, title in zip(axes, ("All atoms", f"Without {name}")):
+            ax.set_title(title, fontsize=10)
+            ax.set_xlabel(f"PC{a} (nm)")
+            ax.grid(True, alpha=0.3)
+        axes[0].set_ylabel(f"PC{b} (nm)")
+        if legends:
+            axes[1].legend(fontsize=8, markerscale=3)
+        fig.suptitle(f"PC{a} vs PC{b}" + (", all trajectories" if n > 1 else "") + f": with and without {name}",
+                     fontsize=10)
+        save(out_dir / f"plot_pc{a}_pc{b}_without_{name}_all")
 
 
 def region_plot_commands(name: str, files: Dict[str, Dict[int, Path]]) -> List[str]:
@@ -1741,7 +1763,9 @@ def main_multi(args: argparse.Namespace, outdir: Path, fit_selection: str, frame
         plot_multi_projections(trajs, projections, by_group, basis_desc, outdir)
         if region_sets:
             colour = {t.label: f"C{i}" for i, (_, members) in enumerate(colour_sets(trajs, by_group)) for t in members}
-            plot_region(outdir, args.region_name, region_sets, [colour[s[0]] for s in region_sets])
+            group_of = {t.label: t.group for t in trajs}
+            plot_region(outdir, args.region_name, region_sets, [colour[s[0]] for s in region_sets],
+                        [group_of[s[0]] if by_group else s[0] for s in region_sets])
     plot_script = write_multi_plot_script(outdir, trajs, projections, group_files, by_group, basis_desc,
                                           len(eigenvalues),
                                           extra=region_plot_commands(args.region_name, region_files) if region_files else None)
