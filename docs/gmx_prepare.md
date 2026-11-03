@@ -293,7 +293,7 @@ gmx mdrun -deffnm npt
 
 # 5. Production run
 bash bin/gmx_continue_grompp.sh md 0 0 500 100 \
-     mdp_templates/amber14sb/production/md_npt.mdp npt
+     --template mdp_templates/amber14sb/production/md_npt.mdp --initial npt
 ```
 
 ## Validation & Error Handling

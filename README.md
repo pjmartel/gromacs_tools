@@ -91,10 +91,10 @@ python bin/plot_xvg.py multicolumn.xvg --columns 1 3 --legends "RMSD" "RMSF"
 ### MD Continuation
 ```bash
 # Run 500 ns in 100 ns segments
-bash bin/gmx_continue_grompp.sh md 0 0 500 100 production.mdp npt
+bash bin/gmx_continue_grompp.sh md 0 0 500 100 --template production.mdp --initial npt
 
 # With custom title
-bash bin/gmx_continue_grompp.sh md 0 0 500 100 production.mdp npt 0.002 "TRP_cage"
+bash bin/gmx_continue_grompp.sh md 0 0 500 100 --template production.mdp --initial npt --title "TRP_cage"
 
 # Automatic crash recovery: just re-run the same command
 ```
@@ -124,7 +124,7 @@ bash bin/gmx_extract.sh -s md.tpr -f md.xtc -g Protein_Ion --fit-group C-alpha \
 ## 📋 Requirements
 
 - **Python**: 3.7+
-- **GROMACS**: 2021+ (tested with 2021-2025)
+- **GROMACS**: 2021+ (tested with 2021-2026)
 - **Python packages**: numpy, matplotlib (see `requirements.txt`; installed automatically
   when the tools are run directly with [uv](https://docs.astral.sh/uv/) available)
 

@@ -35,7 +35,7 @@ gmx mdrun -deffnm npt
 
 # Step 5: Production MD (500 ns in 100 ns segments)
 bash bin/gmx_continue_grompp.sh md 0 0 500 100 \
-     mdp_templates/amber14sb/production/md_npt.mdp npt 0.002 "MyProtein"
+     --template mdp_templates/amber14sb/production/md_npt.mdp --initial npt --title "MyProtein"
 ```
 
 ### 2. Post-Simulation Analysis
@@ -140,7 +140,7 @@ for sys in "${SYSTEMS[@]}"; do
     
     # Production
     bash ../bin/gmx_continue_grompp.sh md 0 0 200 50 \
-         ../mdp_templates/amber14sb/production/md_npt.mdp npt 0.002 "$sys"
+         --template ../mdp_templates/amber14sb/production/md_npt.mdp --initial npt --title "$sys"
     
     cd ..
 done
@@ -178,7 +178,7 @@ BASENAME="md"
 for rep in $(seq 0 $(($N_REPLICAS - 1))); do
     (
         bash bin/gmx_continue_grompp.sh $BASENAME $rep 0 200 50 \
-             mdp_templates/amber14sb/production/md_npt.mdp npt 0.002 "rep${rep}"
+             --template mdp_templates/amber14sb/production/md_npt.mdp --initial npt --title "rep${rep}"
     ) &
 done
 
@@ -390,10 +390,10 @@ python bin/plot_xvg.py data.xvg --columns 1 3 --legends "Col1" "Col3"
 ### MD Continuation
 ```bash
 # Basic usage
-bash bin/gmx_continue_grompp.sh md 0 0 500 100 production.mdp npt
+bash bin/gmx_continue_grompp.sh md 0 0 500 100 --template production.mdp --initial npt
 
 # With custom title
-bash bin/gmx_continue_grompp.sh md 0 0 500 100 production.mdp npt 0.002 "MySystem"
+bash bin/gmx_continue_grompp.sh md 0 0 500 100 --template production.mdp --initial npt --title "MySystem"
 ```
 
 ### PCA

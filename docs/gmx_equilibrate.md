@@ -524,7 +524,7 @@ python bin/gmx_equilibrate.py protein_ions.gro protein.top --temp 310
 
 # 3. Production MD
 bash bin/gmx_continue_grompp.sh md 0 0 500 100 \
-     mdp_templates/charmm36/production/md_npt.mdp equil_npt2
+     --template mdp_templates/charmm36/production/md_npt.mdp --initial equil_npt2
 
 # 4. Analysis
 python bin/gmx_pca.py -s md_0.tpr -f md_0.xtc

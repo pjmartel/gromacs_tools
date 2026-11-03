@@ -28,13 +28,13 @@ Automates the continuation of molecular dynamics simulations by:
 ## Quick Start
 
 ```bash
-# Run 500 ns in 100 ns segments
+# Run 500 ns in 100 ns segments, starting from npt.gro/cpt/edr
 bash bin/gmx_continue_grompp.sh md 0 0 500 100 \
-    mdp_templates/amber14sb/production/md_npt.mdp npt
+    --template mdp_templates/amber14sb/production/md_npt.mdp --initial npt
 
 # After crash: just re-run the exact same command
 bash bin/gmx_continue_grompp.sh md 0 0 500 100 \
-    mdp_templates/amber14sb/production/md_npt.mdp npt
+    --template mdp_templates/amber14sb/production/md_npt.mdp --initial npt
 ```
 
 ## Usage
@@ -42,23 +42,47 @@ bash bin/gmx_continue_grompp.sh md 0 0 500 100 \
 ### Basic Syntax
 
 ```bash
-gmx_continue_grompp.sh <basename> <replica> <start> <end> <dt> \
-    [template_mdp] [initial_basename] [timestep] [title_suffix]
+gmx_continue_grompp.sh <basename> <replica> <start> <end> <dt> [OPTIONS]
 ```
 
-### Parameters
+The five positional arguments come first; everything else is an option starting with `--`
+(any other extra argument is an error).
 
-| Parameter | Required | Default | Description |
-|-----------|----------|---------|-------------|
-| `basename` | Yes | - | Base name for output files (e.g., "md") |
-| `replica` | Yes | - | Replica number (e.g., 0, 1, 2) |
-| `start` | Yes | - | Start time in ns (usually 0) |
-| `end` | Yes | - | End time in ns (e.g., 500) |
-| `dt` | Yes | - | Segment length in ns (e.g., 100) |
-| `template_mdp` | No | md.mdp | MDP template file |
-| `initial_basename` | No | npt | Initial equilibration files prefix |
-| `timestep` | No | 0.002 | Integration timestep in ps (2 fs) |
-| `title_suffix` | No | - | Custom title suffix for MDP |
+### Positional Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `basename` | Base name for output files (e.g., "md") |
+| `replica` | Replica number (e.g., 0, 1, 2) |
+| `start` | Start time in ns (0 for a new run, >0 to extend) |
+| `end` | End time in ns (e.g., 500) |
+| `dt` | Segment length in ns (e.g., 100) |
+
+### Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--template FILE` | `md.mdp` | Production MDP template (see [Which MDP is used](#which-mdp-is-used)) |
+| `--initial NAME` | `npt` | Starting files of the first segment: `NAME.gro`, `NAME.edr`, `NAME.cpt` (optional) |
+| `--timestep PS` | 0.002 | Integration timestep in ps, used to compute `nsteps` |
+| `--title TEXT` | - | Replaces the MDP's `title` |
+| `--topology FILE` | `topol.top` | Topology file |
+| `--posres-ref FILE` | - | Reference structure for position restraints (`grompp -r FILE`); needed when the topology/MDP define position restraints (e.g. `-DPOSRES`) |
+| `--plumed FILE` | - | PLUMED input file, passed to `mdrun -plumed` |
+| `--ps` | off | Times are in ps instead of ns |
+| `--ignore-initial-edr` | off | Don't pass `NAME.edr` to grompp (e.g. when the barostat changes, Berendsen → Parrinello-Rahman) |
+| `--commands-file FILE` | `gmx_continue_grompp_commands.sh` | Reproducibility script of every gmx command run |
+
+### Which MDP is used
+
+- **First segment** (`start` = 0): `--template` if given; otherwise a copy of `NAME.mdp` (the
+  equilibration's own MDP, `--initial NAME`) if it exists; otherwise `md.mdp`. **Give
+  `--template` when starting from equilibration**, or the run will use the equilibration's
+  settings (position restraints, barostat, ...).
+- **Later segments**: a copy of the previous segment's MDP (so extending needs no template), or
+  `--template` if given.
+
+In every case `tinit` and `nsteps` are set for the segment, and `--title` replaces the title.
 
 ### File Naming Convention
 
@@ -70,12 +94,14 @@ Example with `basename=md`, `replica=0`, 100 ns segments:
 - `md_0_200_300.gro/cpt/edr` (200-300 ns)
 - etc.
 
+The output of grompp and mdrun for all segments is appended to `{basename}_{replica}.log`.
+
 ## Examples
 
 ### Basic Usage
 
 ```bash
-# 500 ns in 100 ns segments, using defaults
+# 500 ns in 100 ns segments: md.mdp (or npt.mdp, if present) and npt.gro/cpt/edr
 bash bin/gmx_continue_grompp.sh md 0 0 500 100
 ```
 
@@ -84,52 +110,66 @@ bash bin/gmx_continue_grompp.sh md 0 0 500 100
 ```bash
 # AMBER14SB production template
 bash bin/gmx_continue_grompp.sh md 0 0 500 100 \
-    mdp_templates/amber14sb/production/md_npt.mdp
+    --template mdp_templates/amber14sb/production/md_npt.mdp
 
 # CHARMM36 production template
 bash bin/gmx_continue_grompp.sh md 0 0 500 100 \
-    mdp_templates/charmm36/production/md_npt.mdp
+    --template mdp_templates/charmm36/production/md_npt.mdp
 ```
 
 ### Custom Initial Files
 
 ```bash
-# Use nvt.gro/cpt/edr instead of npt.gro/cpt/edr
+# Start from nvt.gro/cpt/edr instead of npt.gro/cpt/edr
 bash bin/gmx_continue_grompp.sh md 0 0 500 100 \
-    mdp_templates/amber14sb/production/md_npt.mdp nvt
+    --template mdp_templates/amber14sb/production/md_npt.mdp --initial nvt
 ```
 
 ### Custom Timestep
 
 ```bash
-# Use 1 fs timestep (0.001 ps) - rare but possible
+# 4 fs timestep (0.004 ps), e.g. with hydrogen mass repartitioning
 bash bin/gmx_continue_grompp.sh md 0 0 500 100 \
-    mdp_templates/amber14sb/production/md_npt.mdp npt 0.001
+    --template mdp_templates/amber14sb/production/md_npt.mdp --timestep 0.004
+```
+
+The timestep only sets `nsteps`; the MDP's `dt` must match it.
+
+### Topology, Position Restraints and PLUMED
+
+```bash
+bash bin/gmx_continue_grompp.sh md 0 0 500 100 \
+    --template prod.mdp --topology system.top \
+    --posres-ref npt.gro --plumed plumed.dat
 ```
 
 ### With Custom Title
 
 ```bash
-# Add system-specific title
+# The MDP's title becomes "TRP_cage_WT"
 bash bin/gmx_continue_grompp.sh md 0 0 500 100 \
-    mdp_templates/amber14sb/production/md_npt.mdp npt 0.002 "TRP_cage_WT"
-
-# Title in MDP becomes: "amber14sb,production_npt,TRP_cage_WT"
+    --template mdp_templates/amber14sb/production/md_npt.mdp --title "TRP_cage_WT"
 ```
 
 ### Multiple Replicas
 
 ```bash
-# Replica 0
-bash bin/gmx_continue_grompp.sh md 0 0 500 100 prod.mdp npt 0.002 "replica_0" &
-
-# Replica 1
-bash bin/gmx_continue_grompp.sh md 1 0 500 100 prod.mdp npt 0.002 "replica_1" &
-
-# Replica 2
-bash bin/gmx_continue_grompp.sh md 2 0 500 100 prod.mdp npt 0.002 "replica_2" &
-
+for rep in 0 1 2; do
+    bash bin/gmx_continue_grompp.sh md $rep 0 500 100 \
+        --template prod.mdp --initial npt --title "replica_$rep" &
+done
 wait
+```
+
+Each replica writes its own files (`md_0_*`, `md_1_*`, ...) and log, but they share the command
+file; use `--commands-file md_${rep}_commands.sh` to keep one per replica. Running several in
+the same folder also shares the `STOP` file.
+
+### Extending from a Later Time
+
+```bash
+# Extend from 10000 to 20000 ns: copies md_0_9500_10000.mdp
+bash bin/gmx_continue_grompp.sh md 0 10000 20000 500
 ```
 
 ## Crash Recovery
@@ -145,13 +185,13 @@ The script automatically detects:
 
 ```bash
 # Initial run (crashes at segment 2)
-bash bin/gmx_continue_grompp.sh md 0 0 500 100 prod.mdp npt
+bash bin/gmx_continue_grompp.sh md 0 0 500 100 --template prod.mdp --initial npt
 
 # Segments completed: 0-100, 100-200
 # Segment crashed: 200-300
 
 # Recovery: Just re-run the EXACT SAME COMMAND
-bash bin/gmx_continue_grompp.sh md 0 0 500 100 prod.mdp npt
+bash bin/gmx_continue_grompp.sh md 0 0 500 100 --template prod.mdp --initial npt
 ```
 
 **What happens:**
@@ -169,7 +209,7 @@ bash bin/gmx_continue_grompp.sh md 0 0 500 100 prod.mdp npt
 If a checkpoint file is missing (rare), the script:
 - Warns you
 - Continues using only `.gro` and `.edr` files
-- Regenerates velocities from temperature
+- Takes the velocities from the `.gro` file (if it has them), or generates them if the MDP has `gen_vel = yes`
 
 ## Extending Simulations
 
@@ -177,10 +217,10 @@ To extend an existing simulation:
 
 ```bash
 # Original: 0-500 ns
-bash bin/gmx_continue_grompp.sh md 0 0 500 100 prod.mdp npt
+bash bin/gmx_continue_grompp.sh md 0 0 500 100 --template prod.mdp --initial npt
 
 # Later: Extend to 1000 ns (same command, just change end time)
-bash bin/gmx_continue_grompp.sh md 0 0 1000 100 prod.mdp npt
+bash bin/gmx_continue_grompp.sh md 0 0 1000 100 --template prod.mdp --initial npt
 ```
 
 The script automatically:
@@ -192,10 +232,10 @@ The script automatically:
 ### Before First Segment
 
 - `topol.top` - System topology
-- `npt.gro` - Equilibrated structure (or custom initial_basename)
+- `npt.gro` - Equilibrated structure (or `NAME.gro` with `--initial NAME`)
 - `npt.edr` - Energy file from equilibration
 - `npt.cpt` - Checkpoint (optional but recommended)
-- `template_mdp` - Production MDP template
+- Production MDP template (`--template`)
 
 ### During Continuation
 
@@ -248,7 +288,7 @@ gmx mdrun -deffnm npt
 
 # 5. Production (500 ns in 100 ns segments)
 bash bin/gmx_continue_grompp.sh md 0 0 500 100 \
-     mdp_templates/amber14sb/production/md_npt.mdp npt
+     --template mdp_templates/amber14sb/production/md_npt.mdp --initial npt
 ```
 
 ### Concatenating Trajectories
@@ -297,7 +337,7 @@ gmx eneconv -f md_0_*_*.edr -o md_complete.edr
 - Use absolute or relative path from working directory
 
 ### "Error: Missing initial files"
-- Ensure `npt.gro` and `npt.edr` exist (or custom initial_basename)
+- Ensure `npt.gro` and `npt.edr` exist (or `NAME.gro`/`NAME.edr` with `--initial NAME`)
 - Check that NPT equilibration completed successfully
 
 ### "Error: Missing output files from previous segment"
