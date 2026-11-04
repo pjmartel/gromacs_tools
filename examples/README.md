@@ -88,9 +88,7 @@ python bin/gmx_pca.py -s $TPR -f $TRAJ \
 
 # 2. Generate movies for top 3 PCs
 for pc in 1 2 3; do
-    python bin/gmx_pca_movie.py \
-        -s pca_backbone/fit.gro -f pca_backbone/fit.xtc \
-        -v pca_backbone/eigenvectors.trr \
+    python bin/gmx_pca_movie.py --pca pca_backbone \
         -o pca_backbone/pc${pc}_movie.pdb \
         --pc $pc --nframes 100
 done
@@ -402,7 +400,7 @@ bash bin/gmx_continue_grompp.sh md 0 0 500 100 --template production.mdp --initi
 python bin/gmx_pca.py -s topol.tpr -f traj.xtc --selection "Backbone"
 
 # Generate PC movie
-python bin/gmx_pca_movie.py -s pca_out/fit.gro -f pca_out/fit.xtc -v pca_out/eigenvectors.trr -o pc1.pdb --pc 1
+python bin/gmx_pca_movie.py --pca pca_out -o pc1.pdb --pc 1
 ```
 
 ## Tips

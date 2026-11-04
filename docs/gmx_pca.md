@@ -297,8 +297,9 @@ As for one trajectory, except:
 - `projection_stats.txt` - Mean and standard deviation on each PC, per trajectory and per group:
   where each replica sits in the PC space, and how much of it it explores
 - `trajectories/<label>/` - Each trajectory's index groups, PBC-treated and fitted trajectories,
-  first frame and logs. For `gmx_pca_movie.py`, use `fit.gro` and `eigenvectors.trr` of the
-  output folder with any trajectory's `trajectories/<label>/fit.xtc`
+  first frame and logs
+- `fitted_trajectories.txt` - Each trajectory's label and fitted trajectory:
+  `gmx_pca_movie.py --pca <folder>` makes its movies over the range of all of them
 - `plot_pc<N>_timeseries` - One panel per trajectory, on the same scale
 - `plot_pc<A>_pc<B>_scatter` - Every frame of every trajectory, one colour per trajectory
   (`--color-by trajectory`, default) or per group (`--color-by group`)
@@ -591,7 +592,7 @@ gmx_pca.py -s topol.tpr -f traj.xtc --last 3
 # Outputs in pca_out/:
 #    - variance.xvg and the table in the terminal: how much each PC explains
 #    - projection_pc1/2/3.xvg, projections.xvg: the projections
-#    - fit.gro, eigenvectors.trr: for movies (gmx_pca_movie.py)
+#    - fit.gro, eigenvectors.trr: for movies (gmx_pca_movie.py --pca pca_out)
 #    - plot_*.png: automatic visualizations
 ```
 
@@ -711,8 +712,7 @@ Default group names (`Backbone`, `C-alpha`, `SideChain-H`, ...) are safest writt
 ### PC Movies
 ```bash
 # Generate movie along PC1
-gmx_pca_movie.py -s pca_out/fit.gro -f pca_out/fit.xtc \
-    -v pca_out/eigenvectors.trr -o pc1_movie.pdb --pc 1 --nframes 100
+gmx_pca_movie.py --pca pca_out -o pc1_movie.pdb --pc 1 --nframes 100
 ```
 
 ## References

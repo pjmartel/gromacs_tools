@@ -11,11 +11,10 @@ Requires the outputs from gmx_pca.py (or manual PCA workflow):
 - eigenvectors.trr (from gmx covar)
 
 Usage:
-    python gmx_pca_movie.py -s fit.gro -v eigenvectors.trr -o pc1_movie.pdb \\
-        --pc 1 --nframes 50 --extreme 2.0
+    python gmx_pca_movie.py --pca pca_out -o pc1_movie.pdb --pc 1 --nframes 50
 
-This will create a trajectory showing motion along PC1, interpolating 50 frames
-between -2.0 and +2.0 nm along the eigenvector.
+This will create a trajectory showing motion along PC1, 50 frames from the lowest to the
+highest projection of the PCA's trajectories (--extreme 2.0: from -2.0 to +2.0 nm).
 """
 
 from __future__ import annotations
@@ -135,7 +134,7 @@ def which_gmx(user_bin: Optional[str]) -> str:
     )
 
 
-def generate_pc_movie(
+def run_anaeig_extr(
     gmx: str,
     s: Path,
     v: Path,
@@ -143,55 +142,40 @@ def generate_pc_movie(
     out: Path,
     pc_num: int,
     nframes: int,
-    extreme: float,
-    log_dir: Path,
+    extreme: Optional[float],
+    log: Path,
     index: Optional[Path] = None,
+    comment: str = "",
 ) -> None:
-    """Generate a trajectory showing motion along a principal component.
-    
+    """Structures along a principal component (gmx anaeig -extr): *nframes* frames from the
+    average structure - X to + X times the eigenvector, with X from -*extreme* to +*extreme* nm,
+    or (*extreme* None) from the lowest to the highest projection of the frames of *f*.
+
     Args:
         gmx: GROMACS binary path
         s: Structure file (GRO/PDB) matching the PCA atoms
         v: Eigenvectors file (TRR from gmx covar)
-        f: Input trajectory (the fitted trajectory from PCA analysis)
+        f: Fitted trajectory: its projections give the extremes (GROMACS needs it also with -max)
         out: Output trajectory file (PDB/XTC/TRR)
         pc_num: Principal component number (1-indexed)
-        nframes: Number of frames to interpolate
-        extreme: Extent along the eigenvector (in nm)
-        log_dir: Directory for log files
+        nframes: Number of frames
+        extreme: Extent along the eigenvector (nm), or None for the trajectory's extremes
+        log: Log file of anaeig
     """
-    log_dir.mkdir(parents=True, exist_ok=True)
-    
-    # GROMACS 2023 requires -f even for -extr
-    cmd = [
-        gmx,
-        "anaeig",
-        "-s",
-        str(s),
-        "-f",
-        str(f),
-        "-v",
-        str(v),
-        "-first",
-        str(pc_num),
-        "-last",
-        str(pc_num),
-        "-nframes",
-        str(nframes),
-        "-extr",
-        str(out),
-    ]
+    cmd = [gmx, "anaeig", "-s", str(s), "-f", str(f), "-v", str(v),
+           "-first", str(pc_num), "-last", str(pc_num), "-nframes", str(nframes), "-extr", str(out)]
+    if extreme is not None:
+        cmd += ["-max", str(extreme)]
 
     # anaeig asks for TWO groups: the group used for the least squares fit in covar, and the
     # group of the eigenvectors (both System without an index; fit and analysis from gmx_pca's
     # pca_groups.ndx, which differ with gmx_pca.py --fit-selection)
     cmd, stdin = with_groups(cmd, index)
-    
-    print(f"Generating {nframes}-frame trajectory along PC{pc_num}...")
-    print(f"  Extent along eigenvector: determined automatically by GROMACS")
-    proc = run_cmd(cmd, stdin=stdin, comment=f"Generate movie trajectory for PC{pc_num}")
-    (log_dir / f"anaeig_pc{pc_num}_movie.log").write_bytes(proc.stdout)
-    print(f"Movie trajectory saved to: {out}")
+    log.parent.mkdir(parents=True, exist_ok=True)
+    proc = run_cmd(cmd, stdin=stdin, comment=comment)
+    log.write_bytes(proc.stdout)
+    if not out.exists():
+        raise FileNotFoundError(f"gmx anaeig did not write {out} (see {log})")
 
 
 def with_groups(cmd: List[str], index: Optional[Path]) -> Tuple[List[str], str]:
@@ -201,174 +185,124 @@ def with_groups(cmd: List[str], index: Optional[Path]) -> Tuple[List[str], str]:
     return cmd + ["-n", str(index)], "0\n1\n"      # pca_groups.ndx: 0 = fit, 1 = analysis
 
 
-def fix_connectivity(gmx: str, s: Path, traj: Path, out: Path, log_dir: Path,
-                     index: Optional[Path] = None) -> None:
-    """Fix bond connectivity in PDB output using gmx trjconv -conect.
-    
-    This helps visualization tools correctly display bonds.
-    """
-    log_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Only works for PDB output
-    if not str(out).endswith('.pdb'):
-        print("  Note: --fix-connectivity only works with PDB output")
-        return
-    
-    temp = out.parent / f"{out.stem}_temp.pdb"
-    traj.rename(temp)
-
-    if index is not None:
-        # the frames hold only the analysed atoms: a structure with just those
-        analysed = out.parent / f"{out.stem}_analysed.gro"
-        cmd0 = [gmx, "trjconv", "-s", str(s), "-f", str(s), "-n", str(index), "-o", str(analysed)]
-        run_cmd(cmd0, stdin="1\n", comment="Structure of the analysed atoms only")
-        s = analysed
-
-    cmd = [
-        gmx,
-        "trjconv",
-        "-s",
-        str(s),
-        "-f",
-        str(temp),
-        "-o",
-        str(out),
-        "-conect",
-    ]
-    
-    print("  Fixing bond connectivity...")
-    proc = run_cmd(cmd, stdin="0\n", comment="Fix bond connectivity for visualization")
-    (log_dir / "fix_connectivity.log").write_bytes(proc.stdout)
-    temp.unlink()
-    if index is not None:
-        s.unlink()
-    print(f"  Connectivity fixed in: {out}")
+# Written by gmx_pca.py for a PCA of several trajectories: "label  fitted trajectory" per line
+FITTED_LIST = "fitted_trajectories.txt"
 
 
-def generate_extreme_structures(
-    gmx: str,
-    s: Path,
-    v: Path,
-    f: Path,
-    out_prefix: Path,
-    pc_num: int,
-    extreme: float,
-    log_dir: Path,
-    index: Optional[Path] = None,
-) -> tuple[Path, Path]:
-    """Generate the two extreme structures along a PC.
-    
-    Returns:
-        Tuple of (min_structure, max_structure) paths
-    """
-    log_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Generate extreme structures (min and max)
-    extremes_file = out_prefix.parent / f"extremes_pc{pc_num}.pdb"
-    
-    cmd = [
-        gmx,
-        "anaeig",
-        "-s",
-        str(s),
-        "-f",
-        str(f),
-        "-v",
-        str(v),
-        "-first",
-        str(pc_num),
-        "-last",
-        str(pc_num),
-        "-extr",
-        str(extremes_file),
-        "-nframes",
-        "2",  # Just the two extremes
-    ]
-
-    # anaeig asks for TWO groups even for -extr (see generate_pc_movie)
-    cmd, stdin = with_groups(cmd, index)
-    
-    print(f"Generating extreme structures for PC{pc_num}...")
-    proc = run_cmd(cmd, stdin=stdin, comment=f"Generate extreme structures for PC{pc_num}")
-    (log_dir / f"anaeig_pc{pc_num}_extremes.log").write_bytes(proc.stdout)
-    
-    if extremes_file.exists():
-        print(f"Extreme structures saved to: {extremes_file}")
-        print(f"  Frame 1: minimum (most negative) along PC{pc_num}")
-        print(f"  Frame 2: maximum (most positive) along PC{pc_num}")
-        return extremes_file, extremes_file
-    else:
-        raise FileNotFoundError(f"Expected output {extremes_file} not found")
+def pca_trajectories(pca_dir: Path) -> List[Path]:
+    """The fitted trajectories of a gmx_pca.py output folder: those listed in
+    fitted_trajectories.txt (several trajectories), or fit.xtc (one)."""
+    listing = pca_dir / FITTED_LIST
+    if listing.exists():
+        paths = []
+        for n, line in enumerate(listing.read_text().splitlines(), 1):
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            fields = line.split()
+            if len(fields) != 2:
+                raise ValueError(f"{listing}, line {n}: expected 'label  trajectory', got: {line.strip()}")
+            path = pca_dir / fields[1]
+            if not path.exists():
+                raise FileNotFoundError(f"{listing}, line {n}: {path} not found (run gmx_pca.py again)")
+            paths.append(path)
+        if not paths:
+            raise ValueError(f"{listing} lists no trajectories")
+        return paths
+    if (pca_dir / "fit.xtc").exists():
+        return [pca_dir / "fit.xtc"]
+    raise FileNotFoundError(f"{pca_dir} has neither fit.xtc nor {FITTED_LIST}: not the output folder of "
+                            f"gmx_pca.py, or one from before {FITTED_LIST} (run gmx_pca.py again, or give -f)")
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(
         description="Generate movies/trajectories showing motion along principal components.",
-        epilog="Tip: Use outputs from gmx_pca.py as inputs (fit.gro and eigenvectors.trr)",
+        epilog="Tip: --pca <gmx_pca.py output folder> takes all its inputs from there",
     )
-    
+
     # Input files
-    p.add_argument("-s", "--structure", required=True, help="Structure file matching PCA atoms (GRO/PDB, e.g., fit.gro from gmx_pca.py)")
-    p.add_argument("-f", "--trajectory", required=True, help="Fitted trajectory file (XTC/TRR, e.g., fit.xtc from gmx_pca.py)")
-    p.add_argument("-v", "--eigenvec", required=True, help="Eigenvectors file (TRR from gmx covar, e.g., eigenvectors.trr)")
+    p.add_argument("--pca", metavar="DIR", default=None,
+                   help="Output folder of gmx_pca.py: -s, -f, -v and -n default to its fit.gro, fitted "
+                        "trajectories (fit.xtc, or all the trajectories of a PCA of several), "
+                        "eigenvectors.trr and pca_groups.ndx")
+    p.add_argument("-s", "--structure", default=None,
+                   help="Structure file matching PCA atoms (GRO/PDB, e.g., fit.gro from gmx_pca.py)")
+    p.add_argument("-f", "--trajectory", nargs="+", default=None,
+                   help="Fitted trajectory file(s) (XTC/TRR, e.g., fit.xtc from gmx_pca.py); the movie spans "
+                        "their lowest to highest projection (several are joined, all their frames)")
+    p.add_argument("-v", "--eigenvec", default=None,
+                   help="Eigenvectors file (TRR from gmx covar, e.g., eigenvectors.trr)")
     p.add_argument("-n", "--index", default=None,
                    help="Index with the fit and analysis groups (default: pca_groups.ndx next to the "
                         "structure, as written by gmx_pca.py, if it exists; needed after "
                         "gmx_pca.py --fit-selection)")
-    
+
     # Output options
     p.add_argument("-o", "--output", required=True, help="Output trajectory file (PDB/XTC/TRR)")
     p.add_argument("--outdir", default=".", help="Output directory for logs (default: current dir)")
-    
+
     # PC selection
     p.add_argument("--pc", type=int, default=1, help="Principal component number to visualize (default: 1)")
-    
+
     # Movie parameters
     p.add_argument("--nframes", type=int, default=50, help="Number of frames to interpolate (default: 50)")
-    p.add_argument("--extreme", type=float, default=2.0, help="[Informational only] Typical extent along eigenvector in nm (default: 2.0). GROMACS determines actual extent automatically.")
-    
+    p.add_argument("--extreme", type=float, default=None, metavar="NM",
+                   help="Go from -NM to +NM nm along the eigenvector (default: from the lowest to the "
+                        "highest projection of the trajectories)")
+
     # Optional: just generate extreme structures instead of full movie
-    p.add_argument("--extremes-only", action="store_true", help="Generate only the two extreme structures (min/max)")
-    
-    # Quality options
-    p.add_argument("--fix-connectivity", action="store_true", help="Fix bond connectivity issues (visualization only, using gmx trjconv -conect)")
-    
+    p.add_argument("--extremes-only", action="store_true",
+                   help="Generate only the two extreme structures (min/max), as -o")
+
     # GROMACS options
     p.add_argument("--gmx-bin", default=None, help="GROMACS binary to use (e.g., gmx or full path)")
     p.add_argument("--commands-file", default="gmx_pca_movie_commands.sh", help="Output file for command logging, relative to --outdir (default: gmx_pca_movie_commands.sh)")
-    
+
     args = p.parse_args(argv)
-    
-    # Resolve paths
-    s = Path(args.structure).expanduser().resolve()
-    f = Path(args.trajectory).expanduser().resolve()
-    v = Path(args.eigenvec).expanduser().resolve()
+
+    if args.pc < 1:
+        p.error("--pc must be 1 or more")
+    if args.nframes < 2:
+        p.error("--nframes must be 2 or more")
+    if args.extreme is not None and args.extreme <= 0:
+        p.error("--extreme must be positive")
+
+    # Resolve paths: explicit options, then the --pca folder
+    pca_dir = Path(args.pca).expanduser().resolve() if args.pca else None
+    if pca_dir is not None and not pca_dir.is_dir():
+        print(f"Error: --pca folder not found: {pca_dir}", file=sys.stderr)
+        return 2
+    try:
+        if args.trajectory:
+            trajs = [Path(t).expanduser().resolve() for t in args.trajectory]
+        elif pca_dir is not None:
+            trajs = pca_trajectories(pca_dir)
+        else:
+            trajs = []
+    except (ValueError, FileNotFoundError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    s = Path(args.structure).expanduser().resolve() if args.structure else (pca_dir / "fit.gro" if pca_dir else None)
+    v = Path(args.eigenvec).expanduser().resolve() if args.eigenvec else (pca_dir / "eigenvectors.trr" if pca_dir else None)
+    missing = [opt for opt, val in (("-s", s), ("-f", trajs), ("-v", v)) if not val]
+    if missing:
+        p.error(f"{', '.join(missing)} needed (or --pca with the output folder of gmx_pca.py)")
     out = Path(args.output).expanduser().resolve()
     outdir = Path(args.outdir).expanduser().resolve()
     log_dir = outdir / "logs"
-    
-    # Initialize command logging script
-    command_script = outdir / args.commands_file
-    command_script.parent.mkdir(parents=True, exist_ok=True)  # --outdir may not exist yet
-    set_command_script_path(command_script)
-    
+
     # Validation
-    if not s.exists():
-        print(f"Error: structure file not found: {s}", file=sys.stderr)
-        return 2
-    if not f.exists():
-        print(f"Error: trajectory file not found: {f}", file=sys.stderr)
-        return 2
-    if not v.exists():
-        print(f"Error: eigenvector file not found: {v}", file=sys.stderr)
-        return 2
-    
+    for what, path in [("structure", s), *(("trajectory", t) for t in trajs), ("eigenvector", v)]:
+        if not path.exists():
+            print(f"Error: {what} file not found: {path}", file=sys.stderr)
+            return 2
+
     try:
         gmx = which_gmx(args.gmx_bin)
     except FileNotFoundError as e:
         print(str(e), file=sys.stderr)
         return 2
-    
+
     index = Path(args.index).expanduser().resolve() if args.index else s.parent / "pca_groups.ndx"
     if not index.exists():
         if args.index:
@@ -376,24 +310,53 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 2
         index = None
 
+    # Initialize command logging script
+    command_script = outdir / args.commands_file
+    command_script.parent.mkdir(parents=True, exist_ok=True)  # --outdir may not exist yet
+    set_command_script_path(command_script)
+
     print(f"Using GROMACS: {gmx}")
     print(f"Structure: {s}")
-    print(f"Trajectory: {f}")
+    if len(trajs) == 1:
+        print(f"Trajectory: {trajs[0]}")
+    else:
+        print(f"Trajectories ({len(trajs)}, joined):")
+        for t in trajs:
+            print(f"  {t}")
     print(f"Eigenvectors: {v}")
     if index is not None:
         print(f"Index groups: {index} (fit, analysis)")
     print()
-    
+
+    joined = None
     try:
+        f = trajs[0]
+        if len(trajs) > 1:
+            joined = outdir / f"temp_movie_pc{args.pc}.xtc"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            # -cat: keep every frame, also those with the same time in different trajectories
+            proc = run_cmd([gmx, "trjcat", "-f", *map(str, trajs), "-o", str(joined), "-cat"],
+                           comment="The trajectories one after the other: the extremes over all of them")
+            (log_dir / "trjcat.log").write_bytes(proc.stdout)
+            f = joined
+
+        extent = (f"-{args.extreme} to +{args.extreme} nm" if args.extreme is not None
+                  else "from the lowest to the highest projection of the trajectory")
         if args.extremes_only:
-            generate_extreme_structures(gmx, s, v, f, out, args.pc, args.extreme, log_dir, index=index)
+            print(f"Generating extreme structures for PC{args.pc} ({extent})...")
+            run_anaeig_extr(gmx, s, v, f, out, args.pc, 2, args.extreme,
+                            log_dir / f"anaeig_pc{args.pc}_extremes.log", index,
+                            f"Generate extreme structures for PC{args.pc}")
+            print(f"Extreme structures saved to: {out}")
+            print(f"  Frame 1: minimum (most negative) along PC{args.pc}")
+            print(f"  Frame 2: maximum (most positive) along PC{args.pc}")
         else:
-            generate_pc_movie(gmx, s, v, f, out, args.pc, args.nframes, args.extreme, log_dir, index=index)
-        
-        # Optionally fix connectivity for PDB output
-        if args.fix_connectivity and out.suffix.lower() == '.pdb':
-            fix_connectivity(gmx, s, out, out, log_dir, index=index)
-        
+            print(f"Generating {args.nframes}-frame trajectory along PC{args.pc} ({extent})...")
+            run_anaeig_extr(gmx, s, v, f, out, args.pc, args.nframes, args.extreme,
+                            log_dir / f"anaeig_pc{args.pc}_movie.log", index,
+                            f"Generate movie trajectory for PC{args.pc}")
+            print(f"Movie trajectory saved to: {out}")
+
         print()
         print("Done! Next steps:")
         print(f"  - Open {out} in VMD, PyMOL, or ChimeraX")
@@ -412,12 +375,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("You can re-run the movie generation independently with:")
         print(f"  chmod +x {command_script}")
         print(f"  {command_script}")
-        
+
         return 0
-        
+
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
+    finally:
+        if joined is not None and joined.exists():
+            log_command_to_script(command_script, ["rm", str(joined)], comment="The joined trajectory is not kept")
+            joined.unlink()
 
 
 if __name__ == "__main__":

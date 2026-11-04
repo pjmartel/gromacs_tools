@@ -9,8 +9,10 @@ Creates animated trajectories that visualize the motion captured by specific pri
 ## Features
 
 - ✅ Generate smooth interpolated trajectories along any PC
+- ✅ Takes everything from a `gmx_pca.py` output folder (`--pca`), also of a PCA of several
+  trajectories (replicas, apo vs holo): the movie then spans all of them
 - ✅ Full movies or extreme structures only
-- ✅ Customizable extent and frame count
+- ✅ Extent from the trajectories (default) or chosen (`--extreme`), and frame count
 - ✅ Compatible with all molecular viewers
 - ✅ Multiple output formats (PDB, XTC, TRR)
 - ✅ **Command logging** (on by default): every GROMACS command run, plus the exact invocation
@@ -19,17 +21,15 @@ Creates animated trajectories that visualize the motion captured by specific pri
 ## Requirements
 
 - GROMACS 2021+
-- Outputs from PCA analysis: `fit.gro` and `eigenvectors.trr`
+- Outputs from PCA analysis: the output folder of `gmx_pca.py` (`fit.gro`, `eigenvectors.trr`,
+  `pca_groups.ndx` and the fitted trajectories)
 - Molecular viewer (VMD, PyMOL, ChimeraX, etc.)
 
 ## Quick Start
 
 ```bash
 # Generate 50-frame movie along PC1
-python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -f pca_out/fit.xtc \
-    -v pca_out/eigenvectors.trr \
-    -o pc1_movie.pdb --pc 1 --nframes 50
+python bin/gmx_pca_movie.py --pca pca_out -o pc1_movie.pdb --pc 1 --nframes 50
 ```
 
 ## Usage
@@ -38,96 +38,110 @@ python bin/gmx_pca_movie.py \
 
 ```bash
 # PC1 movie (default: 50 frames)
-python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -f pca_out/fit.xtc \
-    -v pca_out/eigenvectors.trr \
-    -o pc1_movie.pdb --pc 1
+python bin/gmx_pca_movie.py --pca pca_out -o pc1_movie.pdb --pc 1
 
 # PC2 movie with 100 frames
-python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -f pca_out/fit.xtc \
-    -v pca_out/eigenvectors.trr \
-    -o pc2_movie.pdb --pc 2 --nframes 100
+python bin/gmx_pca_movie.py --pca pca_out -o pc2_movie.pdb --pc 2 --nframes 100
 ```
+
+`--pca pca_out` stands for `-s pca_out/fit.gro -f pca_out/fit.xtc -v pca_out/eigenvectors.trr
+-n pca_out/pca_groups.ndx`; any of these given explicitly takes precedence. Without `--pca`,
+`-s`, `-f` and `-v` are needed (and `-n` defaults to `pca_groups.ndx` next to `-s`).
+
+### Several Trajectories (Replicas, Apo vs Holo)
+
+A PCA of several trajectories (`gmx_pca.py -f t1 t2 ...` or `--trajectories`) has no `fit.xtc`:
+each trajectory is fitted in `trajectories/<label>/`, and `fitted_trajectories.txt` lists them.
+`--pca` uses all of them, joined, so the movie spans the whole range the trajectories explore on
+that PC, as in the PCA's plots:
+
+```bash
+python bin/gmx_pca.py --trajectories replicas.txt -o pca_reps
+python bin/gmx_pca_movie.py --pca pca_reps -o pc1_movie.pdb --pc 1
+```
+
+The extremes of only some trajectories: give them with `-f` (several are joined):
+
+```bash
+# PC1 of the common PCA, over the range of the apo replicas only
+python bin/gmx_pca_movie.py --pca pca_reps -o pc1_apo.pdb --pc 1 \
+    -f pca_reps/trajectories/apo1/fit.xtc pca_reps/trajectories/apo2/fit.xtc
+```
+
+A folder made by an older `gmx_pca.py` (before `fitted_trajectories.txt`): run `gmx_pca.py`
+again with the same command (it reuses the preprocessed trajectories, so it is quick), or give
+the trajectories with `-f`.
 
 ### Extreme Structures Only
 
 ```bash
 # Generate only min and max structures (2 frames total)
-python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -f pca_out/fit.xtc \
-    -v pca_out/eigenvectors.trr \
-    -o pc1_extremes.pdb --pc 1 --extremes-only
+python bin/gmx_pca_movie.py --pca pca_out -o pc1_extremes.pdb --pc 1 --extremes-only
 ```
 
 ### Custom Extent
 
-```bash
-# Larger amplitude (3.0 nm along eigenvector)
-python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -f pca_out/fit.xtc \
-    -v pca_out/eigenvectors.trr \
-    -o pc1_large.pdb --pc 1 --extreme 3.0
+By default the movie goes from the lowest to the highest projection of the trajectories on the
+PC. `--extreme X` makes it go from -X to +X nm instead, symmetric around the average structure:
 
-# Smaller amplitude (1.0 nm)
-python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -f pca_out/fit.xtc \
-    -v pca_out/eigenvectors.trr \
-    -o pc1_small.pdb --pc 1 --extreme 1.0
+```bash
+# From -1.5 to +1.5 nm along the eigenvector
+python bin/gmx_pca_movie.py --pca pca_out -o pc1_wide.pdb --pc 1 --extreme 1.5
 ```
+
+The projections are in nm summed over all analysed atoms, so their typical size depends on the
+system and the selection: look at the range of `projection_pc<N>*.xvg` (or, for several
+trajectories, the standard deviations in `projection_stats.txt`) before choosing X. Beyond the
+range the trajectories reach, the motion is extrapolated and exaggerated.
 
 ### Different Output Formats
 
 ```bash
 # XTC format (compressed, smaller files)
-python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -f pca_out/fit.xtc \
-    -v pca_out/eigenvectors.trr \
-    -o pc1_movie.xtc --pc 1
+python bin/gmx_pca_movie.py --pca pca_out -o pc1_movie.xtc --pc 1
 
 # TRR format (full precision)
-python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -f pca_out/fit.xtc \
-    -v pca_out/eigenvectors.trr \
-    -o pc1_movie.trr --pc 1
+python bin/gmx_pca_movie.py --pca pca_out -o pc1_movie.trr --pc 1
 ```
 
 ### Custom Output Directory
 
 ```bash
-python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -f pca_out/fit.xtc \
-    -v pca_out/eigenvectors.trr \
-    -o movies/pc1.pdb --pc 1 --outdir movies
+python bin/gmx_pca_movie.py --pca pca_out -o movies/pc1.pdb --pc 1 --outdir movies
 ```
 
 ## Command-Line Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `-s, --structure` | Required | Structure file (use `fit.gro` from PCA) |
-| `-f, --trajectory` | Required | The fitted trajectory (use `fit.xtc` from PCA) |
-| `-v, --eigenvec` | Required | Eigenvectors file (`eigenvectors.trr` from PCA) |
+| `--pca DIR` | - | Output folder of `gmx_pca.py`: the defaults of `-s`, `-f`, `-v` and `-n` (below) |
+| `-s, --structure` | `DIR/fit.gro` | Structure file (`fit.gro` from PCA) |
+| `-f, --trajectory` | `DIR/fit.xtc`, or the trajectories in `DIR/fitted_trajectories.txt` | The fitted trajectory or trajectories (several are joined); the movie spans their lowest to highest projection |
+| `-v, --eigenvec` | `DIR/eigenvectors.trr` | Eigenvectors file (`eigenvectors.trr` from PCA) |
 | `-n, --index` | `pca_groups.ndx` next to `-s`, if present | Index with the fit and analysis groups, as written by `gmx_pca.py`. Needed when the PCA was run with `--fit-selection`: `fit.gro` then holds the fitted and the analysed atoms, the eigenvectors only the analysed ones (the movie shows those). Without it (older PCA folders) all atoms of `-s` are used |
 | `-o, --output` | Required | Output trajectory (PDB/XTC/TRR) |
 | `--pc` | `1` | Principal component number |
 | `--nframes` | `50` | Number of interpolated frames |
-| `--extreme` | `2.0` | Informational only: GROMACS chooses the extent along the eigenvector |
-| `--extremes-only` | `False` | Generate only min/max structures |
-| `--outdir` | `.` | Output directory for logs |
+| `--extreme NM` | from the trajectories | Go from -NM to +NM nm along the eigenvector (`gmx anaeig -max`) |
+| `--extremes-only` | `False` | Generate only min/max structures, as `-o` |
+| `--outdir` | `.` | Output directory for logs and the commands file |
 | `--gmx-bin` | `gmx` | GROMACS binary name/path |
-| `--fix-connectivity` | `False` | Rebuild bonds in PDB output (`gmx trjconv -conect`), for viewers |
+| `--commands-file` | `gmx_pca_movie_commands.sh` | Commands file, relative to `--outdir` |
 
 ## Understanding the Movie
 
 ### What Does It Show?
 
-The movie interpolates structures from:
-- **Negative extreme**: Average structure - (extreme × eigenvector)
-- **Average structure**: The mean conformation
-- **Positive extreme**: Average structure + (extreme × eigenvector)
+The frames are evenly spaced along the eigenvector, from the average structure + (minimum ×
+eigenvector) to the average structure + (maximum × eigenvector):
 
-The animation goes: min → average → max → average → min (full cycle)
+- **Frame 1**: the minimum (most negative projection)
+- **Last frame**: the maximum (most positive projection)
+- **In between**: straight-line interpolation; the average structure is where the projection
+  is 0 (the middle frame with `--extreme`)
+
+Only the analysed atoms (the PCA's `--selection`) are in the movie. To see the motion back and
+forth, play it as a rock/bounce loop in the viewer.
 
 ### Interpreting Motion
 
@@ -144,17 +158,9 @@ python bin/gmx_pca.py -s topol.tpr -f traj.xtc \
     --selection "Backbone" -o pca_out
 
 # 2. Generate movies for first 3 PCs
-python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -f pca_out/fit.xtc -v pca_out/eigenvectors.trr \
-    -o pc1_movie.pdb --pc 1 --nframes 100
-
-python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -f pca_out/fit.xtc -v pca_out/eigenvectors.trr \
-    -o pc2_movie.pdb --pc 2 --nframes 100
-
-python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -f pca_out/fit.xtc -v pca_out/eigenvectors.trr \
-    -o pc3_movie.pdb --pc 3 --nframes 100
+for pc in 1 2 3; do
+    python bin/gmx_pca_movie.py --pca pca_out -o pc${pc}_movie.pdb --pc $pc --nframes 100
+done
 
 # 3. Visualize in VMD
 vmd pc1_movie.pdb
@@ -163,6 +169,8 @@ vmd pc1_movie.pdb
 ```
 
 ## Visualization Tips
+
+The movie's B-factors are all zero: colour by residue, structure or chain instead.
 
 ### VMD
 
@@ -175,12 +183,9 @@ vmd pc1_movie.pdb
 mol modstyle 0 0 NewCartoon
 mol modcolor 0 0 Structure
 
-# Color by B-factor (RMSF)
-mol modcolor 0 0 Beta
-
-# Smooth playback
+# Smooth playback, back and forth
 animate goto 0
-animate style loop
+animate style rock
 animate speed 0.5
 ```
 
@@ -193,9 +198,7 @@ load pc1_movie.pdb
 # Cartoon representation
 hide everything
 show cartoon
-
-# Color by B-factor
-spectrum b, blue_white_red, minimum=0, maximum=5
+spectrum resi
 
 # Play
 mplay
@@ -209,7 +212,7 @@ open pc1_movie.pdb
 
 # Style
 cartoon style width 2.0 thick 0.5
-color byattribute bfactor palette cyan:yellow:red
+rainbow
 
 # Play
 coordset slider #1
@@ -222,47 +225,40 @@ coordset slider #1
 ```bash
 # Visualize top 3 PCs to understand main conformational changes
 for pc in 1 2 3; do
-    python bin/gmx_pca_movie.py \
-        -s pca_out/fit.gro -f pca_out/fit.xtc -v pca_out/eigenvectors.trr \
-        -o pc${pc}_movie.pdb --pc $pc
+    python bin/gmx_pca_movie.py --pca pca_out -o pc${pc}_movie.pdb --pc $pc
 done
 ```
 
 ### 2. Comparing WT vs Mutant
 
 ```bash
-# Wild type PC1
-python bin/gmx_pca_movie.py \
-    -s pca_wt/fit.gro -f pca_wt/fit.xtc -v pca_wt/eigenvectors.trr \
-    -o wt_pc1.pdb --pc 1
-
-# Mutant PC1
-python bin/gmx_pca_movie.py \
-    -s pca_mut/fit.gro -f pca_mut/fit.xtc -v pca_mut/eigenvectors.trr \
-    -o mut_pc1.pdb --pc 1
+# One PCA of both: the same PCs, each movie over that system's range (a selection with the
+# same atoms in both, e.g. C-alpha: residue names may differ, atom names not)
+python bin/gmx_pca.py -s wt.tpr mut.tpr -f wt.xtc mut.xtc --labels wt mut \
+    --selection 'name CA' -o pca_both
+python bin/gmx_pca_movie.py --pca pca_both -o wt_pc1.pdb --pc 1 -f pca_both/trajectories/wt/fit.xtc
+python bin/gmx_pca_movie.py --pca pca_both -o mut_pc1.pdb --pc 1 -f pca_both/trajectories/mut/fit.xtc
 
 # Compare in VMD: load both and play side-by-side
 ```
+
+With separate PCAs (`pca_wt/`, `pca_mut/`), PC1 of one need not be the same motion as PC1 of
+the other: compare them with `gmx_pca.py --rmsip` first.
 
 ### 3. Presentation/Publication
 
 ```bash
 # High quality, smooth 200-frame movie
-python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -f pca_out/fit.xtc -v pca_out/eigenvectors.trr \
-    -o presentation_pc1.pdb --pc 1 --nframes 200 --extreme 2.5
+python bin/gmx_pca_movie.py --pca pca_out -o presentation_pc1.pdb --pc 1 --nframes 200
 ```
 
 ### 4. Structural Analysis
 
 ```bash
 # Extract extreme conformations for docking
-python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -f pca_out/fit.xtc -v pca_out/eigenvectors.trr \
-    -o pc1_extremes.pdb --pc 1 --extremes-only
+python bin/gmx_pca_movie.py --pca pca_out -o pc1_extremes.pdb --pc 1 --extremes-only
 
-# Result: 2-frame trajectory (open and closed conformations)
-# Extract frames with gmx trjconv or viewer
+# Result: 2-frame trajectory (the two ends of the motion, e.g. open and closed)
 ```
 
 ## Advanced Usage
@@ -275,9 +271,7 @@ python bin/gmx_pca_movie.py \
 
 for pc in {1..5}; do
     echo "Generating PC${pc} movie..."
-    python bin/gmx_pca_movie.py \
-        -s pca_out/fit.gro -f pca_out/fit.xtc \
-        -v pca_out/eigenvectors.trr \
+    python bin/gmx_pca_movie.py --pca pca_out \
         -o movies/pc${pc}_movie.pdb \
         --pc $pc \
         --nframes 100 \
@@ -285,25 +279,12 @@ for pc in {1..5}; do
 done
 ```
 
-### Extract Frames for Further Analysis
-
-```bash
-# Generate movie
-python bin/gmx_pca_movie.py \
-    -s pca_out/fit.gro -f pca_out/fit.xtc -v pca_out/eigenvectors.trr \
-    -o pc1.xtc --pc 1 --nframes 100
-
-# Extract specific frame (e.g., frame 50 = max extreme)
-gmx trjconv -f pc1.xtc -s pca_out/fit.gro -f pca_out/fit.xtc -o pc1_max.pdb -dump 50
-```
-
 ### Multiple Extents
 
 ```bash
 # Small, medium, large extent movies
-for extent in 1.0 2.0 3.0; do
-    python bin/gmx_pca_movie.py \
-        -s pca_out/fit.gro -f pca_out/fit.xtc -v pca_out/eigenvectors.trr \
+for extent in 0.5 1.0 2.0; do
+    python bin/gmx_pca_movie.py --pca pca_out \
         -o pc1_extent${extent}.pdb --pc 1 --extreme $extent
 done
 ```
@@ -316,9 +297,9 @@ done
    - 200+ frames: Very smooth, publication quality
 
 2. **Extent Selection**:
-   - 2.0 nm: Good default, covers typical motion
-   - 1.0 nm: Conservative, for subtle motions
-   - 3.0+ nm: May show unphysical structures
+   - Default (the trajectories' range): shows what the simulations actually reach
+   - `--extreme` below the range: the central, best-sampled part of the motion
+   - `--extreme` beyond the range: exaggerated, may show unphysical structures
 
 3. **File Format**:
    - PDB: Universal compatibility, larger files
@@ -332,8 +313,7 @@ done
 
 5. **Visualization**:
    - Use cartoon for proteins (clearer motion)
-   - Color by B-factor (RMSF) to show flexible regions
-   - Add loop animation for continuous playback
+   - Add rock/bounce loop animation for continuous playback
 
 6. **Combining with Analysis**:
    - Use extremes-only for docking studies
@@ -342,31 +322,38 @@ done
 
 ## Troubleshooting
 
-### "Error: eigenvectors file not found"
+### "Error: eigenvector file not found" / "-s, -f, -v needed"
 - Ensure you've run `gmx_pca.py` first
-- Check path to `eigenvectors.trr`
+- Give its output folder with `--pca`, or check the paths
 
-### "Error: atoms mismatch"
-- Use the same structure file as PCA analysis (`fit.gro`)
+### "... has neither fit.xtc nor fitted_trajectories.txt"
+- The `--pca` folder is not a `gmx_pca.py` output folder, or comes from an older
+  `gmx_pca.py` run of several trajectories: run `gmx_pca.py` again, or give `-f`
+
+### GROMACS error about the number of atoms
+- Use the structure and index of the same PCA (`fit.gro`, `pca_groups.ndx`): `--pca` does
 - Don't use original `topol.tpr` (may have different atom selection)
 
 ### Movie looks unrealistic
-- Reduce `--extreme` value (try 1.5 or 1.0)
+- Use a smaller `--extreme` (below the trajectories' range)
 - Some PCs capture noise rather than real motion
 
 ### No visible motion
-- Increase `--extreme` value (try 3.0 or 4.0)
 - Check if you selected the right PC
 - Verify PC explains significant variance (check scree plot)
+- A larger `--extreme` exaggerates the motion
 
 ### GROMACS error during generation
 - Verify input files are correct
 - Check that eigenvector file has enough components (`--pc` value exists)
+- The anaeig log in `{outdir}/logs/` has the details
 
 ## Output Files
 
 - `{output}` - Trajectory movie (specified with `-o`)
-- `{outdir}/extr.log` - GROMACS log file
+- `{outdir}/logs/anaeig_pc<N>_movie.log` (`anaeig_pc<N>_extremes.log` with `--extremes-only`) -
+  GROMACS log; `trjcat.log` when several trajectories are joined
+- `{outdir}/gmx_pca_movie_commands.sh` - The commands, to re-run
 
 ## See Also
 

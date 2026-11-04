@@ -900,6 +900,18 @@ def copy_logged(src: Path, dst: Path, comment: str) -> None:
     shutil.copyfile(src, dst)
 
 
+# The fitted trajectories of a run with several trajectories (gmx_pca_movie.py --pca reads it)
+FITTED_LIST = "fitted_trajectories.txt"
+
+
+def write_fitted_list(outdir: Path, trajs: List[Trajectory], fitted: Dict[str, Path]) -> None:
+    """fitted_trajectories.txt: each trajectory's label and fitted trajectory (relative to the
+    output folder), in the order of the input."""
+    lines = ["# label  fitted trajectory (relative to this folder), as used by this run of gmx_pca.py\n"]
+    lines += [f"{t.label}  {fitted[t.label].relative_to(outdir)}\n" for t in trajs]
+    (outdir / FITTED_LIST).write_text("".join(lines))
+
+
 def projection_stats(trajs: List[Trajectory], projections: Dict[str, Dict[int, Path]],
                      basis_desc: str, out: Path) -> None:
     """Mean and standard deviation of the projections on each PC, per trajectory and per group
@@ -1103,6 +1115,7 @@ def run_multi(gmx: str, trajs: List[Trajectory], basis: List[Trajectory], basis_
     else:
         print("[2/5] No fitting requested (gmx covar and anaeig still fit to the reference)")
         fitted = {t.label: dirs[t.label] / "pbc.xtc" for t in trajs}
+    write_fitted_list(outdir, trajs, fitted)
 
     print(f"[3/5] Covariance analysis (covar) of {basis_desc}...")
     if len(basis) > 1:
@@ -1955,7 +1968,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         projections, rmsf_xvg = run_anaeig(gmx, fit_gro, fit_xtc, ev_trr, pca_ndx, outdir,
                                            args.first, args.last, log_dir)
         for old in [outdir / "rmsip_halves.dat", outdir / "region_split.txt", outdir / "region_weights.dat",
-                    *outdir.glob("projection_pc*_parts.xvg")]:
+                    outdir / FITTED_LIST, *outdir.glob("projection_pc*_parts.xvg")]:
             if old.exists():
                 old.unlink()
         if args.rmsip:
