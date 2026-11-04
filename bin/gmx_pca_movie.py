@@ -26,7 +26,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 class CommandError(RuntimeError):
@@ -187,6 +187,33 @@ def with_groups(cmd: List[str], index: Optional[Path]) -> Tuple[List[str], str]:
 
 # Written by gmx_pca.py for a PCA of several trajectories: "label  fitted trajectory" per line
 FITTED_LIST = "fitted_trajectories.txt"
+
+# Amino acids (with the AMBER protonation and disulfide variants) whose terminal forms the AMBER
+# force fields name with a leading N or C (NMET, CGLN, NHIE, ...)
+AMINO_ACIDS = {"ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE", "LEU", "LYS",
+               "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
+               "HID", "HIE", "HIP", "CYX", "CYM", "ASH", "GLH", "LYN"}
+
+
+def standard_terminal_names(pdb: Path) -> Dict[str, str]:
+    """Rename the AMBER terminal residues of a PDB file (NMET -> MET, CGLN -> GLN), in place.
+
+    GROMACS writes their 4-letter names over columns 18-21, one more than the PDB format's
+    residue name has: viewers that read columns 18-20 see NME (the N-methyl amide cap) and
+    CGL, and may leave those residues out of the cartoon. Returns {old: new} of the renamed.
+    """
+    renamed: Dict[str, str] = {}
+    lines = pdb.read_text().splitlines(keepends=True)
+    for k, line in enumerate(lines):
+        if not line.startswith(("ATOM  ", "HETATM")) or len(line) < 22:
+            continue
+        name = line[17:21]
+        if name[0] in "NC" and name[1:] in AMINO_ACIDS:
+            renamed[name] = name[1:]
+            lines[k] = line[:17] + name[1:] + " " + line[21:]
+    if renamed:
+        pdb.write_text("".join(lines))
+    return renamed
 
 
 def pca_trajectories(pca_dir: Path) -> List[Path]:
@@ -356,6 +383,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                             log_dir / f"anaeig_pc{args.pc}_movie.log", index,
                             f"Generate movie trajectory for PC{args.pc}")
             print(f"Movie trajectory saved to: {out}")
+
+        if out.suffix.lower() == ".pdb":
+            renamed = standard_terminal_names(out)
+            if renamed:
+                pairs = ", ".join(f"{a} -> {b}" for a, b in sorted(renamed.items()))
+                print(f"  Terminal residues renamed for viewers: {pairs}")
+                with command_script.open("a", encoding="utf-8") as fh:
+                    fh.write(f"\n# Then renamed by gmx_pca_movie.py in {out.name} (not a gmx command): {pairs}\n")
 
         print()
         print("Done! Next steps:")

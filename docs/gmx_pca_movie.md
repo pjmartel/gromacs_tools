@@ -143,6 +143,16 @@ eigenvector) to the average structure + (maximum × eigenvector):
 Only the analysed atoms (the PCA's `--selection`) are in the movie. To see the motion back and
 forth, play it as a rock/bounce loop in the viewer.
 
+Every atom moves on a straight line, so where a loop or terminus really rotates, its bonds
+stretch towards the ends of the movie and shrink near the average structure (averaging a
+flexible region pulls it inwards). With a C-alpha selection, consecutive C-alphas can then be
+well off their 3.8 Å.
+
+In PDB output, the AMBER force fields' names of the terminal residues (`NMET`, `CGLN`, ...: the
+charged N- and C-terminal forms) are renamed to the standard ones (`MET`, `GLN`). GROMACS writes
+them over one column more than the PDB format's residue name has, and viewers that read the
+standard columns see `NME` (the N-methyl amide cap) and `CGL`, and leave them out of the cartoon.
+
 ### Interpreting Motion
 
 - **Large displacement**: Important conformational change
@@ -343,6 +353,15 @@ done
 - Verify PC explains significant variance (check scree plot)
 - A larger `--extreme` exaggerates the motion
 
+### Ribbon or trace broken in places (C-alpha selections)
+- Some viewers join two consecutive C-alphas only if they are close: 3Dmol.js (and viewers
+  built on it) only below 4 Å, as it cannot tell a C-alpha-only chain from a chain break.
+  The straight-line interpolation stretches some C-alpha pairs beyond that near the movie's
+  ends (see [What Does It Show?](#what-does-it-show))
+- A smaller `--extreme` stretches them less; PyMOL joins them whatever the distance
+- CONECT records do not help: 3Dmol.js ignores them for the cartoon, and they break PyMOL's
+  C-alpha cartoon
+
 ### GROMACS error during generation
 - Verify input files are correct
 - Check that eigenvector file has enough components (`--pc` value exists)
@@ -350,7 +369,8 @@ done
 
 ## Output Files
 
-- `{output}` - Trajectory movie (specified with `-o`)
+- `{output}` - Trajectory movie (specified with `-o`); in PDB, with the standard names of the
+  terminal residues
 - `{outdir}/logs/anaeig_pc<N>_movie.log` (`anaeig_pc<N>_extremes.log` with `--extremes-only`) -
   GROMACS log; `trjcat.log` when several trajectories are joined
 - `{outdir}/gmx_pca_movie_commands.sh` - The commands, to re-run
