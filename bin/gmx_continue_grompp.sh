@@ -24,16 +24,23 @@ original_invocation="$0 $*"
 #     Continues: trp_fold_0_10000_10500, trp_fold_0_10500_11000, etc.
 #
 # INITIAL RUN (start_time = 0):
-#   Starting a new production run from equilibration files.
-#   MDP copied from equilibration MDP, or uses template if provided.
+#   Starting a new production run from equilibration files, with a production MDP
+#   template: --template <file>, or md.mdp (the equilibration's .mdp is never used).
 #
 #   Example - start new 500 ns run:
-#     ./gmx_continue_grompp.sh md 0 0 500 100 --initial npt_final
-#     Copies npt_final.mdp and uses npt_final.gro/cpt/edr as starting point
+#     ./gmx_continue_grompp.sh md 0 0 500 100 --template prod.mdp --initial npt_final
+#     Uses prod.mdp, and npt_final.gro/cpt/edr as starting point
 #
 # CRASH RECOVERY:
 #   If a simulation crashes, simply re-run with the EXACT SAME ARGUMENTS.
 #   The script will automatically detect and resume from the interruption point.
+#   Resuming needs only the segment's .tpr (and .cpt): the topology, template and
+#   initial files are needed only when grompp has to run.
+#
+# PREPARE ONLY (--prepare-only):
+#   Write the next segment's .mdp and .tpr, then exit without running mdrun (e.g. to
+#   run the .tpr elsewhere, or with mdrun -multidir). Running the script again without
+#   --prepare-only runs the prepared .tpr and continues with the next segments.
 
 # Check minimum arguments
 if [[ $# -lt 5 ]]; then
@@ -46,7 +53,8 @@ if [[ $# -lt 5 ]]; then
     echo "  dt:               Time step per segment in ns (e.g., 100 or 500)"
     echo ""
     echo "Optional arguments:"
-    echo "  --template <file>      MDP template (only needed if no previous .mdp to copy from)"
+    echo "  --template <file>      Production MDP template (default: md.mdp); needed for the first"
+    echo "                         segment, later ones copy the previous segment's .mdp"
     echo "  --initial <basename>   Basename for initial equilibration files (default: 'npt')"
     echo "  --timestep <ps>        Integration timestep in ps (default: 0.002)"
     echo "  --title <value>        System-specific title to set, replacing the template's (e.g., 'TRP_cage_replica_1')"
@@ -60,13 +68,15 @@ if [[ $# -lt 5 ]]; then
     echo "                         the barostat type changes, e.g. Berendsen -> Parrinello-Rahman)"
     echo "  --commands-file <file> Reproducibility script recording every gmx command run"
     echo "                         (default: gmx_continue_grompp_commands.sh)"
+    echo "  --prepare-only         Write the next segment's .mdp and .tpr, then exit without"
+    echo "                         running mdrun (e.g. to run it elsewhere, or with mdrun -multidir)"
     echo ""
     echo "Examples:"
     echo "  # Extend existing run from 10000 to 20000 ns (MDP auto-copied)"
     echo "  $0 trp_fold 0 10000 20000 500"
     echo ""
-    echo "  # Start new run from 0 to 500 ns (copies npt_final.mdp)"
-    echo "  $0 md 0 0 500 100 --initial npt_final"
+    echo "  # Start new run from 0 to 500 ns from npt_final.gro/cpt/edr"
+    echo "  $0 md 0 0 500 100 --template prod.mdp --initial npt_final"
     exit 1
 fi
 
@@ -107,6 +117,7 @@ time_unit="ns"  # Default to nanoseconds
 ignore_initial_edr=false
 posres_ref=""
 commands_file="gmx_continue_grompp_commands.sh"
+prepare_only=false
 
 # Parse optional arguments
 while [[ $# -gt 0 ]]; do
@@ -176,6 +187,10 @@ while [[ $# -gt 0 ]]; do
             ignore_initial_edr=true
             shift
             ;;
+        --prepare-only)
+            prepare_only=true
+            shift
+            ;;
         --commands-file)
             if [[ -z "$2" ]] || [[ "$2" == --* ]]; then
                 echo "Error: --commands-file requires a value"
@@ -187,7 +202,7 @@ while [[ $# -gt 0 ]]; do
         --*)
             echo "Error: Unknown option '$1'"
             echo ""
-            echo "Valid options: --template, --initial, --timestep, --title, --topology, --plumed, --posres-ref, --ps, --ignore-initial-edr, --commands-file"
+            echo "Valid options: --template, --initial, --timestep, --title, --topology, --plumed, --posres-ref, --ps, --ignore-initial-edr, --commands-file, --prepare-only"
             echo ""
             echo "Did you misspell an option? Common typos:"
             echo "  --intitial  → should be --initial"
@@ -291,7 +306,7 @@ echo "Time range:      ${tstart} -> ${tend} ${time_unit}"
 echo "Segment dt:      ${dt} ${time_unit} (${nsteps_per_segment} steps)"
 echo "Timestep:        ${timestep_ps} ps"
 if [[ ${tstart} -eq 0 ]]; then
-    echo "Initial files:   ${initial_basename}.gro/cpt/edr/mdp"
+    echo "Initial files:   ${initial_basename}.gro/cpt/edr"
 else
     echo "Continuing from: ${tstart} ${time_unit} (MDP copied from previous segment)"
 fi
@@ -307,18 +322,30 @@ if ! command -v gmx &> /dev/null; then
     fi
 fi
 
-# Check for topology file
-if [[ ! -f ${topology} ]]; then
-    echo "Error: Topology file '${topology}' not found"
+# The topology is needed only when grompp has to make a new .tpr (not to resume one)
+require_topology() {
+    if [[ ! -f ${topology} ]]; then
+        echo "Error: Topology file '${topology}' not found"
+        echo ""
+        echo "The topology file is required for gmx grompp to create new TPR files."
+        echo "Please either:"
+        echo "  1. Create/copy a topol.top file in this directory, or"
+        echo "  2. Use --topology <file> to specify a different topology file"
+        echo ""
+        echo "Example: $0 md 0 0 5000 1000 --topology /path/to/topol.top --initial npt_free"
+        exit 1
+    fi
+}
+
+# --prepare-only: the segment's .tpr is ready; stop before mdrun
+prepared_exit() {
+    local seg="$1"
     echo ""
-    echo "The topology file is required for gmx grompp to create new TPR files."
-    echo "Please either:"
-    echo "  1. Create/copy a topol.top file in this directory, or"
-    echo "  2. Use --topology <file> to specify a different topology file"
-    echo ""
-    echo "Example: $0 md 0 0 5000 1000 --topology /path/to/topol.top --initial npt_free"
-    exit 1
-fi
+    echo "Prepared ${seg}.tpr (--prepare-only: mdrun not run)."
+    echo "Run it with:  gmx mdrun -deffnm ${seg}${plumed_flag:+ ${plumed_flag}}"
+    echo "or run this script again without --prepare-only: it runs ${seg}.tpr and continues."
+    exit 0
+}
 
 # Function to check if a segment completed successfully
 # Returns 0 (success) if segment is complete, 1 (failure) otherwise
@@ -358,7 +385,7 @@ done
 # If we found completed segments, start from the highest one
 if [[ ${highest_completed} -gt ${tstart} ]]; then
     actual_start=${highest_completed}
-    echo "Latest completed segment ends at: ${actual_start} ns"
+    echo "Latest completed segment ends at: ${actual_start} ${time_unit}"
 fi
 
 # Now check for incomplete/interrupted segments at actual_start
@@ -385,49 +412,26 @@ for ((time=${actual_start} ; time<${tend} ; time+=${dt})) ; do
 done
 
 if [[ ${actual_start} -ge ${tend} ]]; then
-    echo "All segments already completed (0 -> ${tend} ns). Nothing to do."
+    echo "All segments already completed (0 -> ${tend} ${time_unit}). Nothing to do."
     exit 0
 fi
 
 if [[ ${actual_start} -gt ${tstart} ]]; then
-    echo "Resuming from ${actual_start} ns (previous segments already completed)"
-fi
-
-# Check if we actually need to start from segment 0 (template required)
-if [[ ${actual_start} -eq 0 ]] && [[ ! -f ${template_mdp} ]]; then
-    echo "Error: Template MDP file '${template_mdp}' not found"
-    echo ""
-    echo "Starting from time 0 requires a template MDP file."
-    echo "Please either:"
-    echo "  1. Create/copy '${template_mdp}' in this directory, or"
-    echo "  2. Use --template <file> to specify a different MDP file"
-    echo ""
-    echo "Example: $0 ${basename_arg} ${replica} 0 ${tend} ${dt} --template md_production.mdp"
-    exit 1
+    echo "Resuming from ${actual_start} ${time_unit} (previous segments already completed)"
 fi
 
 # Initial segment (time 0 to dt) - only if starting from beginning
 if [[ ${actual_start} -eq ${tstart} ]] && [[ ${tstart} -eq 0 ]]; then
     initial_cur="${base_name}_0_${dt}"
-    echo "Setting up initial segment: 0 -> ${dt} ns (using ${initial_basename} as starting point)"
-
-    # Check for initial equilibration files
-    if [[ ! -f ${initial_basename}.gro ]]; then
-        echo "Error: Missing initial structure file (${initial_basename}.gro)"
-        echo "This file should come from your NPT/NVT equilibration step."
-        exit 1
-    fi
-    
-    if [[ ${ignore_initial_edr} == false ]] && [[ ! -f ${initial_basename}.edr ]]; then
-        echo "Error: Missing initial energy file (${initial_basename}.edr)"
-        echo "This file should come from your NPT/NVT equilibration step."
-        echo "Use --ignore-initial-edr to skip this check and continue without it."
-        exit 1
-    fi
+    echo "Setting up initial segment: 0 -> ${dt} ${time_unit} (using ${initial_basename} as starting point)"
 
     # Check if TPR exists but segment didn't complete (crashed during this segment)
     if [[ -f ${initial_cur}.tpr ]]; then
         if ! check_segment_complete "${initial_cur}"; then
+            if [[ ${prepare_only} == true ]]; then
+                echo "${initial_cur}.tpr already exists and the segment is not finished: nothing to prepare."
+                prepared_exit "${initial_cur}"
+            fi
             echo "Resuming interrupted initial segment..."
             echo "Note: Existing incomplete output files will be backed up with .bak extension"
             log_cmd "gmx mdrun -deffnm ${initial_cur} -cpi ${initial_cur}.cpt ${plumed_flag}"
@@ -436,29 +440,41 @@ if [[ ${actual_start} -eq ${tstart} ]] && [[ ${tstart} -eq 0 ]]; then
             echo "Initial segment already completed successfully."
         fi
     else
-        # Priority 1: If --template explicitly provided, use it
-        if [[ ${template_provided} == true ]]; then
-            echo "Using template MDP: ${template_mdp}"
-            sed -e "s/\(tinit\s*=\s*\)[0-9]\+/\10/" \
-                -e "s/\(nsteps\s*=\s*\)[0-9]\+/\1${nsteps_per_segment}/" \
-                ${template_mdp} > ${initial_cur}.mdp
-        # Priority 2: Try to copy MDP from initial equilibration
-        elif [[ -f ${initial_basename}.mdp ]]; then
-            echo "Copying MDP from ${initial_basename}.mdp"
-            cp "${initial_basename}.mdp" "${initial_cur}.mdp"
-            # Update tinit=0 and nsteps for first segment
-            sed -i -e "s/\(tinit\s*=\s*\)[0-9]\+/\10/" \
-                   -e "s/\(nsteps\s*=\s*\)[0-9]\+/\1${nsteps_per_segment}/" \
-                   ${initial_cur}.mdp
-        # Priority 3: Use default template (already checked to exist)
-        else
-            echo "Using template MDP: ${template_mdp}"
-            sed -e "s/\(tinit\s*=\s*\)[0-9]\+/\10/" \
-                -e "s/\(nsteps\s*=\s*\)[0-9]\+/\1${nsteps_per_segment}/" \
-                ${template_mdp} > ${initial_cur}.mdp
+        # grompp has to run: it needs the initial equilibration files, a template and the topology
+        if [[ ! -f ${initial_basename}.gro ]]; then
+            echo "Error: Missing initial structure file (${initial_basename}.gro)"
+            echo "This file should come from your NPT/NVT equilibration step."
+            exit 1
         fi
-            
-            
+
+        if [[ ${ignore_initial_edr} == false ]] && [[ ! -f ${initial_basename}.edr ]]; then
+            echo "Error: Missing initial energy file (${initial_basename}.edr)"
+            echo "This file should come from your NPT/NVT equilibration step."
+            echo "Use --ignore-initial-edr to skip this check and continue without it."
+            exit 1
+        fi
+
+        if [[ ! -f ${template_mdp} ]]; then
+            echo "Error: Template MDP file '${template_mdp}' not found"
+            echo ""
+            echo "Starting from time 0 requires a production MDP template (the equilibration's"
+            echo "${initial_basename}.mdp is not used: it would carry over its position restraints,"
+            echo "barostat, ...)."
+            echo "Please either:"
+            echo "  1. Create/copy '${template_mdp}' in this directory, or"
+            echo "  2. Use --template <file> to specify a different MDP file"
+            echo ""
+            echo "Example: $0 ${basename_arg} ${replica} 0 ${tend} ${dt} --template md_production.mdp"
+            exit 1
+        fi
+        require_topology
+
+        # The production template: --template, or md.mdp (checked above to exist)
+        echo "Using template MDP: ${template_mdp}"
+        sed -e "s/\(tinit\s*=\s*\)[0-9]\+/\10/" \
+            -e "s/\(nsteps\s*=\s*\)[0-9]\+/\1${nsteps_per_segment}/" \
+            ${template_mdp} > ${initial_cur}.mdp
+
         # Replace title field if provided
         if [[ -n "${title_suffix}" ]]; then
             sed -i "s/\(title\s*=\s*\).*/\1${title_suffix}/" ${initial_cur}.mdp
@@ -486,6 +502,9 @@ if [[ ${actual_start} -eq ${tstart} ]] && [[ ${tstart} -eq 0 ]]; then
                        ${edr_flag} ${posres_flag} -p ${topology} -o ${initial_cur}.tpr 2>&1 | tee -a "${log_file}"
         fi
 
+        if [[ ${prepare_only} == true ]]; then
+            prepared_exit "${initial_cur}"
+        fi
         echo "Running mdrun for initial segment..."
         log_cmd "gmx mdrun -deffnm ${initial_cur} ${plumed_flag}"
         gmx mdrun -deffnm ${initial_cur} ${plumed_flag} 2>&1 | tee -a "${log_file}"
@@ -509,11 +528,15 @@ for ((time=${start_time} ; time<${tend} ; time+=${dt})) ; do
         timeps=$((time * 1000))  # Convert ns to ps
     fi
     
-    echo "Setting up segment: ${time} -> $((time+dt)) ns"
+    echo "Setting up segment: ${time} -> $((time+dt)) ${time_unit}"
 
     # Check if this segment was interrupted (TPR exists but segment incomplete)
     if [[ -f ${cur}.tpr ]]; then
         if ! check_segment_complete "${cur}"; then
+            if [[ ${prepare_only} == true ]]; then
+                echo "${cur}.tpr already exists and the segment is not finished: nothing to prepare."
+                prepared_exit "${cur}"
+            fi
             echo "Resuming interrupted segment..."
             echo "Note: Existing incomplete output files will be backed up with .bak extension"
             log_cmd "gmx mdrun -deffnm ${cur} -cpi ${cur}.cpt ${plumed_flag}"
@@ -524,6 +547,7 @@ for ((time=${start_time} ; time<${tend} ; time+=${dt})) ; do
         fi
     else
         # Normal workflow: prepare and run
+        require_topology
         if [[ ! -f ${prev}.gro ]]; then
             echo "Error: Missing structure file from previous segment (${prev}.gro). Aborting."
             exit 1
@@ -577,6 +601,9 @@ for ((time=${start_time} ; time<${tend} ; time+=${dt})) ; do
                        -e ${prev}.edr ${posres_flag} -p ${topology} -o ${cur}.tpr 2>&1 | tee -a "${log_file}"
         fi
         
+        if [[ ${prepare_only} == true ]]; then
+            prepared_exit "${cur}"
+        fi
         echo "Running mdrun..."
         log_cmd "gmx mdrun -deffnm ${cur} ${plumed_flag}"
         gmx mdrun -deffnm ${cur} ${plumed_flag} 2>&1 | tee -a "${log_file}"

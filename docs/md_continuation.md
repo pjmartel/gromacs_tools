@@ -15,7 +15,9 @@ Automates the continuation of molecular dynamics simulations by:
 
 - ✅ **Segmented simulations**: Break long runs into manageable chunks
 - ✅ **Automatic continuation**: Uses previous segment's checkpoint
-- ✅ **Crash recovery**: Detects incomplete segments and resumes
+- ✅ **Crash recovery**: Detects incomplete segments and resumes, needing only their `.tpr`/`.cpt`
+- ✅ **Prepare only** (`--prepare-only`): writes the next segment's `.tpr` without running it,
+  to run elsewhere (e.g. with `mdrun -multidir`)
 - ✅ **Checkpoint handling**: Works with or without checkpoint files
 - ✅ **Time management**: Automatically sets tinit and nsteps
 - ✅ **Template-based**: Uses MDP templates from `mdp_templates/`
@@ -72,13 +74,14 @@ The five positional arguments come first; everything else is an option starting 
 | `--ps` | off | Times are in ps instead of ns |
 | `--ignore-initial-edr` | off | Don't pass `NAME.edr` to grompp (e.g. when the barostat changes, Berendsen → Parrinello-Rahman) |
 | `--commands-file FILE` | `gmx_continue_grompp_commands.sh` | Reproducibility script of every gmx command run |
+| `--prepare-only` | off | Write the next segment's `.mdp` and `.tpr` (and the commands file), then exit without running mdrun (see [Preparing Segments to Run Elsewhere](#preparing-segments-to-run-elsewhere)) |
 
 ### Which MDP is used
 
-- **First segment** (`start` = 0): `--template` if given; otherwise a copy of `NAME.mdp` (the
-  equilibration's own MDP, `--initial NAME`) if it exists; otherwise `md.mdp`. **Give
-  `--template` when starting from equilibration**, or the run will use the equilibration's
-  settings (position restraints, barostat, ...).
+- **First segment** (`start` = 0): `--template` if given, otherwise `md.mdp` in the current
+  folder (which you put there; nothing creates it). One of the two must exist: the
+  equilibration's own MDP (`NAME.mdp`, `--initial NAME`) is never used, as it would carry
+  over the equilibration's settings (position restraints, barostat, ...).
 - **Later segments**: a copy of the previous segment's MDP (so extending needs no template), or
   `--template` if given.
 
@@ -101,7 +104,7 @@ The output of grompp and mdrun for all segments is appended to `{basename}_{repl
 ### Basic Usage
 
 ```bash
-# 500 ns in 100 ns segments: md.mdp (or npt.mdp, if present) and npt.gro/cpt/edr
+# 500 ns in 100 ns segments: md.mdp (production template) and npt.gro/cpt/edr
 bash bin/gmx_continue_grompp.sh md 0 0 500 100
 ```
 
@@ -172,6 +175,32 @@ the same folder also shares the `STOP` file.
 bash bin/gmx_continue_grompp.sh md 0 10000 20000 500
 ```
 
+### Preparing Segments to Run Elsewhere
+
+`--prepare-only` runs grompp for the next segment and stops before mdrun: the first segment
+from the `--initial` files, or the next one from the previous segment's `.gro`/`.cpt`/`.edr`/`.mdp`.
+Only one segment is prepared, as the next one needs this one's output. If the next segment's
+`.tpr` already exists (and the segment is not finished), nothing is prepared.
+
+```bash
+# One replica per folder, each with its npt.gro/cpt/edr and topology. The folder tells the
+# replicas apart, so the segments get the same name in each (replica number 0 everywhere)
+for rep in rep0 rep1 rep2 rep3; do
+    (cd $rep && bash ../bin/gmx_continue_grompp.sh md 0 0 500 100 \
+        --template ../prod.mdp --prepare-only)
+done
+
+# Run the first segment of all four together (needs an MPI build of GROMACS)
+mpirun -np 4 gmx_mpi mdrun -multidir rep0 rep1 rep2 rep3 -deffnm md_0_0_100
+```
+
+`-deffnm` gives the same file name in every folder, hence the same replica number in each.
+
+To continue, prepare the next segment in each folder with the same `--prepare-only` command
+(it finds the finished segment and prepares the next), or run the script without
+`--prepare-only` in a folder: it runs a prepared but not finished `.tpr` (resuming it from its
+`.cpt` if it has one), then continues with the next segments.
+
 ## Crash Recovery
 
 ### How It Works
@@ -204,6 +233,18 @@ bash bin/gmx_continue_grompp.sh md 0 0 500 100 --template prod.mdp --initial npt
 ✓ Segment md_0_400_500: Running normally
 ```
 
+### Resuming Needs Only the Segment's Files
+
+To resume an interrupted segment, the script needs only its `.tpr` (and `.cpt`, if mdrun wrote
+one): the topology, the template and the `--initial` files are needed only when grompp has to
+run. A folder holding just `md_0_0_500.tpr` (and its `.cpt`) can be resumed with
+
+```bash
+bash bin/gmx_continue_grompp.sh md 0 0 500 500
+```
+
+A `.tpr` that was prepared but never run (no `.cpt` yet) is run from its start.
+
 ### No Checkpoint Available
 
 If a checkpoint file is missing (rare), the script:
@@ -231,15 +272,18 @@ The script automatically:
 
 ### Before First Segment
 
+Needed when the first segment's `.tpr` has to be made (not to resume or run an existing one):
+
 - `topol.top` - System topology
 - `npt.gro` - Equilibrated structure (or `NAME.gro` with `--initial NAME`)
 - `npt.edr` - Energy file from equilibration
 - `npt.cpt` - Checkpoint (optional but recommended)
-- Production MDP template (`--template`)
+- Production MDP template (`--template FILE`, or `md.mdp`)
 
 ### During Continuation
 
-The script automatically uses outputs from previous segments.
+The script automatically uses outputs from previous segments (`.gro`, `.edr`, `.mdp`, and
+`.cpt` if present), and the topology to make each new `.tpr`.
 
 ## MDP Template Requirements
 
