@@ -9,13 +9,15 @@ left and finish time, and graphs of temperature, pressure, energies, conserved-e
 constraint rmsd and speed over the simulation. With --edr it also plots the box size, volume
 and density from the .edr files (through gmx energy); with --mindist the distance of the protein
 to its periodic image, against the cutoff, and its size against the box (gmx mindist -pi); with
---rms the RMSD from the start of the run (gmx rms).
+--rms the RMSD from the start of the run (gmx rms). When nvidia-smi is found it also shows the
+temperature, fan speed, power draw / power limit and utilization of this machine's GPUs
+(--no-gpu turns that off).
 
 Uses only the Python standard library: runs with any python3 >= 3.8, no packages needed.
 
 Usage:
   gmx_monitor.py <stem> [--dir DIR] [--end NS] [--edr] [--mindist] [--rms] [--refresh S] [--port PORT]
-                [--once]
+                [--no-gpu] [--once]
 """
 from __future__ import annotations
 
@@ -52,6 +54,8 @@ _FINISHED = re.compile(r"^Finished mdrun on rank 0 (.+?)\s*$")
 _CHECKPOINT = re.compile(r"^Writing checkpoint, step (\d+) at (.+?)\s*$")
 _HOST = re.compile(r"^Hardware detected on host (\S+?)(?: \(.*\))?:\s*$")
 _NATOMS = re.compile(r"^There are:\s+(\d+) Atoms\s*$")
+_GPU_MAP_HEADER = re.compile(r"^Mapping of GPU IDs to the \d+ GPU tasks? in the \d+ ranks? on this node:\s*$")
+_GPU_MAP = re.compile(r"^\s+((?:[A-Za-z]+:\d+)(?:,[A-Za-z]+:\d+)*)\s*$")
 _DRIFT = re.compile(r"^\s+Conserved energy drift: (\S+) kJ/mol/ps per atom\s*$")
 _STEP_HEADER = re.compile(r"^\s+Step\s+Time\s*$")
 _STEP_VALUES = re.compile(r"^\s+(-?\d+)\s+(-?\d+(?:\.\d*)?(?:[eE][-+]?\d+)?)\s*$")
@@ -111,6 +115,8 @@ class MdLog:
         self._partial = b""
         self.version = None
         self.host = None
+        self.gpu_ids: list[int] | None = None    # GPU IDs of the run's tasks (CUDA numbering)
+        self._gpu_map_next = False
         self.natoms = None
         self.params: dict[str, str] = {}
         self.ref_t: list[float] = []
@@ -207,6 +213,15 @@ class MdLog:
                 self.version = m.group(1)
                 return
         if self._energy_line(line):
+            return
+        if self._gpu_map_next:
+            self._gpu_map_next = False
+            m = _GPU_MAP.match(line)
+            if m:
+                self.gpu_ids = sorted({int(t.split(":")[1]) for t in m.group(1).split(",")})
+                return
+        if _GPU_MAP_HEADER.match(line):
+            self._gpu_map_next = True
             return
         m = _PARAM.match(line)
         if m:
@@ -942,6 +957,102 @@ class RmsReader(TrajectoryReader):
 # The run: all logs together, status, speed, time left
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# GPU state (nvidia-smi)
+# ---------------------------------------------------------------------------
+
+class GpuReader:
+    """Fan speed, temperature, power and utilization of this machine's NVIDIA GPUs, from
+    nvidia-smi. Read at most every MIN_INTERVAL s (the page may be open in several tabs)."""
+
+    MIN_INTERVAL = 5.0
+    TIMEOUT = 5.0
+    # name last: the only field that could hold a comma
+    FIELDS = ["index", "fan.speed", "temperature.gpu", "power.draw", "power.limit",
+              "utilization.gpu", "name"]
+    KEYS = ["index", "fan", "temp", "power", "power_limit", "util", "name"]
+    NOT_AVAILABLE = {"[N/A]", "N/A", "[Not Supported]", "[Unknown Error]"}
+
+    def __init__(self, exe: str):
+        self.exe = exe
+        self._last = 0.0
+        self.gpus: list[dict] = []
+        self.error: str | None = None
+
+    def read(self) -> tuple[list[dict], str | None]:
+        now = time.monotonic()
+        if self._last and now - self._last < self.MIN_INTERVAL:
+            return self.gpus, self.error
+        self._last = now
+        try:
+            proc = subprocess.run(
+                [self.exe, "--query-gpu=" + ",".join(self.FIELDS), "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=self.TIMEOUT)
+        except subprocess.TimeoutExpired:
+            self.gpus, self.error = [], f"nvidia-smi did not answer in {self.TIMEOUT:g} s"
+            return self.gpus, self.error
+        except OSError as exc:
+            self.gpus, self.error = [], f"nvidia-smi failed: {exc}"
+            return self.gpus, self.error
+        if proc.returncode != 0:
+            msg = next((l.strip() for l in (proc.stdout + proc.stderr).splitlines() if l.strip()),
+                       f"exit code {proc.returncode}")
+            self.gpus, self.error = [], f"nvidia-smi: {msg}"
+            return self.gpus, self.error
+        self.gpus, self.error = self.parse(proc.stdout)
+        return self.gpus, self.error
+
+    @classmethod
+    def parse(cls, text: str) -> tuple[list[dict], str | None]:
+        """Lines of 'index, fan, temp, power, limit, util, name'; '[N/A]' becomes None.
+        Anything else that is not a number is an error, not a guess."""
+        gpus = []
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            parts = [v.strip() for v in line.split(",", len(cls.FIELDS) - 1)]
+            if len(parts) != len(cls.FIELDS):
+                return [], f"unexpected nvidia-smi output: {line.strip()!r}"
+            gpu: dict = {}
+            for key, value in zip(cls.KEYS, parts):
+                if key == "name":
+                    gpu[key] = value
+                elif value in cls.NOT_AVAILABLE:
+                    gpu[key] = None
+                else:
+                    try:
+                        number = float(value)
+                    except ValueError:
+                        return [], f"unexpected nvidia-smi value for {key}: {value!r}"
+                    if not math.isfinite(number):
+                        return [], f"unexpected nvidia-smi value for {key}: {value!r}"
+                    gpu[key] = number
+            if gpu["index"] is None or gpu["index"] != int(gpu["index"]):
+                return [], f"unexpected nvidia-smi GPU index: {parts[0]!r}"
+            gpu["index"] = int(gpu["index"])
+            gpus.append(gpu)
+        if not gpus:
+            return [], "nvidia-smi listed no GPUs"
+        return gpus, None
+
+
+def same_host(a: str | None, b: str | None) -> bool | None:
+    """Short host names compared without case; None when one is unknown."""
+    if not a or not b:
+        return None
+    return a.split(".")[0].lower() == b.split(".")[0].lower()
+
+
+def gpu_text(g: dict) -> str:
+    """One GPU as 'NAME  61 °C  fan 45 %  210 / 320 W  util 87 %' ('n/a' for missing values)."""
+    def v(x, fmt, unit):
+        return "n/a" if x is None else f"{format(x, fmt)}{unit}"
+    power = "n/a" if g["power"] is None else (
+        f"{g['power']:.0f} W" if g["power_limit"] is None else f"{g['power']:.0f} / {g['power_limit']:.0f} W")
+    return (f"{g['name']}  {v(g['temp'], '.0f', ' °C')}  fan {v(g['fan'], '.0f', ' %')}  "
+            f"{power}  util {v(g['util'], '.0f', ' %')}")
+
+
 def fmt_duration(seconds: float | None) -> str:
     if seconds is None or not math.isfinite(seconds) or seconds < 0:
         return "-"
@@ -1004,13 +1115,15 @@ class Run:
     MINDIST_MARGIN = 1.2       # warn when closer to the periodic image than 1.2 x the cutoff
 
     def __init__(self, directory: Path, stem: str, end_ns: float | None, edr: EdrReader | None,
-                 max_points: int, mindist: MindistReader | None = None, rms: RmsReader | None = None):
+                 max_points: int, mindist: MindistReader | None = None, rms: RmsReader | None = None,
+                 gpu: GpuReader | None = None):
         self.directory = directory
         self.stem = stem
         self.end_override = end_ns * 1000 if end_ns is not None else None
         self.edr = edr
         self.mindist = mindist
         self.rms = rms
+        self.gpu = gpu
         self.max_points = max_points
         self.logs: dict[Path, MdLog] = {}
         self.order: list[Path] = []
@@ -1148,6 +1261,12 @@ class Run:
                      "host": socket.gethostname().split(".")[0],
                      "now": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                      "files": [], "state": "no log", "detail": ""}
+        if self.gpu:
+            gpus, error = self.gpu.read()
+            out["gpu"] = {"gpus": gpus, "error": error, "local_host": out["host"],
+                          "run_host": log.host if log else None,
+                          "same_host": same_host(out["host"], log.host if log else None),
+                          "run_ids": log.gpu_ids if log else None}
         for i, path in enumerate(self.order):
             lg = self.logs[path]
             out["files"].append({"name": path.name, "start_ns": _ns(lg.seg_start), "end_ns": _ns(lg.seg_end),
@@ -1343,10 +1462,27 @@ def _clock(now, seconds):
     return when.strftime(fmt)
 
 
+def gpu_lines(snap: dict) -> list[str]:
+    """The GPU part of --once: one line per GPU, or the error; a note when the readings come
+    from another machine than the run's."""
+    G = snap.get("gpu")
+    if not G:
+        return []
+    if G["error"]:
+        return [f"  GPU       : {G['error']}"]
+    lines = [f"  GPU {g['index']:<6}: {gpu_text(g)}" for g in G["gpus"]]
+    if G["run_ids"]:
+        lines.append(f"              the run uses GPU id(s) {', '.join(map(str, G['run_ids']))} (mdrun log, CUDA numbering)")
+    if G["same_host"] is False:
+        lines.append(f"              note: GPU readings are from {G['local_host']}, the run is on {G['run_host']}")
+    return lines
+
+
 def text_status(snap: dict) -> str:
     """The snapshot as a few lines of text (--once)."""
     if not snap.get("seg"):
-        return f"{snap['stem']} on {snap['host']}: {snap['state']} - {snap['detail']}"
+        return "\n".join([f"{snap['stem']} on {snap['host']}: {snap['state']} - {snap['detail']}"]
+                         + gpu_lines(snap))
     seg, total, rate = snap["seg"], snap["total"], snap["rate"]
     pct = lambda p: "-" if p is None else f"{100 * p:.1f}%"           # noqa: E731
     num = lambda v, f: "-" if v is None else format(v, f)             # noqa: E731
@@ -1376,6 +1512,7 @@ def text_status(snap: dict) -> str:
                          f"warning below {num(md['limit'], '.2f')} nm)")
         else:
             lines.append(f"  image     : {md['error'] or md['status']}")
+    lines += gpu_lines(snap)
     if snap["issues"]:
         lines.append("  issues    : " + ", ".join(k if v is None else f"{k}: {v}"
                                                    for k, v in snap["issues"].items()))
@@ -1568,6 +1705,18 @@ function draw(c) {
 
 function stat(k, v, s) { return `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s || ""}</div></div>`; }
 
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+function gpuStats(s) {
+  const G = s.gpu; if (!G) return [];
+  if (G.error) return [stat("GPU", "-", "⚠ " + esc(G.error))];
+  const unit = (v, u) => v === null ? "n/a" : fmt(v, 0) + u;
+  const other = G.same_host === false ? ` · ⚠ readings from ${esc(G.local_host)}, run on ${esc(G.run_host)}` : "";
+  const ids = G.run_ids && G.run_ids.length ? ` · run uses id ${G.run_ids.join(",")}` : "";
+  return G.gpus.map(g => stat(`GPU ${g.index} · ${esc(g.name.replace(/^NVIDIA (GeForce )?/, ""))}`,
+    `${unit(g.temp, " °C")} · ${g.power === null ? "n/a" : fmt(g.power, 0) + (g.power_limit === null ? "" : " / " + fmt(g.power_limit, 0)) + " W"}`,
+    `fan ${unit(g.fan, " %")} · util ${unit(g.util, " %")}` + ids + other));
+}
+
 function render(s) {
   const colors = { "running": "--ok", "finished": "--accent", "between segments": "--accent", "starting": "--accent",
                    "stalled?": "--warn", "stopped": "--warn", "error": "--bad", "no log": "--bad" };
@@ -1578,7 +1727,7 @@ function render(s) {
   h1.textContent = s.stem;
   if (s.host) { const sp = document.createElement("span"); sp.className = "host"; sp.textContent = " on " + s.host; h1.appendChild(sp); }
   document.getElementById("detail").textContent = s.detail || "";
-  if (!s.seg) { document.title = `${who} · ${s.state}`; return; }
+  if (!s.seg) { document.title = `${who} · ${s.state}`; document.getElementById("stats").innerHTML = gpuStats(s).join(""); return; }
   const seg = s.seg, tot = s.total, r = s.rate;
   const totp = tot.progress !== null ? tot.progress : seg.progress;
   document.title = s.state === "finished" ? `✔ ${who} finished`
@@ -1592,7 +1741,7 @@ function render(s) {
     stat("Temperature", fmt(s.series.T[s.series.T.length - 1], 1) + " K", s.ref_t !== null ? "target " + s.ref_t + " K (" + (s.tcoupl || "") + ")" : ""),
     stat("Conserved-energy drift", fmt(s.drift.fit_per_atom_ns, 5), "kJ/mol/ns per atom" + (s.drift.gromacs_per_atom_ns !== null ? ` (GROMACS: ${fmt(s.drift.gromacs_per_atom_ns, 5)})` : "")),
     stat("System", (s.natoms === null ? "-" : s.natoms) + " atoms", `dt ${fmt(s.dt_fs, 1)} fs · GROMACS ${s.version || "-"}` + (s.restarts ? ` · ${s.restarts} restart(s)` : "")),
-  ].join("");
+  ].concat(gpuStats(s)).join("");
   document.getElementById("seglabel").textContent = s.layout === "segments" ? `Segment ${seg.index}` : "This log";
   document.getElementById("segbar").style.width = (100 * (seg.progress || 0)) + "%";
   document.getElementById("segpct").textContent = pct(seg.progress);
@@ -1802,6 +1951,9 @@ Examples:
                              "<stem>_rms.xvg, and continue from them on a restart")
     parser.add_argument("--gmx", default="gmx",
                         help="GROMACS executable for --edr, --mindist and --rms (default: gmx)")
+    parser.add_argument("--no-gpu", action="store_true",
+                        help="don't show the GPU state (nvidia-smi: temperature, fan, power, "
+                             "utilization); shown by default when nvidia-smi is found")
     parser.add_argument("--max-points", type=int, default=2000,
                         help="points per graph; longer runs are thinned out (default: 2000)")
     parser.add_argument("--port", "-p", type=int, default=None,
@@ -1854,7 +2006,11 @@ Examples:
         for reader in (mindist, rms):
             if reader:
                 reader.save_path = save_dir / f"{args.stem}_{reader.tool}.xvg"
-    run = Run(directory, args.stem, args.end, edr, args.max_points, mindist, rms)
+    gpu = None
+    if not args.no_gpu:
+        smi = shutil.which("nvidia-smi")
+        gpu = GpuReader(smi) if smi else None
+    run = Run(directory, args.stem, args.end, edr, args.max_points, mindist, rms, gpu)
     run.update()
 
     if args.once:

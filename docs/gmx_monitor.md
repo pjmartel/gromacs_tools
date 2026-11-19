@@ -34,6 +34,8 @@ from anywhere on your network (e.g. over Tailscale).
 - ✅ **Distance to the periodic image** with `--mindist` (through `gmx mindist -pi`): is the protein
   closer to its own image than the cutoff? Plotted against the cutoff and 1.2 × the cutoff, with
   a warning below them; and the protein's size against the box
+- ✅ **GPU state** from `nvidia-smi`, shown by default: temperature, fan speed, power draw /
+  power limit and utilization of each GPU, with the GPU IDs the run uses (from the log)
 - ✅ **Incremental**: only the new part of each log is read on a refresh, so it follows long runs
   at no cost; new segments are picked up as they appear
 - ✅ **No dependencies**: Python standard library only (any `python3` ≥ 3.8, no packages, no uv);
@@ -45,7 +47,7 @@ from anywhere on your network (e.g. over Tailscale).
 ### Basic Syntax
 
 ```bash
-gmx_monitor.py <stem> [--dir DIR] [--end NS] [--edr] [--mindist] [--rms] [--refresh S] [--port PORT] [--once]
+gmx_monitor.py <stem> [--dir DIR] [--end NS] [--edr] [--mindist] [--rms] [--refresh S] [--port PORT] [--no-gpu] [--once]
 ```
 
 `<stem>` is `<basename>_<replica>`, as given to the continuation scripts (`md 0` → `md_0`). Then
@@ -73,6 +75,7 @@ open `http://localhost:8090/` (or the host-name URL it prints) in a browser. Sto
 | `--rms-index <file>` | - | `--rms`: index file (`.ndx`) with the group |
 | `--save <dir>` | - | Keep the `--mindist`/`--rms` results in `<dir>` (`<stem>_mindist.xvg`, `<stem>_rms.xvg`) and continue from them when the monitor is started again (see [Saving the Results](#saving-the-results---save)) |
 | `--gmx <exe>` | `gmx` | GROMACS executable for `--edr`, `--mindist` and `--rms` |
+| `--no-gpu` | off | Don't show the GPU state. Without it, the GPU state is shown when `nvidia-smi` is found (see [GPU State](#gpu-state)) |
 | `--max-points <n>` | `2000` | Points per graph; longer runs are thinned out evenly |
 | `-p, --port <port>` | `8090`, or the next free port | Port of the panel. Without `--port`, a port in use is skipped (8091, 8092, …); an explicitly given port is used, or the monitor stops with a message saying which program holds it |
 | `--host <addr>` | `0.0.0.0` | Interface to listen on (`0.0.0.0` = all interfaces) |
@@ -220,6 +223,32 @@ trajectory's name, size, modification time and whether it was complete; other to
 comment lines. Each update writes a new file that replaces the old one, so an interrupted monitor
 never leaves a broken file.
 
+### GPU State
+
+When `nvidia-smi` is on `PATH`, the panel (and `--once`) shows one entry per GPU of the machine
+the monitor runs on:
+
+```
+GPU 0 · RTX 5080
+61 °C · 210 / 320 W
+fan 45 % · util 87 % · run uses id 0
+```
+
+- **Power** is the draw against `power.limit`, the cap in force (on higgs 250 W, below the card's
+  maximum of 350 W). The card's maximum is not shown.
+- **n/a**: the value isn't reported. Laptop GPUs often have no fan reading and no power limit.
+- **run uses id**: the GPU IDs of the run's tasks, from the log line `Mapping of GPU IDs ...`.
+  These are CUDA IDs. On a machine with several GPUs, `CUDA_VISIBLE_DEVICES` or the CUDA device
+  order can make them differ from `nvidia-smi`'s index, so take this as a hint.
+- **Readings from another machine**: the readings are always of the machine the monitor runs on.
+  If that is not the host in the mdrun log (e.g. the run's folder is mounted elsewhere), a warning
+  says so.
+
+`nvidia-smi` is called at most every 5 s, whatever the number of open pages, with a 5 s timeout.
+If it fails or prints something unexpected, its message is shown instead of the values. There
+are no GPU graphs yet; the values are the current ones. `--no-gpu` turns this off; without
+`nvidia-smi` (CPU-only machines) nothing is shown.
+
 ## Remote Machines
 
 By default the monitor listens on all interfaces, and on startup it prints both a `localhost`
@@ -277,6 +306,8 @@ live_0 on quark, in /home/martel/projects/TRP_cage/run1  (parts, 1 log file(s))
   whole run : end 2 ns (from the log (nsteps))  100.0%  left -  (finish -)
   speed     : 320.6 ns/day now, 320.6 average
   GROMACS 2023.3 on quark, 8339 atoms, dt 2 fs
+  GPU 0     : NVIDIA GeForce RTX 4080 Laptop GPU  54 °C  fan n/a  20 W  util 66 %
+              the run uses GPU id(s) 0 (mdrun log, CUDA numbering)
 ```
 
 ## Troubleshooting
@@ -306,6 +337,11 @@ constant volume, or the first read is still running (the status is in the page f
 status is in the graph's title line), or `gmx mindist` / `gmx rms` failed: its message is
 listed with the problems (a missing group, with the groups there are; a trajectory or reference
 that doesn't match the `.tpr`).
+
+### GPU shows an error or "n/a"
+
+An error is `nvidia-smi`'s own message (e.g. it couldn't talk to the driver). "n/a" means the GPU
+doesn't report that value (common for laptop fans and power limits).
 
 ### Port already in use
 
